@@ -21,6 +21,12 @@ public static class DataTypeCodec
     #region Binary Decode
 
     public static object? DecodeBinary(DataType dataType, ReadOnlySpan<byte> buffer)
+        => DecodeBinaryCore(dataType, buffer);
+    
+    public static object? DecodeBinary<T>(DataType dataType, ReadOnlySpan<byte> buffer)
+        => DecodeBinaryCore(dataType, buffer);
+
+    private static object? DecodeBinaryCore(DataType dataType, ReadOnlySpan<byte> buffer)
     {
         if (buffer.IsEmpty) return null;
 

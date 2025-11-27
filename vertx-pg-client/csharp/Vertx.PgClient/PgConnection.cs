@@ -56,6 +56,18 @@ public interface IPgConnection : IAsyncDisposable
     ValueTask<RowSet> PreparedQueryAsync(string sql, ITuple? parameters = null, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Executes multiple queries in a pipelined fashion.
+    /// All queries are sent before waiting for any responses, improving throughput.
+    /// </summary>
+    ValueTask<RowSet[]> PipelineQueryAsync(string[] queries, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Executes multiple queries in a pipelined fashion.
+    /// All queries are sent before waiting for any responses, improving throughput.
+    /// </summary>
+    ValueTask<RowSet[]> PipelineQueryAsync(params string[] queries);
+
+    /// <summary>
     /// Closes the connection.
     /// </summary>
     ValueTask CloseAsync(CancellationToken cancellationToken = default);
@@ -258,6 +270,21 @@ public sealed class PgConnection : IPgConnection
             throw new InvalidOperationException("Connection is not open");
 
         return await _socket.PreparedQueryAsync(sql, parameters, cancellationToken);
+    }
+
+    /// <inheritdoc/>
+    public async ValueTask<RowSet[]> PipelineQueryAsync(string[] queries, CancellationToken cancellationToken = default)
+    {
+        if (_socket is null || !IsOpen)
+            throw new InvalidOperationException("Connection is not open");
+
+        return await _socket.PipelineQueryAsync(queries, cancellationToken);
+    }
+
+    /// <inheritdoc/>
+    public ValueTask<RowSet[]> PipelineQueryAsync(params string[] queries)
+    {
+        return PipelineQueryAsync(queries, CancellationToken.None);
     }
 
     /// <inheritdoc/>

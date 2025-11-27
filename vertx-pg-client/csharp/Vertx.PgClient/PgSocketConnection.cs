@@ -17,6 +17,7 @@ namespace Vertx.PgClient;
 
 /// <summary>
 /// Handles the low-level socket connection and PostgreSQL protocol communication.
+/// Supports pipelining - multiple commands can be sent before waiting for responses.
 /// </summary>
 internal sealed class PgSocketConnection : IAsyncDisposable
 {
@@ -29,15 +30,24 @@ internal sealed class PgSocketConnection : IAsyncDisposable
     private int _receiveBufferOffset;
     private int _receiveBufferLength;
 
+    // Pipelining state
+    private readonly Queue<PgCommand> _pending = new();
+    private readonly Queue<PgCommand> _inflight = new();
+    private int _inflightCount;
+    private bool _paused;
+    private readonly SemaphoreSlim _sendLock = new(1, 1);
+
     private Socket? _socket;
     private Stream? _stream;
     private NetworkStream? _networkStream;
     private SslStream? _sslStream;
+    private CancellationTokenSource? _readCts;
 
     public int ProcessId { get; private set; }
     public int SecretKey { get; private set; }
     public char TransactionStatus { get; private set; } = 'I';
     public bool IsConnected => _socket?.Connected == true;
+    public int PipeliningLimit => _options.PipeliningLimit;
     
     public IReadOnlyDictionary<string, string> ServerParameters => _serverParameters;
 
@@ -495,6 +505,300 @@ internal sealed class PgSocketConnection : IAsyncDisposable
         }
         return 0;
     }
+
+    #region Pipelining
+
+    /// <summary>
+    /// Schedules a command for pipelined execution.
+    /// Commands are sent immediately if under the pipelining limit,
+    /// otherwise they are queued and sent when slots become available.
+    /// </summary>
+    public void Schedule(PgCommand command)
+    {
+        lock (_pending)
+        {
+            _pending.Enqueue(command);
+        }
+    }
+
+    /// <summary>
+    /// Processes pending commands, sending them if under the pipelining limit.
+    /// This should be called periodically to flush the pending queue.
+    /// </summary>
+    public async ValueTask CheckPendingAsync(CancellationToken cancellationToken = default)
+    {
+        await _sendLock.WaitAsync(cancellationToken);
+        try
+        {
+            await CheckPendingCoreAsync(cancellationToken);
+        }
+        finally
+        {
+            _sendLock.Release();
+        }
+    }
+
+    private async ValueTask CheckPendingCoreAsync(CancellationToken cancellationToken)
+    {
+        int written = 0;
+        
+        while (!_paused && _inflightCount < _options.PipeliningLimit)
+        {
+            PgCommand? cmd;
+            lock (_pending)
+            {
+                if (!_pending.TryDequeue(out cmd))
+                    break;
+            }
+
+            _inflightCount++;
+            lock (_inflight)
+            {
+                _inflight.Enqueue(cmd);
+            }
+
+            // Encode the command
+            _encoder.Reset();
+            cmd.Encode(_encoder);
+            
+            // Send it
+            await SendAsync(cancellationToken);
+            written++;
+        }
+    }
+
+    /// <summary>
+    /// Handles responses from the server and dispatches them to the appropriate command.
+    /// </summary>
+    public async ValueTask ProcessResponsesAsync(CancellationToken cancellationToken = default)
+    {
+        while (true)
+        {
+            PgCommand? current;
+            lock (_inflight)
+            {
+                if (!_inflight.TryPeek(out current))
+                {
+                    // No commands in flight
+                    break;
+                }
+            }
+
+            var response = await ReceiveAsync(cancellationToken);
+
+            // Handle global responses
+            switch (response)
+            {
+                case ReadyForQueryResponse ready:
+                    TransactionStatus = ready.Status;
+                    break;
+                    
+                case NoticeResponse notice:
+                    NoticeReceived?.Invoke(notice);
+                    continue;
+                    
+                case NotificationResponse notif:
+                    NotificationReceived?.Invoke(new PgNotification(notif.Channel, notif.ProcessId, notif.Payload));
+                    continue;
+                    
+                case ParameterStatusResponse param:
+                    _serverParameters[param.Name] = param.Value;
+                    continue;
+            }
+
+            // Dispatch to the command
+            bool complete = current.HandleResponse(response);
+            
+            if (complete)
+            {
+                lock (_inflight)
+                {
+                    _inflight.Dequeue();
+                }
+                _inflightCount--;
+                current.Complete();
+                
+                // Check if we can send more commands
+                await CheckPendingCoreAsync(cancellationToken);
+            }
+
+            // Handle extended query commands that need to send bind/execute after parse
+            if (current is ExtendedQueryCommand extCmd && extCmd.NeedsSendBindExecute)
+            {
+                var buffer = extCmd.GetBindExecuteBuffer();
+                if (_stream is not null)
+                {
+                    await _stream.WriteAsync(buffer, cancellationToken);
+                    await _stream.FlushAsync(cancellationToken);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Schedules a command and waits for its result.
+    /// This is a convenience method for executing a single command with pipelining support.
+    /// </summary>
+    public async ValueTask<RowSet> ScheduleAndWaitAsync(PgCommand command, CancellationToken cancellationToken = default)
+    {
+        Schedule(command);
+        await CheckPendingAsync(cancellationToken);
+        
+        // Process responses until our command completes
+        while (true)
+        {
+            PgCommand? current;
+            lock (_inflight)
+            {
+                if (!_inflight.TryPeek(out current))
+                    break;
+            }
+
+            var response = await ReceiveAsync(cancellationToken);
+
+            // Handle global responses
+            switch (response)
+            {
+                case ReadyForQueryResponse ready:
+                    TransactionStatus = ready.Status;
+                    break;
+                    
+                case NoticeResponse notice:
+                    NoticeReceived?.Invoke(notice);
+                    continue;
+                    
+                case NotificationResponse notif:
+                    NotificationReceived?.Invoke(new PgNotification(notif.Channel, notif.ProcessId, notif.Payload));
+                    continue;
+                    
+                case ParameterStatusResponse param:
+                    _serverParameters[param.Name] = param.Value;
+                    continue;
+            }
+
+            // Dispatch to the command
+            bool complete = current.HandleResponse(response);
+            
+            if (complete)
+            {
+                lock (_inflight)
+                {
+                    _inflight.Dequeue();
+                }
+                _inflightCount--;
+                current.Complete();
+                
+                // Check if we can send more commands
+                await CheckPendingCoreAsync(cancellationToken);
+                
+                // If this was our command, we're done
+                if (current == command)
+                {
+                    break;
+                }
+            }
+
+            // Handle extended query commands that need to send bind/execute after parse
+            if (current is ExtendedQueryCommand extCmd && extCmd.NeedsSendBindExecute)
+            {
+                var buffer = extCmd.GetBindExecuteBuffer();
+                if (_stream is not null)
+                {
+                    await _stream.WriteAsync(buffer, cancellationToken);
+                    await _stream.FlushAsync(cancellationToken);
+                }
+            }
+        }
+
+        // Get the result from the command
+        if (command is SimpleQueryCommand simpleCmd)
+        {
+            return await simpleCmd.Task;
+        }
+        else if (command is ExtendedQueryCommand extendedCmd)
+        {
+            return await extendedCmd.Task;
+        }
+        
+        throw new InvalidOperationException("Unknown command type");
+    }
+
+    /// <summary>
+    /// Executes multiple queries in a pipelined fashion.
+    /// All queries are sent before waiting for any responses.
+    /// </summary>
+    public async ValueTask<RowSet[]> PipelineQueryAsync(string[] queries, CancellationToken cancellationToken = default)
+    {
+        var commands = new SimpleQueryCommand[queries.Length];
+        
+        // Schedule all commands
+        for (int i = 0; i < queries.Length; i++)
+        {
+            commands[i] = new SimpleQueryCommand(queries[i]);
+            Schedule(commands[i]);
+        }
+
+        // Send pending commands
+        await CheckPendingAsync(cancellationToken);
+
+        // Wait for all results
+        var results = new RowSet[queries.Length];
+        for (int i = 0; i < queries.Length; i++)
+        {
+            // Process responses until this command completes
+            while (!commands[i].Task.IsCompleted)
+            {
+                PgCommand? current;
+                lock (_inflight)
+                {
+                    if (!_inflight.TryPeek(out current))
+                        break;
+                }
+
+                var response = await ReceiveAsync(cancellationToken);
+
+                // Handle global responses
+                switch (response)
+                {
+                    case ReadyForQueryResponse ready:
+                        TransactionStatus = ready.Status;
+                        break;
+                        
+                    case NoticeResponse notice:
+                        NoticeReceived?.Invoke(notice);
+                        continue;
+                        
+                    case NotificationResponse notif:
+                        NotificationReceived?.Invoke(new PgNotification(notif.Channel, notif.ProcessId, notif.Payload));
+                        continue;
+                        
+                    case ParameterStatusResponse param:
+                        _serverParameters[param.Name] = param.Value;
+                        continue;
+                }
+
+                bool complete = current.HandleResponse(response);
+                
+                if (complete)
+                {
+                    lock (_inflight)
+                    {
+                        _inflight.Dequeue();
+                    }
+                    _inflightCount--;
+                    current.Complete();
+                    
+                    await CheckPendingCoreAsync(cancellationToken);
+                }
+            }
+
+            results[i] = await commands[i].Task;
+        }
+
+        return results;
+    }
+
+    #endregion
 
     private async ValueTask ConsumeUntilReadyAsync(CancellationToken cancellationToken)
     {
