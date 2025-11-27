@@ -425,26 +425,666 @@ public static class DataTypeCodec
     {
         if (buffer.IsEmpty) return null;
 
-        var text = Utf8.GetString(buffer);
-        
         return dataType.Id switch
         {
-            DataTypeId.Bool => text.StartsWith('t') || text == "1",
-            DataTypeId.Int2 => short.Parse(text),
-            DataTypeId.Int4 => int.Parse(text),
-            DataTypeId.Int8 => long.Parse(text),
-            DataTypeId.Float4 => float.Parse(text),
-            DataTypeId.Float8 => double.Parse(text),
-            DataTypeId.Numeric => decimal.Parse(text),
-            DataTypeId.Char or DataTypeId.Varchar or DataTypeId.Bpchar or DataTypeId.Text or DataTypeId.Name => text,
-            DataTypeId.Date => DateOnly.Parse(text),
-            DataTypeId.Time => TimeOnly.Parse(text),
-            DataTypeId.Timestamp => DateTime.Parse(text),
-            DataTypeId.Timestamptz => DateTimeOffset.Parse(text),
-            DataTypeId.Uuid => Guid.Parse(text),
-            DataTypeId.Json or DataTypeId.Jsonb => text,
-            _ => text
+            DataTypeId.Bool => buffer[0] == 't' || buffer[0] == '1',
+            DataTypeId.Int2 => ParseInt16Utf8(buffer),
+            DataTypeId.Int4 => ParseInt32Utf8(buffer),
+            DataTypeId.Int8 => ParseInt64Utf8(buffer),
+            DataTypeId.Float4 => ParseSingleUtf8(buffer),
+            DataTypeId.Float8 => ParseDoubleUtf8(buffer),
+            DataTypeId.Numeric => ParseDecimalUtf8(buffer),
+            DataTypeId.Char or DataTypeId.Varchar or DataTypeId.Bpchar or DataTypeId.Text or DataTypeId.Name => Utf8.GetString(buffer),
+            DataTypeId.Date => ParseDateOnlyFromUtf8(buffer),
+            DataTypeId.Time => ParseTimeOnlyFromUtf8(buffer),
+            DataTypeId.Timestamp => ParseDateTimeFromUtf8(buffer),
+            DataTypeId.Timestamptz => ParseDateTimeOffsetFromUtf8(buffer),
+            DataTypeId.Uuid => ParseGuidUtf8(buffer),
+            DataTypeId.Json or DataTypeId.Jsonb => Utf8.GetString(buffer),
+            DataTypeId.Bytea => DecodeByteaText(buffer),
+            DataTypeId.Point => DecodePointText(buffer),
+            DataTypeId.Line => DecodeLineText(buffer),
+            DataTypeId.Lseg => DecodeLsegText(buffer),
+            DataTypeId.Box => DecodeBoxText(buffer),
+            DataTypeId.Path => DecodePathText(buffer),
+            DataTypeId.Polygon => DecodePolygonText(buffer),
+            DataTypeId.Circle => DecodeCircleText(buffer),
+            DataTypeId.Inet => DecodeInetText(buffer),
+            DataTypeId.Cidr => DecodeCidrText(buffer),
+            DataTypeId.Interval => DecodeIntervalText(buffer),
+            DataTypeId.BoolArray => DecodeBoolArrayText(buffer),
+            DataTypeId.Int4Array => DecodeInt4ArrayText(buffer),
+            DataTypeId.Float8Array => DecodeFloat8ArrayText(buffer),
+            DataTypeId.TextArray => DecodeTextArrayText(buffer),
+            _ => Utf8.GetString(buffer)
         };
+    }
+
+    private static short ParseInt16Utf8(ReadOnlySpan<byte> buffer)
+    {
+        if (System.Buffers.Text.Utf8Parser.TryParse(buffer, out short value, out _))
+            return value;
+        throw new FormatException("Invalid Int16 format");
+    }
+
+    private static int ParseInt32Utf8(ReadOnlySpan<byte> buffer)
+    {
+        if (System.Buffers.Text.Utf8Parser.TryParse(buffer, out int value, out _))
+            return value;
+        throw new FormatException("Invalid Int32 format");
+    }
+
+    private static long ParseInt64Utf8(ReadOnlySpan<byte> buffer)
+    {
+        if (System.Buffers.Text.Utf8Parser.TryParse(buffer, out long value, out _))
+            return value;
+        throw new FormatException("Invalid Int64 format");
+    }
+
+    private static float ParseSingleUtf8(ReadOnlySpan<byte> buffer)
+    {
+        if (System.Buffers.Text.Utf8Parser.TryParse(buffer, out float value, out _))
+            return value;
+        throw new FormatException("Invalid Single format");
+    }
+
+    private static double ParseDoubleUtf8(ReadOnlySpan<byte> buffer)
+    {
+        if (System.Buffers.Text.Utf8Parser.TryParse(buffer, out double value, out _))
+            return value;
+        throw new FormatException("Invalid Double format");
+    }
+
+    private static decimal ParseDecimalUtf8(ReadOnlySpan<byte> buffer)
+    {
+        if (System.Buffers.Text.Utf8Parser.TryParse(buffer, out decimal value, out _))
+            return value;
+        throw new FormatException("Invalid Decimal format");
+    }
+
+    private static Guid ParseGuidUtf8(ReadOnlySpan<byte> buffer)
+    {
+        if (System.Buffers.Text.Utf8Parser.TryParse(buffer, out Guid value, out _))
+            return value;
+        throw new FormatException("Invalid Guid format");
+    }
+
+    /// <summary>
+    /// Converts ASCII UTF-8 bytes to chars without allocation using stackalloc.
+    /// PostgreSQL date/time formats are always ASCII, so this is safe.
+    /// </summary>
+    private static ReadOnlySpan<char> Utf8AsciiToChars(ReadOnlySpan<byte> buffer, Span<char> destination)
+    {
+        for (int i = 0; i < buffer.Length; i++)
+        {
+            destination[i] = (char)buffer[i];
+        }
+        return destination.Slice(0, buffer.Length);
+    }
+
+    private static DateOnly ParseDateOnlyFromUtf8(ReadOnlySpan<byte> buffer)
+    {
+        // PostgreSQL date format is ASCII (e.g., "2023-01-15")
+        // Max length for date is ~10 chars, use 32 for safety
+        Span<char> chars = stackalloc char[Math.Min(buffer.Length, 32)];
+        return DateOnly.Parse(Utf8AsciiToChars(buffer, chars));
+    }
+
+    private static TimeOnly ParseTimeOnlyFromUtf8(ReadOnlySpan<byte> buffer)
+    {
+        // PostgreSQL time format is ASCII (e.g., "12:30:45.123456")
+        // Max length for time is ~15 chars, use 32 for safety
+        Span<char> chars = stackalloc char[Math.Min(buffer.Length, 32)];
+        return TimeOnly.Parse(Utf8AsciiToChars(buffer, chars));
+    }
+
+    private static DateTime ParseDateTimeFromUtf8(ReadOnlySpan<byte> buffer)
+    {
+        // PostgreSQL timestamp format is ASCII (e.g., "2023-01-15 12:30:45.123456")
+        // Max length is ~26 chars, use 64 for safety
+        Span<char> chars = stackalloc char[Math.Min(buffer.Length, 64)];
+        return DateTime.Parse(Utf8AsciiToChars(buffer, chars));
+    }
+
+    private static DateTimeOffset ParseDateTimeOffsetFromUtf8(ReadOnlySpan<byte> buffer)
+    {
+        // PostgreSQL timestamptz format is ASCII (e.g., "2023-01-15 12:30:45.123456+00")
+        // Max length is ~32 chars, use 64 for safety
+        Span<char> chars = stackalloc char[Math.Min(buffer.Length, 64)];
+        return DateTimeOffset.Parse(Utf8AsciiToChars(buffer, chars));
+    }
+
+    private static byte[] DecodeByteaText(ReadOnlySpan<byte> buffer)
+    {
+        // PostgreSQL bytea text format is hex: \x48656c6c6f
+        if (buffer.Length >= 2 && buffer[0] == '\\' && buffer[1] == 'x')
+        {
+            // Convert hex portion to string and parse
+            return Convert.FromHexString(Utf8.GetString(buffer[2..]));
+        }
+        
+        // Fallback for escape format (legacy)
+        return buffer.ToArray();
+    }
+
+    private static Point DecodePointText(ReadOnlySpan<byte> buffer)
+    {
+        // Format: (x,y)
+        if (buffer.Length >= 5 && buffer[0] == '(' && buffer[^1] == ')')
+        {
+            var inner = buffer[1..^1]; // Remove parentheses
+            int commaIndex = inner.IndexOf((byte)',');
+            if (commaIndex > 0)
+            {
+                if (System.Buffers.Text.Utf8Parser.TryParse(inner[..commaIndex], out double x, out _) &&
+                    System.Buffers.Text.Utf8Parser.TryParse(inner[(commaIndex + 1)..], out double y, out _))
+                {
+                    return new Point(x, y);
+                }
+            }
+        }
+        throw new FormatException($"Invalid point format: {Utf8.GetString(buffer)}");
+    }
+
+    private static Interval DecodeIntervalText(ReadOnlySpan<byte> buffer)
+    {
+        // Format examples: "1 year 2 mons 3 days 04:05:06" or "00:00:00" or "1 year" etc.
+        var interval = new Interval();
+        
+        int i = 0;
+        while (i < buffer.Length)
+        {
+            // Skip whitespace
+            while (i < buffer.Length && buffer[i] == ' ') i++;
+            if (i >= buffer.Length) break;
+            
+            // Check for time component (HH:MM:SS or -HH:MM:SS)
+            bool isNegativeTime = buffer[i] == '-';
+            if (isNegativeTime) i++;
+            
+            if (i < buffer.Length && buffer[i] >= '0' && buffer[i] <= '9')
+            {
+                int numStart = i;
+                while (i < buffer.Length && ((buffer[i] >= '0' && buffer[i] <= '9') || buffer[i] == '.')) i++;
+                
+                // Check if this is a time component (contains ':')
+                if (i < buffer.Length && buffer[i] == ':')
+                {
+                    // Parse time component HH:MM:SS.microseconds
+                    System.Buffers.Text.Utf8Parser.TryParse(buffer[numStart..i], out int hours, out _);
+                    i++; // skip ':'
+                    int minStart = i;
+                    while (i < buffer.Length && buffer[i] >= '0' && buffer[i] <= '9') i++;
+                    System.Buffers.Text.Utf8Parser.TryParse(buffer[minStart..i], out int minutes, out _);
+                    
+                    int seconds = 0;
+                    int microseconds = 0;
+                    if (i < buffer.Length && buffer[i] == ':')
+                    {
+                        i++; // skip ':'
+                        int secStart = i;
+                        while (i < buffer.Length && buffer[i] >= '0' && buffer[i] <= '9') i++;
+                        System.Buffers.Text.Utf8Parser.TryParse(buffer[secStart..i], out seconds, out _);
+                        
+                        if (i < buffer.Length && buffer[i] == '.')
+                        {
+                            i++; // skip '.'
+                            int microStart = i;
+                            while (i < buffer.Length && buffer[i] >= '0' && buffer[i] <= '9') i++;
+                            System.Buffers.Text.Utf8Parser.TryParse(buffer[microStart..i], out microseconds, out _);
+                            // Pad or truncate to 6 digits
+                            int digits = i - microStart;
+                            while (digits < 6) { microseconds *= 10; digits++; }
+                            while (digits > 6) { microseconds /= 10; digits--; }
+                        }
+                    }
+                    
+                    if (isNegativeTime)
+                    {
+                        hours = -hours;
+                        minutes = -minutes;
+                        seconds = -seconds;
+                        microseconds = -microseconds;
+                    }
+                    
+                    interval.Hours = hours;
+                    interval.Minutes = minutes;
+                    interval.Seconds = seconds;
+                    interval.Microseconds = microseconds;
+                }
+                else
+                {
+                    // Parse number followed by unit
+                    System.Buffers.Text.Utf8Parser.TryParse(buffer[numStart..i], out int value, out _);
+                    if (isNegativeTime) value = -value;
+                    
+                    // Skip whitespace
+                    while (i < buffer.Length && buffer[i] == ' ') i++;
+                    
+                    // Read unit
+                    int unitStart = i;
+                    while (i < buffer.Length && ((buffer[i] >= 'a' && buffer[i] <= 'z') || (buffer[i] >= 'A' && buffer[i] <= 'Z'))) i++;
+                    var unit = buffer[unitStart..i];
+                    
+                    if (StartsWithIgnoreCase(unit, "year"u8))
+                        interval.Years = value;
+                    else if (StartsWithIgnoreCase(unit, "mon"u8))
+                        interval.Months = value;
+                    else if (StartsWithIgnoreCase(unit, "day"u8))
+                        interval.Days = value;
+                    else if (StartsWithIgnoreCase(unit, "hour"u8))
+                        interval.Hours = value;
+                    else if (StartsWithIgnoreCase(unit, "min"u8))
+                        interval.Minutes = value;
+                    else if (StartsWithIgnoreCase(unit, "sec"u8))
+                        interval.Seconds = value;
+                }
+            }
+            else
+            {
+                i++;
+            }
+        }
+        
+        return interval;
+    }
+
+    private static bool StartsWithIgnoreCase(ReadOnlySpan<byte> span, ReadOnlySpan<byte> prefix)
+    {
+        if (span.Length < prefix.Length) return false;
+        for (int i = 0; i < prefix.Length; i++)
+        {
+            byte a = span[i];
+            byte b = prefix[i];
+            // Convert to lowercase for comparison
+            if (a >= 'A' && a <= 'Z') a = (byte)(a + 32);
+            if (b >= 'A' && b <= 'Z') b = (byte)(b + 32);
+            if (a != b) return false;
+        }
+        return true;
+    }
+
+    private static int[] DecodeInt4ArrayText(ReadOnlySpan<byte> buffer)
+    {
+        // Format: {1,2,3,4,5}
+        if (buffer.Length < 2 || buffer[0] != '{' || buffer[^1] != '}')
+            return Array.Empty<int>();
+        
+        if (buffer.Length == 2) // Empty array "{}"
+            return Array.Empty<int>();
+        
+        var inner = buffer[1..^1];
+        var result = new List<int>();
+        
+        int start = 0;
+        for (int i = 0; i <= inner.Length; i++)
+        {
+            if (i == inner.Length || inner[i] == ',')
+            {
+                var element = inner[start..i];
+                if (element.Length == 4 && 
+                    (element[0] == 'N' || element[0] == 'n') &&
+                    (element[1] == 'U' || element[1] == 'u') &&
+                    (element[2] == 'L' || element[2] == 'l') &&
+                    (element[3] == 'L' || element[3] == 'l'))
+                {
+                    result.Add(0); // NULL handling
+                }
+                else if (System.Buffers.Text.Utf8Parser.TryParse(element, out int value, out _))
+                {
+                    result.Add(value);
+                }
+                start = i + 1;
+            }
+        }
+        
+        return result.ToArray();
+    }
+
+    private static string[] DecodeTextArrayText(ReadOnlySpan<byte> buffer)
+    {
+        // Format: {a,b,c} or {"a","b","c"} for quoted strings
+        if (buffer.Length < 2 || buffer[0] != '{' || buffer[^1] != '}')
+            return Array.Empty<string>();
+        
+        if (buffer.Length == 2) // Empty array "{}"
+            return Array.Empty<string>();
+        
+        var result = new List<string>();
+        int i = 1; // Skip opening brace
+        int end = buffer.Length - 1; // Before closing brace
+        
+        while (i < end)
+        {
+            if (buffer[i] == '"')
+            {
+                // Quoted string
+                i++; // Skip opening quote
+                var sb = new System.Text.StringBuilder();
+                while (i < end)
+                {
+                    if (buffer[i] == '\\' && i + 1 < end)
+                    {
+                        sb.Append((char)buffer[i + 1]);
+                        i += 2;
+                    }
+                    else if (buffer[i] == '"')
+                    {
+                        break;
+                    }
+                    else
+                    {
+                        sb.Append((char)buffer[i]);
+                        i++;
+                    }
+                }
+                result.Add(sb.ToString());
+                i++; // Skip closing quote
+                if (i < end && buffer[i] == ',')
+                    i++; // Skip comma
+            }
+            else if (buffer[i] == ',')
+            {
+                i++;
+            }
+            else
+            {
+                // Unquoted string
+                int start = i;
+                while (i < end && buffer[i] != ',')
+                    i++;
+                var element = buffer[start..i];
+                if (element.Length == 4 && 
+                    (element[0] == 'N' || element[0] == 'n') &&
+                    (element[1] == 'U' || element[1] == 'u') &&
+                    (element[2] == 'L' || element[2] == 'l') &&
+                    (element[3] == 'L' || element[3] == 'l'))
+                {
+                    result.Add(null!);
+                }
+                else
+                {
+                    result.Add(Utf8.GetString(element));
+                }
+                if (i < end && buffer[i] == ',')
+                    i++;
+            }
+        }
+        
+        return result.ToArray();
+    }
+
+    private static Line DecodeLineText(ReadOnlySpan<byte> buffer)
+    {
+        // Format: {A,B,C}
+        if (buffer.Length >= 5 && buffer[0] == '{' && buffer[^1] == '}')
+        {
+            var inner = buffer[1..^1];
+            Span<Range> ranges = stackalloc Range[3];
+            int count = SplitByteSpan(inner, (byte)',', ranges);
+            if (count == 3)
+            {
+                System.Buffers.Text.Utf8Parser.TryParse(inner[ranges[0]], out double a, out _);
+                System.Buffers.Text.Utf8Parser.TryParse(inner[ranges[1]], out double b, out _);
+                System.Buffers.Text.Utf8Parser.TryParse(inner[ranges[2]], out double c, out _);
+                return new Line(a, b, c);
+            }
+        }
+        throw new FormatException($"Invalid line format: {Utf8.GetString(buffer)}");
+    }
+
+    private static LineSegment DecodeLsegText(ReadOnlySpan<byte> buffer)
+    {
+        // Format: [(x1,y1),(x2,y2)]
+        var text = Utf8.GetString(buffer);
+        var points = ParsePointList(text);
+        if (points.Count == 2)
+        {
+            return new LineSegment(points[0], points[1]);
+        }
+        throw new FormatException($"Invalid lseg format: {text}");
+    }
+
+    private static Box DecodeBoxText(ReadOnlySpan<byte> buffer)
+    {
+        // Format: (x1,y1),(x2,y2)
+        var text = Utf8.GetString(buffer);
+        var points = ParsePointList(text);
+        if (points.Count == 2)
+        {
+            return new Box(points[0], points[1]);
+        }
+        throw new FormatException($"Invalid box format: {text}");
+    }
+
+    private static Data.Path DecodePathText(ReadOnlySpan<byte> buffer)
+    {
+        // Format: [(x1,y1),(x2,y2),...] for open, ((x1,y1),(x2,y2),...) for closed
+        var text = Utf8.GetString(buffer);
+        bool isOpen = text.StartsWith('[');
+        var points = ParsePointList(text);
+        return new Data.Path(isOpen, points);
+    }
+
+    private static Polygon DecodePolygonText(ReadOnlySpan<byte> buffer)
+    {
+        // Format: ((x1,y1),(x2,y2),...)
+        var text = Utf8.GetString(buffer);
+        var points = ParsePointList(text);
+        return new Polygon(points);
+    }
+
+    private static Circle DecodeCircleText(ReadOnlySpan<byte> buffer)
+    {
+        // Format: <(x,y),r>
+        var text = Utf8.GetString(buffer);
+        if (text.StartsWith('<') && text.EndsWith('>'))
+        {
+            var inner = text[1..^1];
+            // Find the last comma which separates center from radius
+            int lastComma = inner.LastIndexOf(',');
+            if (lastComma > 0)
+            {
+                var centerPart = inner[..lastComma];
+                var radiusPart = inner[(lastComma + 1)..];
+                
+                // Parse center point
+                var points = ParsePointList(centerPart);
+                if (points.Count == 1 && double.TryParse(radiusPart, out double radius))
+                {
+                    return new Circle(points[0], radius);
+                }
+            }
+        }
+        throw new FormatException($"Invalid circle format: {text}");
+    }
+
+    private static Inet DecodeInetText(ReadOnlySpan<byte> buffer)
+    {
+        // Format: 192.168.1.1 or 192.168.1.1/24 or ::1 etc.
+        var text = Utf8.GetString(buffer);
+        int slashIndex = text.IndexOf('/');
+        if (slashIndex >= 0)
+        {
+            var address = IPAddress.Parse(text[..slashIndex]);
+            var netmask = int.Parse(text[(slashIndex + 1)..]);
+            return new Inet().SetAddress(address).SetNetmask(netmask);
+        }
+        else
+        {
+            var address = IPAddress.Parse(text);
+            int defaultNetmask = address.AddressFamily == AddressFamily.InterNetwork ? 32 : 128;
+            return new Inet().SetAddress(address).SetNetmask(defaultNetmask);
+        }
+    }
+
+    private static Cidr DecodeCidrText(ReadOnlySpan<byte> buffer)
+    {
+        // Format: 192.168.1.0/24
+        var text = Utf8.GetString(buffer);
+        int slashIndex = text.IndexOf('/');
+        if (slashIndex >= 0)
+        {
+            var address = IPAddress.Parse(text[..slashIndex]);
+            var netmask = int.Parse(text[(slashIndex + 1)..]);
+            return new Cidr().SetAddress(address).SetNetmask(netmask);
+        }
+        else
+        {
+            var address = IPAddress.Parse(text);
+            int defaultNetmask = address.AddressFamily == AddressFamily.InterNetwork ? 32 : 128;
+            return new Cidr().SetAddress(address).SetNetmask(defaultNetmask);
+        }
+    }
+
+    private static bool[] DecodeBoolArrayText(ReadOnlySpan<byte> buffer)
+    {
+        // Format: {t,f,t}
+        if (buffer.Length < 2 || buffer[0] != '{' || buffer[^1] != '}')
+            return Array.Empty<bool>();
+        
+        if (buffer.Length == 2) // Empty array "{}"
+            return Array.Empty<bool>();
+        
+        var inner = buffer[1..^1];
+        var result = new List<bool>();
+        
+        int start = 0;
+        for (int i = 0; i <= inner.Length; i++)
+        {
+            if (i == inner.Length || inner[i] == ',')
+            {
+                var element = inner[start..i];
+                if (element.Length > 0)
+                {
+                    result.Add(element[0] == 't' || element[0] == 'T' || element[0] == '1');
+                }
+                start = i + 1;
+            }
+        }
+        
+        return result.ToArray();
+    }
+
+    private static double[] DecodeFloat8ArrayText(ReadOnlySpan<byte> buffer)
+    {
+        // Format: {1.1,2.2,3.3}
+        if (buffer.Length < 2 || buffer[0] != '{' || buffer[^1] != '}')
+            return Array.Empty<double>();
+        
+        if (buffer.Length == 2) // Empty array "{}"
+            return Array.Empty<double>();
+        
+        var inner = buffer[1..^1];
+        var result = new List<double>();
+        
+        int start = 0;
+        for (int i = 0; i <= inner.Length; i++)
+        {
+            if (i == inner.Length || inner[i] == ',')
+            {
+                var element = inner[start..i];
+                if (System.Buffers.Text.Utf8Parser.TryParse(element, out double value, out _))
+                {
+                    result.Add(value);
+                }
+                start = i + 1;
+            }
+        }
+        
+        return result.ToArray();
+    }
+
+    private static List<Point> ParsePointList(string text)
+    {
+        // Parse a list of points from formats like ((x1,y1),(x2,y2)) or [(x1,y1),(x2,y2)]
+        var points = new List<Point>();
+        int i = 0;
+        int depth = 0;
+        
+        while (i < text.Length)
+        {
+            if (text[i] == '(')
+            {
+                depth++;
+                if (depth == 2) // We're inside an inner point
+                {
+                    int start = i + 1;
+                    int end = text.IndexOf(')', i);
+                    if (end > start)
+                    {
+                        var pointStr = text[start..end];
+                        int comma = pointStr.IndexOf(',');
+                        if (comma > 0)
+                        {
+                            if (double.TryParse(pointStr[..comma], out double x) &&
+                                double.TryParse(pointStr[(comma + 1)..], out double y))
+                            {
+                                points.Add(new Point(x, y));
+                            }
+                        }
+                        i = end;
+                        depth--;
+                    }
+                }
+            }
+            else if (text[i] == '[')
+            {
+                // Treat [ as depth=1 for open paths like [(x1,y1),(x2,y2)]
+                depth = 1;
+            }
+            else if (text[i] == ')' || text[i] == ']')
+            {
+                depth = Math.Max(0, depth - 1);
+            }
+            i++;
+        }
+        
+        // If we didn't find nested points, try parsing as simple point list (for formats like (x,y),(x,y))
+        if (points.Count == 0)
+        {
+            i = 0;
+            while (i < text.Length)
+            {
+                int start = text.IndexOf('(', i);
+                if (start < 0) break;
+                
+                int end = text.IndexOf(')', start);
+                if (end < 0) break;
+                
+                var pointStr = text[(start + 1)..end];
+                int comma = pointStr.IndexOf(',');
+                if (comma > 0)
+                {
+                    if (double.TryParse(pointStr[..comma], out double x) &&
+                        double.TryParse(pointStr[(comma + 1)..], out double y))
+                    {
+                        points.Add(new Point(x, y));
+                    }
+                }
+                
+                i = end + 1;
+            }
+        }
+        
+        return points;
+    }
+
+    private static int SplitByteSpan(ReadOnlySpan<byte> span, byte separator, Span<Range> ranges)
+    {
+        int count = 0;
+        int start = 0;
+        
+        for (int i = 0; i <= span.Length && count < ranges.Length; i++)
+        {
+            if (i == span.Length || span[i] == separator)
+            {
+                ranges[count++] = new Range(start, i);
+                start = i + 1;
+            }
+        }
+        
+        return count;
     }
 
     #endregion

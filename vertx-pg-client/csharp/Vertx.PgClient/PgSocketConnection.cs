@@ -340,6 +340,15 @@ internal sealed class PgSocketConnection : IAsyncDisposable
 
         afterDescribe:
 
+        // Update row description to binary format since we request binary results in Bind
+        if (rowDesc is not null)
+        {
+            for (int i = 0; i < rowDesc.Length; i++)
+            {
+                rowDesc[i] = rowDesc[i].ToBinaryDataFormat();
+            }
+        }
+
         // Now bind and execute
         _encoder.Reset();
         _encoder.WriteBind(statementName, "", parameters, paramTypes);

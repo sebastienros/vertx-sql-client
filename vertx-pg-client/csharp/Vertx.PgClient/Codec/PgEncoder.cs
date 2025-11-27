@@ -172,7 +172,7 @@ internal sealed class PgEncoder
             }
         }
 
-        // Result format codes (all binary)
+        // Result format codes (all binary for better performance)
         WriteInt16(1);
         WriteInt16(1); // Binary
 
