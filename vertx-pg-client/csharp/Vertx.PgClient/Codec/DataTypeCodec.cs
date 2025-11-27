@@ -46,8 +46,11 @@ public static class DataTypeCodec
             DataTypeId.Lseg => DecodeLineSegment(buffer),
             DataTypeId.Box => DecodeBox(buffer),
             DataTypeId.Circle => DecodeCircle(buffer),
+            DataTypeId.Path => DecodePath(buffer),
+            DataTypeId.Polygon => DecodePolygon(buffer),
             DataTypeId.Interval => DecodeInterval(buffer),
             DataTypeId.Inet => DecodeInet(buffer),
+            DataTypeId.Cidr => DecodeCidr(buffer),
             DataTypeId.Money => DecodeMoney(buffer),
             DataTypeId.Numeric => DecodeNumeric(buffer),
             _ => DecodeString(buffer) // Unknown types decode as string
@@ -210,6 +213,49 @@ public static class DataTypeCodec
         return new Inet().SetAddress(address).SetNetmask(netmask);
     }
 
+    private static Cidr DecodeCidr(ReadOnlySpan<byte> buffer)
+    {
+        // Format: family (1 byte), netmask (1 byte), is_cidr (1 byte), address length (1 byte), address
+        byte family = buffer[0];
+        byte netmask = buffer[1];
+        // byte isCidr = buffer[2];
+        byte addrLen = buffer[3];
+        
+        var addressBytes = buffer.Slice(4, addrLen).ToArray();
+        var address = new IPAddress(addressBytes);
+        
+        return new Cidr().SetAddress(address).SetNetmask(netmask);
+    }
+
+    private static Data.Path DecodePath(ReadOnlySpan<byte> buffer)
+    {
+        // Format: closed flag (1 byte), point count (4 bytes), points (16 bytes each)
+        bool isOpen = buffer[0] == 0;
+        int pointCount = BinaryPrimitives.ReadInt32BigEndian(buffer.Slice(1));
+        var points = new List<Point>(pointCount);
+        int offset = 5;
+        for (int i = 0; i < pointCount; i++)
+        {
+            points.Add(DecodePoint(buffer.Slice(offset)));
+            offset += 16;
+        }
+        return new Data.Path(isOpen, points);
+    }
+
+    private static Polygon DecodePolygon(ReadOnlySpan<byte> buffer)
+    {
+        // Format: point count (4 bytes), points (16 bytes each)
+        int pointCount = BinaryPrimitives.ReadInt32BigEndian(buffer);
+        var points = new List<Point>(pointCount);
+        int offset = 4;
+        for (int i = 0; i < pointCount; i++)
+        {
+            points.Add(DecodePoint(buffer.Slice(offset)));
+            offset += 16;
+        }
+        return new Polygon(points);
+    }
+
     private static Money DecodeMoney(ReadOnlySpan<byte> buffer)
     {
         long cents = BinaryPrimitives.ReadInt64BigEndian(buffer);
@@ -288,6 +334,7 @@ public static class DataTypeCodec
             DataTypeId.Int8 => EncodeInt64(Convert.ToInt64(value), buffer),
             DataTypeId.Float4 => EncodeFloat(Convert.ToSingle(value), buffer),
             DataTypeId.Float8 => EncodeDouble(Convert.ToDouble(value), buffer),
+            DataTypeId.Numeric => EncodeNumeric(Convert.ToDecimal(value), buffer),
             DataTypeId.Char or DataTypeId.Varchar or DataTypeId.Bpchar or DataTypeId.Text or DataTypeId.Name => 
                 EncodeString((string)value, buffer),
             DataTypeId.Date => EncodeDate((DateOnly)value, buffer),
@@ -296,8 +343,17 @@ public static class DataTypeCodec
             DataTypeId.Timestamptz => EncodeTimestampTz((DateTimeOffset)value, buffer),
             DataTypeId.Bytea => EncodeByteArray((byte[])value, buffer),
             DataTypeId.Uuid => EncodeGuid((Guid)value, buffer),
-            DataTypeId.Json or DataTypeId.Jsonb => EncodeString((string)value, buffer),
+            DataTypeId.Json => EncodeString((string)value, buffer),
+            DataTypeId.Jsonb => EncodeJsonb((string)value, buffer),
             DataTypeId.Point => EncodePoint((Point)value, buffer),
+            DataTypeId.Line => EncodeLine((Line)value, buffer),
+            DataTypeId.Lseg => EncodeLineSegment((LineSegment)value, buffer),
+            DataTypeId.Box => EncodeBox((Box)value, buffer),
+            DataTypeId.Circle => EncodeCircle((Circle)value, buffer),
+            DataTypeId.Path => EncodePath((Data.Path)value, buffer),
+            DataTypeId.Polygon => EncodePolygon((Polygon)value, buffer),
+            DataTypeId.Inet => EncodeInet((Inet)value, buffer),
+            DataTypeId.Cidr => EncodeCidr((Cidr)value, buffer),
             DataTypeId.Interval => EncodeInterval((Interval)value, buffer),
             _ => EncodeString(value.ToString() ?? "", buffer)
         };
@@ -344,6 +400,13 @@ public static class DataTypeCodec
     private static int EncodeString(string value, Span<byte> buffer)
     {
         return Utf8.GetBytes(value, buffer);
+    }
+
+    private static int EncodeJsonb(string value, Span<byte> buffer)
+    {
+        // JSONB binary format requires a version byte prefix (always 1)
+        buffer[0] = 1;
+        return 1 + Utf8.GetBytes(value, buffer.Slice(1));
     }
 
     private static int EncodeDate(DateOnly value, Span<byte> buffer)
@@ -415,6 +478,100 @@ public static class DataTypeCodec
         BinaryPrimitives.WriteInt32BigEndian(buffer.Slice(12), months);
         
         return 16;
+    }
+
+    private static int EncodeLine(Line value, Span<byte> buffer)
+    {
+        int written = EncodeDouble(value.A, buffer);
+        written += EncodeDouble(value.B, buffer.Slice(8));
+        written += EncodeDouble(value.C, buffer.Slice(16));
+        return written;
+    }
+
+    private static int EncodeLineSegment(LineSegment value, Span<byte> buffer)
+    {
+        int written = EncodePoint(value.P1, buffer);
+        written += EncodePoint(value.P2, buffer.Slice(16));
+        return written;
+    }
+
+    private static int EncodeBox(Box value, Span<byte> buffer)
+    {
+        int written = EncodePoint(value.UpperRightCorner, buffer);
+        written += EncodePoint(value.LowerLeftCorner, buffer.Slice(16));
+        return written;
+    }
+
+    private static int EncodeCircle(Circle value, Span<byte> buffer)
+    {
+        int written = EncodePoint(value.CenterPoint, buffer);
+        written += EncodeDouble(value.Radius, buffer.Slice(16));
+        return written;
+    }
+
+    private static int EncodePath(Data.Path value, Span<byte> buffer)
+    {
+        // Format: closed flag (1 byte), point count (4 bytes), points (16 bytes each)
+        buffer[0] = value.IsOpen ? (byte)0 : (byte)1;
+        BinaryPrimitives.WriteInt32BigEndian(buffer.Slice(1), value.Points.Count);
+        int offset = 5;
+        foreach (var point in value.Points)
+        {
+            EncodePoint(point, buffer.Slice(offset));
+            offset += 16;
+        }
+        return offset;
+    }
+
+    private static int EncodePolygon(Polygon value, Span<byte> buffer)
+    {
+        // Format: point count (4 bytes), points (16 bytes each)
+        BinaryPrimitives.WriteInt32BigEndian(buffer, value.Points.Count);
+        int offset = 4;
+        foreach (var point in value.Points)
+        {
+            EncodePoint(point, buffer.Slice(offset));
+            offset += 16;
+        }
+        return offset;
+    }
+
+    private static int EncodeInet(Inet value, Span<byte> buffer)
+    {
+        // Format: family (1 byte), netmask (1 byte), is_cidr (1 byte), address length (1 byte), address
+        var addressBytes = value.Address!.GetAddressBytes();
+        bool isIPv6 = value.Address.AddressFamily == AddressFamily.InterNetworkV6;
+        
+        buffer[0] = isIPv6 ? (byte)3 : (byte)2; // family: 2=IPv4, 3=IPv6
+        buffer[1] = (byte)(value.Netmask ?? (isIPv6 ? 128 : 32));
+        buffer[2] = 0; // is_cidr = false for inet
+        buffer[3] = (byte)addressBytes.Length;
+        addressBytes.CopyTo(buffer.Slice(4));
+        
+        return 4 + addressBytes.Length;
+    }
+
+    private static int EncodeCidr(Cidr value, Span<byte> buffer)
+    {
+        // Format: family (1 byte), netmask (1 byte), is_cidr (1 byte), address length (1 byte), address
+        var addressBytes = value.Address!.GetAddressBytes();
+        bool isIPv6 = value.Address.AddressFamily == AddressFamily.InterNetworkV6;
+        
+        buffer[0] = isIPv6 ? (byte)3 : (byte)2; // family: 2=IPv4, 3=IPv6
+        buffer[1] = (byte)(value.Netmask ?? (isIPv6 ? 128 : 32));
+        buffer[2] = 1; // is_cidr = true for cidr
+        buffer[3] = (byte)addressBytes.Length;
+        addressBytes.CopyTo(buffer.Slice(4));
+        
+        return 4 + addressBytes.Length;
+    }
+
+    private static int EncodeNumeric(decimal value, Span<byte> buffer)
+    {
+        // For simplicity, use text encoding for numeric since binary format is complex
+        // This converts to string and encodes as UTF-8
+        var str = value.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        return Utf8.GetBytes(str, buffer);
     }
 
     #endregion
