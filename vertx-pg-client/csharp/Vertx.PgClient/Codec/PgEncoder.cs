@@ -1,0 +1,285 @@
+// Copyright (C) 2017 Julien Viet
+// Licensed under the Apache License, Version 2.0
+
+using System.Buffers.Binary;
+using System.Text;
+
+namespace Vertx.PgClient.Codec;
+
+/// <summary>
+/// Encodes PostgreSQL frontend messages.
+/// </summary>
+internal sealed class PgEncoder
+{
+    private static readonly byte[] BuffUser = "user"u8.ToArray();
+    private static readonly byte[] BuffDatabase = "database"u8.ToArray();
+
+    private byte[] _buffer = new byte[4096];
+    private int _position;
+    private int _statementCounter;
+
+    public ReadOnlyMemory<byte> Buffer => new ReadOnlyMemory<byte>(_buffer, 0, _position);
+
+    public void Reset() => _position = 0;
+
+    private void EnsureCapacity(int additionalBytes)
+    {
+        if (_position + additionalBytes > _buffer.Length)
+        {
+            int newSize = Math.Max(_buffer.Length * 2, _position + additionalBytes);
+            Array.Resize(ref _buffer, newSize);
+        }
+    }
+
+    public byte[] GenerateStatementName()
+    {
+        var name = $"S_{_statementCounter++:X}";
+        return Encoding.ASCII.GetBytes(name);
+    }
+
+    public void WriteStartupMessage(string username, string database, IReadOnlyDictionary<string, string> properties)
+    {
+        var startPos = _position;
+        
+        // Length placeholder
+        WriteInt32(0);
+        
+        // Protocol version (3.0)
+        WriteInt16(3);
+        WriteInt16(0);
+
+        // user
+        WriteCString(BuffUser);
+        WriteCStringUtf8(username);
+
+        // database
+        WriteCString(BuffDatabase);
+        WriteCStringUtf8(database);
+
+        // Properties
+        foreach (var (key, value) in properties)
+        {
+            WriteCStringUtf8(key);
+            WriteCStringUtf8(value);
+        }
+
+        // Terminator
+        WriteByte(0);
+
+        // Set length
+        SetInt32(startPos, _position - startPos);
+    }
+
+    public void WritePasswordMessage(string password)
+    {
+        WriteByte(PgProtocolConstants.PasswordMessage);
+        var lengthPos = _position;
+        WriteInt32(0);
+        WriteCStringUtf8(password);
+        SetInt32(lengthPos, _position - lengthPos);
+    }
+
+    public void WriteMd5PasswordMessage(string hash)
+    {
+        WriteByte(PgProtocolConstants.PasswordMessage);
+        var lengthPos = _position;
+        WriteInt32(0);
+        WriteCStringUtf8(hash);
+        SetInt32(lengthPos, _position - lengthPos);
+    }
+
+    public void WriteQuery(string sql)
+    {
+        WriteByte(PgProtocolConstants.Query);
+        var lengthPos = _position;
+        WriteInt32(0);
+        WriteCStringUtf8(sql);
+        SetInt32(lengthPos, _position - lengthPos);
+    }
+
+    public void WriteParse(string sql, byte[] statementName, int[]? parameterTypes = null)
+    {
+        WriteByte(PgProtocolConstants.Parse);
+        var lengthPos = _position;
+        WriteInt32(0);
+        
+        WriteCString(statementName);
+        WriteCStringUtf8(sql);
+        
+        // Parameter types
+        if (parameterTypes is null || parameterTypes.Length == 0)
+        {
+            WriteInt16(0);
+        }
+        else
+        {
+            WriteInt16((short)parameterTypes.Length);
+            foreach (var typeOid in parameterTypes)
+            {
+                WriteInt32(typeOid);
+            }
+        }
+
+        SetInt32(lengthPos, _position - lengthPos);
+    }
+
+    public void WriteBind(byte[] statementName, string portal, ITuple? parameters, PgColumnDesc[]? parameterTypes)
+    {
+        WriteByte(PgProtocolConstants.Bind);
+        var lengthPos = _position;
+        WriteInt32(0);
+
+        // Portal name
+        WriteCStringUtf8(portal);
+        
+        // Statement name  
+        WriteCString(statementName);
+
+        int paramCount = parameters?.Size ?? 0;
+
+        // Parameter format codes (all binary)
+        WriteInt16((short)paramCount);
+        for (int i = 0; i < paramCount; i++)
+        {
+            WriteInt16(1); // Binary
+        }
+
+        // Parameter values
+        WriteInt16((short)paramCount);
+        for (int i = 0; i < paramCount; i++)
+        {
+            var value = parameters!.GetValue(i);
+            if (value is null)
+            {
+                WriteInt32(-1); // NULL
+            }
+            else
+            {
+                var dataType = parameterTypes is not null && i < parameterTypes.Length
+                    ? parameterTypes[i].DataType
+                    : DataType.Lookup(value.GetType());
+
+                // Write value with length prefix
+                var valueStart = _position;
+                WriteInt32(0); // Length placeholder
+                
+                EnsureCapacity(1024);
+                var span = _buffer.AsSpan(_position, 1024);
+                DataTypeCodec.EncodeBinary(dataType, value, span, out int bytesWritten);
+                _position += bytesWritten;
+                
+                SetInt32(valueStart, bytesWritten);
+            }
+        }
+
+        // Result format codes (all binary)
+        WriteInt16(1);
+        WriteInt16(1); // Binary
+
+        SetInt32(lengthPos, _position - lengthPos);
+    }
+
+    public void WriteDescribe(char type, byte[]? name = null)
+    {
+        WriteByte(PgProtocolConstants.Describe);
+        var lengthPos = _position;
+        WriteInt32(0);
+        WriteByte((byte)type);
+        if (name is not null)
+        {
+            WriteCString(name);
+        }
+        else
+        {
+            WriteByte(0);
+        }
+        SetInt32(lengthPos, _position - lengthPos);
+    }
+
+    public void WriteExecute(string portal = "", int maxRows = 0)
+    {
+        WriteByte(PgProtocolConstants.Execute);
+        var lengthPos = _position;
+        WriteInt32(0);
+        WriteCStringUtf8(portal);
+        WriteInt32(maxRows);
+        SetInt32(lengthPos, _position - lengthPos);
+    }
+
+    public void WriteClose(char type, byte[]? name = null)
+    {
+        WriteByte(PgProtocolConstants.Close);
+        var lengthPos = _position;
+        WriteInt32(0);
+        WriteByte((byte)type);
+        if (name is not null)
+        {
+            WriteCString(name);
+        }
+        else
+        {
+            WriteByte(0);
+        }
+        SetInt32(lengthPos, _position - lengthPos);
+    }
+
+    public void WriteSync()
+    {
+        WriteByte(PgProtocolConstants.Sync);
+        WriteInt32(4);
+    }
+
+    public void WriteTerminate()
+    {
+        WriteByte(PgProtocolConstants.Terminate);
+        WriteInt32(4);
+    }
+
+    public void WriteSslRequest()
+    {
+        WriteInt32(8);
+        WriteInt32(80877103); // SSL request code
+    }
+
+    private void WriteByte(byte value)
+    {
+        EnsureCapacity(1);
+        _buffer[_position++] = value;
+    }
+
+    private void WriteInt16(short value)
+    {
+        EnsureCapacity(2);
+        BinaryPrimitives.WriteInt16BigEndian(_buffer.AsSpan(_position, 2), value);
+        _position += 2;
+    }
+
+    private void WriteInt32(int value)
+    {
+        EnsureCapacity(4);
+        BinaryPrimitives.WriteInt32BigEndian(_buffer.AsSpan(_position, 4), value);
+        _position += 4;
+    }
+
+    private void SetInt32(int position, int value)
+    {
+        BinaryPrimitives.WriteInt32BigEndian(_buffer.AsSpan(position, 4), value);
+    }
+
+    private void WriteCString(ReadOnlySpan<byte> bytes)
+    {
+        EnsureCapacity(bytes.Length + 1);
+        bytes.CopyTo(_buffer.AsSpan(_position));
+        _position += bytes.Length;
+        _buffer[_position++] = 0;
+    }
+
+    private void WriteCStringUtf8(string value)
+    {
+        int byteCount = Encoding.UTF8.GetByteCount(value);
+        EnsureCapacity(byteCount + 1);
+        Encoding.UTF8.GetBytes(value, _buffer.AsSpan(_position));
+        _position += byteCount;
+        _buffer[_position++] = 0;
+    }
+}

@@ -1,0 +1,591 @@
+// Copyright (C) 2017 Julien Viet
+// Licensed under the Apache License, Version 2.0
+
+using System.Buffers;
+using System.Net;
+using System.Net.Security;
+using System.Net.Sockets;
+using System.Security.Authentication;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
+using System.Text;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+using Vertx.PgClient.Codec;
+
+namespace Vertx.PgClient;
+
+/// <summary>
+/// Handles the low-level socket connection and PostgreSQL protocol communication.
+/// </summary>
+internal sealed class PgSocketConnection : IAsyncDisposable
+{
+    private readonly PgConnectOptions _options;
+    private readonly ILogger _logger;
+    private readonly PgEncoder _encoder;
+    private readonly PgDecoder _decoder;
+    private readonly Dictionary<string, string> _serverParameters = new();
+    private readonly byte[] _receiveBuffer;
+    private int _receiveBufferOffset;
+    private int _receiveBufferLength;
+
+    private Socket? _socket;
+    private Stream? _stream;
+    private NetworkStream? _networkStream;
+    private SslStream? _sslStream;
+
+    public int ProcessId { get; private set; }
+    public int SecretKey { get; private set; }
+    public char TransactionStatus { get; private set; } = 'I';
+    public bool IsConnected => _socket?.Connected == true;
+    
+    public IReadOnlyDictionary<string, string> ServerParameters => _serverParameters;
+
+    public event Action<PgNotification>? NotificationReceived;
+    public event Action<NoticeResponse>? NoticeReceived;
+
+    public PgSocketConnection(PgConnectOptions options, ILogger? logger = null)
+    {
+        _options = options;
+        _logger = logger ?? NullLogger.Instance;
+        _encoder = new PgEncoder();
+        _decoder = new PgDecoder();
+        _receiveBuffer = ArrayPool<byte>.Shared.Rent(65536);
+    }
+
+    public async ValueTask ConnectAsync(CancellationToken cancellationToken = default)
+    {
+        _socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp)
+        {
+            NoDelay = true
+        };
+
+        var host = _options.Host;
+        var port = _options.Port;
+
+        _logger.LogDebug("Connecting to {Host}:{Port}", host, port);
+
+        await _socket.ConnectAsync(host, port, cancellationToken);
+        _networkStream = new NetworkStream(_socket, ownsSocket: false);
+        _stream = _networkStream;
+
+        // Handle SSL
+        if (_options.SslMode != SslMode.Disable)
+        {
+            await NegotiateSslAsync(cancellationToken);
+        }
+
+        // Send startup message
+        await SendStartupMessageAsync(cancellationToken);
+
+        // Handle authentication and wait for ReadyForQuery
+        await HandleStartupResponseAsync(cancellationToken);
+
+        _logger.LogDebug("Connected successfully. ProcessId={ProcessId}", ProcessId);
+    }
+
+    private async ValueTask NegotiateSslAsync(CancellationToken cancellationToken)
+    {
+        _encoder.Reset();
+        _encoder.WriteSslRequest();
+        await SendAsync(cancellationToken);
+
+        var response = new byte[1];
+        int bytesRead = await _stream!.ReadAsync(response, cancellationToken);
+        
+        if (bytesRead != 1)
+            throw new PgException("Failed to receive SSL response", "08000", "");
+
+        if (response[0] == 'S')
+        {
+            // Server supports SSL
+            _logger.LogDebug("Server supports SSL, establishing secure connection");
+            
+            var sslOptions = _options.SslOptions ?? new PgSslOptions();
+            
+            _sslStream = new SslStream(
+                _networkStream!,
+                leaveInnerStreamOpen: true,
+                userCertificateValidationCallback: CreateCertificateValidationCallback(sslOptions)
+            );
+
+            var sslClientOptions = new SslClientAuthenticationOptions
+            {
+                TargetHost = _options.Host ?? "localhost",
+                EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13
+            };
+
+            await _sslStream.AuthenticateAsClientAsync(sslClientOptions, cancellationToken);
+            _stream = _sslStream;
+
+            _logger.LogDebug("SSL connection established. Protocol: {Protocol}", _sslStream.SslProtocol);
+        }
+        else if (response[0] == 'N')
+        {
+            // Server does not support SSL
+            if (_options.SslMode == SslMode.Require || 
+                _options.SslMode == SslMode.VerifyCa || 
+                _options.SslMode == SslMode.VerifyFull)
+            {
+                throw new PgException("Server does not support SSL but sslmode requires it", "08000", "");
+            }
+            
+            _logger.LogDebug("Server does not support SSL, continuing with unencrypted connection");
+        }
+        else
+        {
+            throw new PgException($"Unexpected SSL response: {(char)response[0]}", "08000", "");
+        }
+    }
+
+    private RemoteCertificateValidationCallback CreateCertificateValidationCallback(PgSslOptions options)
+    {
+        return (sender, certificate, chain, errors) =>
+        {
+            if (_options.SslMode == SslMode.Prefer || _options.SslMode == SslMode.Require)
+            {
+                // Don't verify certificate
+                return true;
+            }
+
+            if (_options.SslMode == SslMode.VerifyCa)
+            {
+                // Verify certificate chain but not hostname
+                return errors == SslPolicyErrors.None || 
+                       errors == SslPolicyErrors.RemoteCertificateNameMismatch;
+            }
+
+            // VerifyFull - verify everything
+            return errors == SslPolicyErrors.None;
+        };
+    }
+
+    private async ValueTask SendStartupMessageAsync(CancellationToken cancellationToken)
+    {
+        _encoder.Reset();
+        
+        var properties = new Dictionary<string, string>();
+        
+        if (_options.Properties is not null)
+        {
+            foreach (var prop in _options.Properties)
+            {
+                properties[prop.Key] = prop.Value;
+            }
+        }
+
+        _encoder.WriteStartupMessage(
+            _options.User,
+            _options.Database,
+            properties
+        );
+
+        await SendAsync(cancellationToken);
+    }
+
+    private async ValueTask HandleStartupResponseAsync(CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            var response = await ReceiveAsync(cancellationToken);
+
+            switch (response)
+            {
+                case AuthenticationOkResponse:
+                    _logger.LogDebug("Authentication successful");
+                    break;
+
+                case AuthenticationCleartextPasswordResponse:
+                    await SendPasswordAsync(_options.Password, cancellationToken);
+                    break;
+
+                case AuthenticationMd5PasswordResponse md5:
+                    await SendMd5PasswordAsync(md5.Salt, cancellationToken);
+                    break;
+
+                case AuthenticationSASLResponse sasl:
+                    // SCRAM authentication is complex - skip for now and document
+                    throw new PgException(
+                        "SCRAM authentication is not implemented. Please use MD5 or trust authentication. " +
+                        "Supported SASL mechanisms: " + string.Join(", ", sasl.Mechanisms),
+                        "28000",
+                        "authentication_failed"
+                    );
+
+                case BackendKeyDataResponse keyData:
+                    ProcessId = keyData.ProcessId;
+                    SecretKey = keyData.SecretKey;
+                    break;
+
+                case ParameterStatusResponse param:
+                    _serverParameters[param.Name] = param.Value;
+                    _logger.LogTrace("Server parameter: {Name}={Value}", param.Name, param.Value);
+                    break;
+
+                case ReadyForQueryResponse ready:
+                    TransactionStatus = ready.Status;
+                    return;
+
+                case ErrorResponse error:
+                    throw new PgException(error.Message, error.Code, error.Severity);
+
+                case NoticeResponse notice:
+                    NoticeReceived?.Invoke(notice);
+                    break;
+
+                default:
+                    _logger.LogWarning("Unexpected response during startup: {Type}", response.GetType().Name);
+                    break;
+            }
+        }
+    }
+
+    private async ValueTask SendPasswordAsync(string password, CancellationToken cancellationToken)
+    {
+        _encoder.Reset();
+        _encoder.WritePasswordMessage(password);
+        await SendAsync(cancellationToken);
+    }
+
+    private async ValueTask SendMd5PasswordAsync(byte[] salt, CancellationToken cancellationToken)
+    {
+        // MD5(MD5(password + username) + salt)
+        var user = _options.User ?? Environment.UserName;
+        var password = _options.Password ?? "";
+
+        using var md5 = MD5.Create();
+        
+        // First hash: MD5(password + username)
+        var firstInput = Encoding.UTF8.GetBytes(password + user);
+        var firstHash = md5.ComputeHash(firstInput);
+        var firstHex = Convert.ToHexString(firstHash).ToLowerInvariant();
+
+        // Second hash: MD5(firstHex + salt)
+        var secondInput = new byte[firstHex.Length + salt.Length];
+        Encoding.ASCII.GetBytes(firstHex, secondInput);
+        salt.CopyTo(secondInput.AsSpan(firstHex.Length));
+        var secondHash = md5.ComputeHash(secondInput);
+        var secondHex = Convert.ToHexString(secondHash).ToLowerInvariant();
+
+        var hash = "md5" + secondHex;
+
+        _encoder.Reset();
+        _encoder.WriteMd5PasswordMessage(hash);
+        await SendAsync(cancellationToken);
+    }
+
+    public async ValueTask<RowSet> QueryAsync(string sql, CancellationToken cancellationToken = default)
+    {
+        _encoder.Reset();
+        _encoder.WriteQuery(sql);
+        await SendAsync(cancellationToken);
+
+        return await ReceiveQueryResultAsync(cancellationToken);
+    }
+
+    public async ValueTask<RowSet> PreparedQueryAsync(string sql, ITuple? parameters, CancellationToken cancellationToken = default)
+    {
+        var statementName = _encoder.GenerateStatementName();
+        
+        _encoder.Reset();
+        _encoder.WriteParse(sql, statementName);
+        _encoder.WriteDescribe('S', statementName);
+        _encoder.WriteSync();
+        await SendAsync(cancellationToken);
+
+        // Wait for ParseComplete and ParameterDescription/RowDescription
+        PgColumnDesc[]? paramTypes = null;
+        PgColumnDesc[]? rowDesc = null;
+
+        while (true)
+        {
+            var response = await ReceiveAsync(cancellationToken);
+
+            switch (response)
+            {
+                case ParseCompleteResponse:
+                    break;
+
+                case ParameterDescriptionResponse paramDesc:
+                    paramTypes = paramDesc.TypeOids.Select(oid => 
+                        new PgColumnDesc("", 0, 0, DataType.LookupByOid(oid), oid, 0, 0, DataFormat.Binary)
+                    ).ToArray();
+                    break;
+
+                case RowDescriptionResponse rd:
+                    rowDesc = rd.Columns;
+                    break;
+
+                case NoDataResponse:
+                    break;
+
+                case ReadyForQueryResponse ready:
+                    TransactionStatus = ready.Status;
+                    goto afterDescribe;
+
+                case ErrorResponse error:
+                    // Consume until ReadyForQuery
+                    await ConsumeUntilReadyAsync(cancellationToken);
+                    throw new PgException(error.Message, error.Code, error.Severity);
+
+                case NoticeResponse notice:
+                    NoticeReceived?.Invoke(notice);
+                    break;
+
+                case NotificationResponse notif:
+                    NotificationReceived?.Invoke(new PgNotification(notif.Channel, notif.ProcessId, notif.Payload));
+                    break;
+            }
+        }
+
+        afterDescribe:
+
+        // Now bind and execute
+        _encoder.Reset();
+        _encoder.WriteBind(statementName, "", parameters, paramTypes);
+        _encoder.WriteExecute();
+        _encoder.WriteClose('S', statementName);
+        _encoder.WriteSync();
+        await SendAsync(cancellationToken);
+
+        return await ReceiveExtendedQueryResultAsync(rowDesc, cancellationToken);
+    }
+
+    private async ValueTask<RowSet> ReceiveQueryResultAsync(CancellationToken cancellationToken)
+    {
+        var rows = new List<Row>();
+        PgColumnDesc[]? columnDesc = null;
+        int rowsAffected = 0;
+
+        while (true)
+        {
+            var response = await ReceiveAsync(cancellationToken);
+
+            switch (response)
+            {
+                case RowDescriptionResponse rd:
+                    columnDesc = rd.Columns;
+                    break;
+
+                case DataRowResponse dataRow:
+                    if (columnDesc is not null)
+                    {
+                        var row = DecodeRow(dataRow.Values, columnDesc);
+                        rows.Add(row);
+                    }
+                    break;
+
+                case CommandCompleteResponse cmd:
+                    rowsAffected = ParseRowsAffected(cmd.Tag);
+                    break;
+
+                case EmptyQueryResponse:
+                    break;
+
+                case ReadyForQueryResponse ready:
+                    TransactionStatus = ready.Status;
+                    var columnNames = columnDesc?.Select(c => c.Name).ToArray() ?? Array.Empty<string>();
+                    return new RowSet(rows, columnNames, rowsAffected);
+
+                case ErrorResponse error:
+                    await ConsumeUntilReadyAsync(cancellationToken);
+                    throw new PgException(error.Message, error.Code, error.Severity);
+
+                case NoticeResponse notice:
+                    NoticeReceived?.Invoke(notice);
+                    break;
+
+                case NotificationResponse notif:
+                    NotificationReceived?.Invoke(new PgNotification(notif.Channel, notif.ProcessId, notif.Payload));
+                    break;
+            }
+        }
+    }
+
+    private async ValueTask<RowSet> ReceiveExtendedQueryResultAsync(PgColumnDesc[]? rowDesc, CancellationToken cancellationToken)
+    {
+        var rows = new List<Row>();
+        int rowsAffected = 0;
+
+        while (true)
+        {
+            var response = await ReceiveAsync(cancellationToken);
+
+            switch (response)
+            {
+                case BindCompleteResponse:
+                    break;
+
+                case DataRowResponse dataRow:
+                    if (rowDesc is not null)
+                    {
+                        var row = DecodeRow(dataRow.Values, rowDesc);
+                        rows.Add(row);
+                    }
+                    break;
+
+                case CommandCompleteResponse cmd:
+                    rowsAffected = ParseRowsAffected(cmd.Tag);
+                    break;
+
+                case CloseCompleteResponse:
+                    break;
+
+                case PortalSuspendedResponse:
+                    break;
+
+                case ReadyForQueryResponse ready:
+                    TransactionStatus = ready.Status;
+                    var columnNames = rowDesc?.Select(c => c.Name).ToArray() ?? Array.Empty<string>();
+                    return new RowSet(rows, columnNames, rowsAffected);
+
+                case ErrorResponse error:
+                    await ConsumeUntilReadyAsync(cancellationToken);
+                    throw new PgException(error.Message, error.Code, error.Severity);
+
+                case NoticeResponse notice:
+                    NoticeReceived?.Invoke(notice);
+                    break;
+
+                case NotificationResponse notif:
+                    NotificationReceived?.Invoke(new PgNotification(notif.Channel, notif.ProcessId, notif.Payload));
+                    break;
+            }
+        }
+    }
+
+    private Row DecodeRow(byte[][] values, PgColumnDesc[] columnDesc)
+    {
+        var decodedValues = new object?[values.Length];
+        
+        for (int i = 0; i < values.Length; i++)
+        {
+            if (values[i] is null)
+            {
+                decodedValues[i] = null;
+            }
+            else
+            {
+                var column = columnDesc[i];
+                decodedValues[i] = column.DataFormat == DataFormat.Binary
+                    ? DataTypeCodec.DecodeBinary(column.DataType, values[i])
+                    : DataTypeCodec.DecodeText(column.DataType, values[i]);
+            }
+        }
+
+        return new Row(decodedValues, columnDesc.Select(c => c.Name).ToArray());
+    }
+
+    private static int ParseRowsAffected(string tag)
+    {
+        // Tag format: "INSERT 0 5", "UPDATE 5", "DELETE 5", "SELECT 5"
+        var parts = tag.Split(' ');
+        if (parts.Length >= 2 && int.TryParse(parts[^1], out int count))
+        {
+            return count;
+        }
+        return 0;
+    }
+
+    private async ValueTask ConsumeUntilReadyAsync(CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            var response = await ReceiveAsync(cancellationToken);
+            if (response is ReadyForQueryResponse ready)
+            {
+                TransactionStatus = ready.Status;
+                return;
+            }
+        }
+    }
+
+    private async ValueTask SendAsync(CancellationToken cancellationToken)
+    {
+        if (_stream is null)
+            throw new InvalidOperationException("Not connected");
+
+        var data = _encoder.Buffer;
+        await _stream.WriteAsync(data, cancellationToken);
+        await _stream.FlushAsync(cancellationToken);
+    }
+
+    private async ValueTask<Response> ReceiveAsync(CancellationToken cancellationToken)
+    {
+        if (_stream is null)
+            throw new InvalidOperationException("Not connected");
+
+        while (true)
+        {
+            // Try to parse from existing buffer
+            var availableData = new ReadOnlySpan<byte>(_receiveBuffer, _receiveBufferOffset, _receiveBufferLength);
+            if (_decoder.TryParse(availableData, out var response, out int bytesConsumed))
+            {
+                _receiveBufferOffset += bytesConsumed;
+                _receiveBufferLength -= bytesConsumed;
+                return response!;
+            }
+
+            // Need more data - compact buffer if needed
+            if (_receiveBufferOffset > 0)
+            {
+                if (_receiveBufferLength > 0)
+                {
+                    Array.Copy(_receiveBuffer, _receiveBufferOffset, _receiveBuffer, 0, _receiveBufferLength);
+                }
+                _receiveBufferOffset = 0;
+            }
+
+            // Read more data
+            int bytesRead = await _stream.ReadAsync(
+                _receiveBuffer.AsMemory(_receiveBufferLength),
+                cancellationToken
+            );
+
+            if (bytesRead == 0)
+                throw new PgException("Connection closed by server", "08003", "");
+
+            _receiveBufferLength += bytesRead;
+        }
+    }
+
+    public async ValueTask CloseAsync(CancellationToken cancellationToken = default)
+    {
+        if (_stream is not null)
+        {
+            try
+            {
+                _encoder.Reset();
+                _encoder.WriteTerminate();
+                await SendAsync(cancellationToken);
+            }
+            catch
+            {
+                // Ignore errors during close
+            }
+        }
+
+        await DisposeAsync();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_sslStream is not null)
+        {
+            await _sslStream.DisposeAsync();
+            _sslStream = null;
+        }
+
+        if (_networkStream is not null)
+        {
+            await _networkStream.DisposeAsync();
+            _networkStream = null;
+        }
+
+        _socket?.Dispose();
+        _socket = null;
+        _stream = null;
+
+        ArrayPool<byte>.Shared.Return(_receiveBuffer);
+    }
+}
