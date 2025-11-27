@@ -104,15 +104,25 @@ public sealed class PgDatabaseMetadata
         // Parse version
         if (metadata.ServerVersion is not null)
         {
-            var parts = metadata.ServerVersion.Split('.');
-            if (parts.Length >= 1 && int.TryParse(parts[0], out int major))
+            ReadOnlySpan<char> version = metadata.ServerVersion.AsSpan();
+            Span<Range> ranges = stackalloc Range[3];
+            int count = version.Split(ranges, '.');
+            
+            if (count >= 1 && int.TryParse(version[ranges[0]], out int major))
             {
                 metadata.MajorVersion = major;
-                if (parts.Length >= 2)
+                
+                if (count >= 2)
                 {
-                    // Handle versions like "15.2" or "15.2 (Debian)"
-                    var minorStr = parts[1].Split(' ', '(')[0];
-                    if (int.TryParse(minorStr, out int minor))
+                    // Handle versions like "15.2" or "15.2 (Debian)" - find end of minor version number
+                    ReadOnlySpan<char> minorPart = version[ranges[1]];
+                    int endIndex = 0;
+                    while (endIndex < minorPart.Length && char.IsAsciiDigit(minorPart[endIndex]))
+                    {
+                        endIndex++;
+                    }
+                    
+                    if (endIndex > 0 && int.TryParse(minorPart[..endIndex], out int minor))
                     {
                         metadata.MinorVersion = minor;
                     }
