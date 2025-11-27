@@ -19,6 +19,7 @@ public sealed class PgPool : IAsyncDisposable
     private readonly ILogger _logger;
     private readonly SemaphoreSlim _poolLock = new(1, 1);
     private readonly List<PooledConnection> _connections = new();
+    private readonly List<MultiplexedConnection> _multiplexedConnections = new();
     private readonly ConcurrentQueue<PendingRequest> _waitQueue = new();
     private readonly CancellationTokenSource _disposeCts = new();
     private bool _disposed;
@@ -134,19 +135,92 @@ public sealed class PgPool : IAsyncDisposable
 
     /// <summary>
     /// Schedules a command for multiplexed execution.
-    /// When pipelining is enabled, commands from multiple callers can be
-    /// interleaved on the same physical connection.
-    /// Note: Current implementation serializes access; true multiplexing
-    /// requires a more sophisticated response dispatcher.
+    /// Multiple concurrent callers can share the same physical connection,
+    /// with queries being pipelined and responses routed to the correct caller.
     /// </summary>
     public async Task<RowSet> ScheduleAsync(string sql, CancellationToken cancellationToken = default)
     {
-        // For now, use regular query which serializes access
-        // True multiplexing would require a background response dispatcher
-        // that routes responses to the correct caller
-        return await QueryAsync(sql, cancellationToken);
+        if (!_poolOptions.Pipelined)
+        {
+            // Pipelining disabled - use regular query
+            return await QueryAsync(sql, cancellationToken);
+        }
+
+        var connection = await AcquireMultiplexedAsync(cancellationToken);
+        return await connection.QueryAsync(sql, cancellationToken);
     }
 
+    /// <summary>
+    /// Acquires a multiplexed connection with available pipeline slots.
+    /// Creates new connections as needed up to MaxSize.
+    /// </summary>
+    private async ValueTask<MultiplexedConnection> AcquireMultiplexedAsync(CancellationToken cancellationToken)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _disposeCts.Token);
+        var linkedToken = linkedCts.Token;
+
+        await _poolLock.WaitAsync(linkedToken);
+        try
+        {
+            // Find the connection with the most available slots
+            MultiplexedConnection? best = null;
+            int bestAvailable = 0;
+
+            foreach (var conn in _multiplexedConnections)
+            {
+                if (!conn.IsConnected)
+                    continue;
+
+                int available = conn.AvailableSlots;
+                if (available > bestAvailable)
+                {
+                    best = conn;
+                    bestAvailable = available;
+                }
+            }
+
+            // If we found a connection with capacity, use it
+            if (best is not null && bestAvailable > 0)
+            {
+                return best;
+            }
+
+            // Can we create a new multiplexed connection?
+            int totalConnections = _connections.Count + _multiplexedConnections.Count;
+            if (totalConnections < _poolOptions.MaxSize)
+            {
+                var connection = await MultiplexedConnection.CreateAsync(_connectOptions, _logger, linkedToken);
+                _multiplexedConnections.Add(connection);
+
+                _logger.LogDebug("Created new multiplexed connection. Total connections: {Size}/{MaxSize}",
+                    totalConnections + 1, _poolOptions.MaxSize);
+
+                return connection;
+            }
+
+            // All connections are at capacity - use the one with most capacity anyway
+            // (it will queue the command)
+            if (best is not null)
+            {
+                return best;
+            }
+
+            // No multiplexed connections exist yet but we're at capacity with regular connections
+            // This shouldn't normally happen, but fall back to creating one if possible
+            throw new InvalidOperationException("No multiplexed connections available");
+        }
+        finally
+        {
+            _poolLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Acquires a multiplexed connection with available pipeline slots.
+    /// Creates new connections as needed up to MaxSize.
+    /// </summary>
     /// <summary>
     /// Gets a dedicated connection from the pool.
     /// The caller is responsible for releasing the connection.
@@ -339,10 +413,13 @@ public sealed class PgPool : IAsyncDisposable
 
         // Close all connections
         List<PooledConnection> toClose;
+        List<MultiplexedConnection> multiplexedToClose;
         lock (_connections)
         {
             toClose = new List<PooledConnection>(_connections);
             _connections.Clear();
+            multiplexedToClose = new List<MultiplexedConnection>(_multiplexedConnections);
+            _multiplexedConnections.Clear();
         }
 
         foreach (var conn in toClose)
@@ -350,6 +427,18 @@ public sealed class PgPool : IAsyncDisposable
             try
             {
                 await conn.CloseAndDisposeAsync();
+            }
+            catch
+            {
+                // Ignore errors during cleanup
+            }
+        }
+
+        foreach (var conn in multiplexedToClose)
+        {
+            try
+            {
+                await conn.DisposeAsync();
             }
             catch
             {

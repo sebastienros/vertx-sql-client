@@ -34,18 +34,19 @@ internal sealed class PgSocketConnection : IAsyncDisposable
     private readonly Queue<PgCommand> _pending = new();
     private readonly Queue<PgCommand> _inflight = new();
     private int _inflightCount;
+#pragma warning disable CS0649 // Reserved for future flow control
     private bool _paused;
+#pragma warning restore CS0649
     private readonly SemaphoreSlim _sendLock = new(1, 1);
 
     private Socket? _socket;
     private Stream? _stream;
     private NetworkStream? _networkStream;
     private SslStream? _sslStream;
-    private CancellationTokenSource? _readCts;
 
     public int ProcessId { get; private set; }
     public int SecretKey { get; private set; }
-    public char TransactionStatus { get; private set; } = 'I';
+    public char TransactionStatus { get; internal set; } = 'I';
     public bool IsConnected => _socket?.Connected == true;
     public int PipeliningLimit => _options.PipeliningLimit;
     
@@ -53,6 +54,12 @@ internal sealed class PgSocketConnection : IAsyncDisposable
 
     public event Action<PgNotification>? NotificationReceived;
     public event Action<NoticeResponse>? NoticeReceived;
+
+    // Internal methods for MultiplexedConnection
+    internal void RaiseNoticeReceived(NoticeResponse notice) => NoticeReceived?.Invoke(notice);
+    internal void RaiseNotificationReceived(NotificationResponse notif) => 
+        NotificationReceived?.Invoke(new PgNotification(notif.Channel, notif.ProcessId, notif.Payload));
+    internal void UpdateServerParameter(string name, string value) => _serverParameters[name] = value;
 
     public PgSocketConnection(PgConnectOptions options, ILogger? logger = null)
     {
@@ -506,7 +513,37 @@ internal sealed class PgSocketConnection : IAsyncDisposable
         return 0;
     }
 
-    #region Pipelining
+    #region Pipelining and Multiplexing
+
+    /// <summary>
+    /// Sends a command to the server. Used by MultiplexedConnection.
+    /// </summary>
+    internal async ValueTask SendCommandAsync(PgCommand command, CancellationToken cancellationToken = default)
+    {
+        _encoder.Reset();
+        command.Encode(_encoder);
+        await SendAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Receives a single response from the server. Used by MultiplexedConnection.
+    /// </summary>
+    internal async ValueTask<Response> ReceiveResponseAsync(CancellationToken cancellationToken = default)
+    {
+        return await ReceiveAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Sends a raw buffer to the server. Used by MultiplexedConnection for extended query bind/execute.
+    /// </summary>
+    internal async ValueTask SendBufferAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+    {
+        if (_stream is not null)
+        {
+            await _stream.WriteAsync(buffer, cancellationToken);
+            await _stream.FlushAsync(cancellationToken);
+        }
+    }
 
     /// <summary>
     /// Schedules a command for pipelined execution.
