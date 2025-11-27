@@ -1,0 +1,549 @@
+// Copyright (C) 2017 Julien Viet
+// Licensed under the Apache License, Version 2.0
+
+using System.Collections.Concurrent;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+
+namespace Vertx.PgClient;
+
+/// <summary>
+/// A connection pool that supports multiplexing multiple queries on shared connections.
+/// When pipelining is enabled, multiple concurrent callers can share the same physical
+/// socket connection, with queries being pipelined to reduce latency.
+/// </summary>
+public sealed class PgPool : IAsyncDisposable
+{
+    private readonly PgConnectOptions _connectOptions;
+    private readonly PgPoolOptions _poolOptions;
+    private readonly ILogger _logger;
+    private readonly SemaphoreSlim _poolLock = new(1, 1);
+    private readonly List<PooledConnection> _connections = new();
+    private readonly ConcurrentQueue<PendingRequest> _waitQueue = new();
+    private readonly CancellationTokenSource _disposeCts = new();
+    private bool _disposed;
+
+    /// <summary>
+    /// Gets the current number of connections in the pool.
+    /// </summary>
+    public int Size
+    {
+        get
+        {
+            lock (_connections)
+            {
+                return _connections.Count;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Gets the number of available connection slots.
+    /// </summary>
+    public int Available => _poolOptions.MaxSize - Size;
+
+    /// <summary>
+    /// Gets the pool options.
+    /// </summary>
+    public PgPoolOptions Options => _poolOptions;
+
+    private PgPool(PgConnectOptions connectOptions, PgPoolOptions poolOptions, ILogger? logger)
+    {
+        _connectOptions = connectOptions;
+        _poolOptions = poolOptions;
+        _logger = logger ?? NullLogger.Instance;
+    }
+
+    /// <summary>
+    /// Creates a new connection pool.
+    /// </summary>
+    public static PgPool Create(PgConnectOptions connectOptions, PgPoolOptions? poolOptions = null, ILogger? logger = null)
+    {
+        return new PgPool(
+            new PgConnectOptions(connectOptions),
+            poolOptions is not null ? new PgPoolOptions(poolOptions) : new PgPoolOptions(),
+            logger
+        );
+    }
+
+    /// <summary>
+    /// Creates a new connection pool from a connection string.
+    /// </summary>
+    public static PgPool Create(string connectionString, PgPoolOptions? poolOptions = null, ILogger? logger = null)
+    {
+        return Create(PgConnectOptions.FromUri(connectionString), poolOptions, logger);
+    }
+
+    /// <summary>
+    /// Executes a simple query using a pooled connection.
+    /// The connection is automatically returned to the pool after the query completes.
+    /// </summary>
+    public async ValueTask<RowSet> QueryAsync(string sql, CancellationToken cancellationToken = default)
+    {
+        var pooled = await AcquireAsync(cancellationToken);
+        try
+        {
+            return await pooled.QueryAsync(sql, cancellationToken);
+        }
+        finally
+        {
+            Release(pooled);
+        }
+    }
+
+    /// <summary>
+    /// Executes a prepared query with parameters using a pooled connection.
+    /// The connection is automatically returned to the pool after the query completes.
+    /// </summary>
+    public async ValueTask<RowSet> PreparedQueryAsync(string sql, ITuple? parameters = null, CancellationToken cancellationToken = default)
+    {
+        var pooled = await AcquireAsync(cancellationToken);
+        try
+        {
+            return await pooled.PreparedQueryAsync(sql, parameters, cancellationToken);
+        }
+        finally
+        {
+            Release(pooled);
+        }
+    }
+
+    /// <summary>
+    /// Executes multiple queries in a pipelined fashion using a pooled connection.
+    /// </summary>
+    public async ValueTask<RowSet[]> PipelineQueryAsync(string[] queries, CancellationToken cancellationToken = default)
+    {
+        var pooled = await AcquireAsync(cancellationToken);
+        try
+        {
+            return await pooled.PipelineQueryAsync(queries, cancellationToken);
+        }
+        finally
+        {
+            Release(pooled);
+        }
+    }
+
+    /// <summary>
+    /// Executes multiple queries in a pipelined fashion using a pooled connection.
+    /// </summary>
+    public ValueTask<RowSet[]> PipelineQueryAsync(params string[] queries)
+    {
+        return PipelineQueryAsync(queries, CancellationToken.None);
+    }
+
+    /// <summary>
+    /// Schedules a command for multiplexed execution.
+    /// When pipelining is enabled, commands from multiple callers can be
+    /// interleaved on the same physical connection.
+    /// Note: Current implementation serializes access; true multiplexing
+    /// requires a more sophisticated response dispatcher.
+    /// </summary>
+    public async Task<RowSet> ScheduleAsync(string sql, CancellationToken cancellationToken = default)
+    {
+        // For now, use regular query which serializes access
+        // True multiplexing would require a background response dispatcher
+        // that routes responses to the correct caller
+        return await QueryAsync(sql, cancellationToken);
+    }
+
+    /// <summary>
+    /// Gets a dedicated connection from the pool.
+    /// The caller is responsible for releasing the connection.
+    /// </summary>
+    public async ValueTask<IPooledConnection> GetConnectionAsync(CancellationToken cancellationToken = default)
+    {
+        return await AcquireAsync(cancellationToken);
+    }
+
+    private async ValueTask<PooledConnection> AcquireAsync(CancellationToken cancellationToken)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _disposeCts.Token);
+        var linkedToken = linkedCts.Token;
+
+        // Try to get an existing idle connection or create a new one
+        while (true)
+        {
+            linkedToken.ThrowIfCancellationRequested();
+
+            await _poolLock.WaitAsync(linkedToken);
+            try
+            {
+                // Find an idle connection
+                foreach (var conn in _connections)
+                {
+                    if (conn.TryAcquire())
+                    {
+                        _logger.LogTrace("Acquired existing connection from pool");
+                        return conn;
+                    }
+                }
+
+                // Can we create a new connection?
+                if (_connections.Count < _poolOptions.MaxSize)
+                {
+                    var socket = new PgSocketConnection(_connectOptions, _logger);
+                    await socket.ConnectAsync(linkedToken);
+                    
+                    var pooled = new PooledConnection(this, socket);
+                    pooled.TryAcquire(); // Mark as in use
+                    _connections.Add(pooled);
+                    
+                    _logger.LogDebug("Created new connection. Pool size: {Size}/{MaxSize}", 
+                        _connections.Count, _poolOptions.MaxSize);
+                    
+                    return pooled;
+                }
+            }
+            finally
+            {
+                _poolLock.Release();
+            }
+
+            // Pool is exhausted, wait for a connection to become available
+            if (_poolOptions.MaxWaitQueueSize > 0 && _waitQueue.Count >= _poolOptions.MaxWaitQueueSize)
+            {
+                throw new InvalidOperationException("Connection pool wait queue is full");
+            }
+
+            var request = new PendingRequest();
+            _waitQueue.Enqueue(request);
+
+            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromMilliseconds(_poolOptions.ConnectionTimeout));
+            using var combinedCts = CancellationTokenSource.CreateLinkedTokenSource(linkedToken, timeoutCts.Token);
+
+            try
+            {
+                await request.WaitAsync(combinedCts.Token);
+                if (request.Connection is not null)
+                {
+                    return request.Connection;
+                }
+            }
+            catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
+            {
+                throw new TimeoutException("Timed out waiting for a connection from the pool");
+            }
+        }
+    }
+
+    private async ValueTask<PooledConnection> AcquireForPipeliningAsync(CancellationToken cancellationToken)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _disposeCts.Token);
+        var linkedToken = linkedCts.Token;
+
+        await _poolLock.WaitAsync(linkedToken);
+        try
+        {
+            // Find the connection with the most available pipeline capacity
+            PooledConnection? best = null;
+            int bestAvailable = 0;
+
+            foreach (var conn in _connections)
+            {
+                int available = conn.AvailablePipelineSlots;
+                if (available > bestAvailable)
+                {
+                    best = conn;
+                    bestAvailable = available;
+                }
+            }
+
+            // If we found a connection with capacity, use it
+            if (best is not null && bestAvailable > 0)
+            {
+                best.IncrementInflight();
+                return best;
+            }
+
+            // Can we create a new connection?
+            if (_connections.Count < _poolOptions.MaxSize)
+            {
+                var socket = new PgSocketConnection(_connectOptions, _logger);
+                await socket.ConnectAsync(linkedToken);
+                
+                var pooled = new PooledConnection(this, socket);
+                pooled.IncrementInflight();
+                _connections.Add(pooled);
+                
+                _logger.LogDebug("Created new connection for pipelining. Pool size: {Size}/{MaxSize}", 
+                    _connections.Count, _poolOptions.MaxSize);
+                
+                return pooled;
+            }
+
+            // All connections are at capacity, wait for one with the most capacity
+            // For now, just use the one with most capacity (even if 0)
+            if (best is not null)
+            {
+                best.IncrementInflight();
+                return best;
+            }
+
+            throw new InvalidOperationException("No connections available");
+        }
+        finally
+        {
+            _poolLock.Release();
+        }
+    }
+
+    private void Release(PooledConnection connection)
+    {
+        connection.Release();
+
+        // Check if anyone is waiting for a connection
+        while (_waitQueue.TryDequeue(out var request))
+        {
+            if (connection.TryAcquire())
+            {
+                request.Complete(connection);
+                return;
+            }
+        }
+    }
+
+    private void ReleaseFromPipelining(PooledConnection connection)
+    {
+        connection.DecrementInflight();
+    }
+
+    internal void RemoveConnection(PooledConnection connection)
+    {
+        lock (_connections)
+        {
+            _connections.Remove(connection);
+        }
+    }
+
+    /// <summary>
+    /// Closes all connections and disposes the pool.
+    /// </summary>
+    public async ValueTask DisposeAsync()
+    {
+        if (_disposed)
+            return;
+
+        _disposed = true;
+        _disposeCts.Cancel();
+
+        // Complete all waiting requests with cancellation
+        while (_waitQueue.TryDequeue(out var request))
+        {
+            request.Cancel();
+        }
+
+        // Close all connections
+        List<PooledConnection> toClose;
+        lock (_connections)
+        {
+            toClose = new List<PooledConnection>(_connections);
+            _connections.Clear();
+        }
+
+        foreach (var conn in toClose)
+        {
+            try
+            {
+                await conn.CloseAndDisposeAsync();
+            }
+            catch
+            {
+                // Ignore errors during cleanup
+            }
+        }
+
+        _poolLock.Dispose();
+        _disposeCts.Dispose();
+    }
+
+    private sealed class PendingRequest
+    {
+        private readonly TaskCompletionSource<bool> _tcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public PooledConnection? Connection { get; private set; }
+
+        public Task WaitAsync(CancellationToken cancellationToken)
+        {
+            cancellationToken.Register(() => _tcs.TrySetCanceled(cancellationToken));
+            return _tcs.Task;
+        }
+
+        public void Complete(PooledConnection connection)
+        {
+            Connection = connection;
+            _tcs.TrySetResult(true);
+        }
+
+        public void Cancel()
+        {
+            _tcs.TrySetCanceled();
+        }
+    }
+}
+
+/// <summary>
+/// Represents a pooled connection that can be used for queries.
+/// </summary>
+public interface IPooledConnection : IAsyncDisposable
+{
+    /// <summary>
+    /// Gets whether the connection is currently valid.
+    /// </summary>
+    bool IsValid { get; }
+
+    /// <summary>
+    /// Executes a simple query.
+    /// </summary>
+    ValueTask<RowSet> QueryAsync(string sql, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Executes a prepared query with parameters.
+    /// </summary>
+    ValueTask<RowSet> PreparedQueryAsync(string sql, ITuple? parameters = null, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Executes multiple queries in a pipelined fashion.
+    /// </summary>
+    ValueTask<RowSet[]> PipelineQueryAsync(string[] queries, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Returns the connection to the pool.
+    /// </summary>
+    void Close();
+}
+
+/// <summary>
+/// A pooled connection wrapper that tracks usage and supports multiplexing.
+/// </summary>
+internal sealed class PooledConnection : IPooledConnection
+{
+    private readonly PgPool _pool;
+    private readonly PgSocketConnection _socket;
+    private readonly SemaphoreSlim _commandLock = new(1, 1);
+    private int _acquired; // 0 = idle, 1 = acquired for exclusive use
+    private int _inflight; // Number of pipelined commands in flight
+    private bool _disposed;
+
+    public bool IsValid => _socket.IsConnected && !_disposed;
+
+    public int PipeliningLimit => _socket.PipeliningLimit;
+
+    public int AvailablePipelineSlots => Math.Max(0, PipeliningLimit - _inflight);
+
+    internal PooledConnection(PgPool pool, PgSocketConnection socket)
+    {
+        _pool = pool;
+        _socket = socket;
+    }
+
+    internal bool TryAcquire()
+    {
+        return Interlocked.CompareExchange(ref _acquired, 1, 0) == 0;
+    }
+
+    internal void Release()
+    {
+        Interlocked.Exchange(ref _acquired, 0);
+    }
+
+    internal void IncrementInflight()
+    {
+        Interlocked.Increment(ref _inflight);
+    }
+
+    internal void DecrementInflight()
+    {
+        Interlocked.Decrement(ref _inflight);
+    }
+
+    public async ValueTask<RowSet> QueryAsync(string sql, CancellationToken cancellationToken = default)
+    {
+        await _commandLock.WaitAsync(cancellationToken);
+        try
+        {
+            return await _socket.QueryAsync(sql, cancellationToken);
+        }
+        finally
+        {
+            _commandLock.Release();
+        }
+    }
+
+    public async ValueTask<RowSet> PreparedQueryAsync(string sql, ITuple? parameters = null, CancellationToken cancellationToken = default)
+    {
+        await _commandLock.WaitAsync(cancellationToken);
+        try
+        {
+            return await _socket.PreparedQueryAsync(sql, parameters, cancellationToken);
+        }
+        finally
+        {
+            _commandLock.Release();
+        }
+    }
+
+    public async ValueTask<RowSet[]> PipelineQueryAsync(string[] queries, CancellationToken cancellationToken = default)
+    {
+        await _commandLock.WaitAsync(cancellationToken);
+        try
+        {
+            return await _socket.PipelineQueryAsync(queries, cancellationToken);
+        }
+        finally
+        {
+            _commandLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Schedules a command for pipelined execution, allowing concurrent callers.
+    /// </summary>
+    internal async Task<RowSet> ScheduleCommandAsync(SimpleQueryCommand command, CancellationToken cancellationToken)
+    {
+        // Use the socket's pipelining infrastructure
+        return await _socket.ScheduleAndWaitAsync(command, cancellationToken);
+    }
+
+    public void Close()
+    {
+        Release();
+    }
+
+    /// <summary>
+    /// Returns the connection to the pool. Does not close the underlying socket.
+    /// </summary>
+    public ValueTask DisposeAsync()
+    {
+        // Return to pool, don't close
+        Release();
+        return ValueTask.CompletedTask;
+    }
+
+    /// <summary>
+    /// Actually closes and disposes the connection. Called by the pool during cleanup.
+    /// </summary>
+    internal async ValueTask CloseAndDisposeAsync()
+    {
+        if (_disposed)
+            return;
+
+        _disposed = true;
+        _pool.RemoveConnection(this);
+        
+        try
+        {
+            await _socket.CloseAsync();
+        }
+        catch
+        {
+            // Ignore errors during cleanup
+        }
+
+        await _socket.DisposeAsync();
+        _commandLock.Dispose();
+    }
+}

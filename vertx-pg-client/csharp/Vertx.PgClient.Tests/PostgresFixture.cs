@@ -34,6 +34,11 @@ public class PostgresFixture : IAsyncLifetime
 
     public string ConnectionString => _container.GetConnectionString();
 
+    /// <summary>
+    /// Gets the connection URI in PostgreSQL format (postgresql://user@host:port/database).
+    /// </summary>
+    public string ConnectionUri => $"postgresql://{Username}:{Password}@{Host}:{Port}/{Database}";
+
     public PgConnectOptions CreateConnectOptions()
     {
         return new PgConnectOptions
