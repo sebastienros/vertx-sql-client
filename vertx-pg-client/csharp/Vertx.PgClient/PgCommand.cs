@@ -135,8 +135,10 @@ internal sealed class SimpleQueryCommand : PgCommand
     private static int ParseRowsAffected(string tag)
     {
         // Tag format: "INSERT 0 5", "UPDATE 5", "DELETE 5", "SELECT 5"
-        var parts = tag.Split(' ');
-        if (parts.Length >= 2 && int.TryParse(parts[^1], out int count))
+        // Find the last space and parse the number after it
+        ReadOnlySpan<char> span = tag.AsSpan();
+        int lastSpace = span.LastIndexOf(' ');
+        if (lastSpace >= 0 && int.TryParse(span[(lastSpace + 1)..], out int count))
         {
             return count;
         }
@@ -308,8 +310,11 @@ internal sealed class ExtendedQueryCommand : PgCommand
 
     private static int ParseRowsAffected(string tag)
     {
-        var parts = tag.Split(' ');
-        if (parts.Length >= 2 && int.TryParse(parts[^1], out int count))
+        // Tag format: "INSERT 0 5", "UPDATE 5", "DELETE 5", "SELECT 5"
+        // Find the last space and parse the number after it
+        ReadOnlySpan<char> span = tag.AsSpan();
+        int lastSpace = span.LastIndexOf(' ');
+        if (lastSpace >= 0 && int.TryParse(span[(lastSpace + 1)..], out int count))
         {
             return count;
         }

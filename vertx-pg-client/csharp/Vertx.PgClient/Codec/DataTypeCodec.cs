@@ -1023,8 +1023,8 @@ public static class DataTypeCodec
     private static Data.Path DecodePathText(ReadOnlySpan<byte> buffer)
     {
         // Format: [(x1,y1),(x2,y2),...] for open, ((x1,y1),(x2,y2),...) for closed
-        var text = Utf8.GetString(buffer);
-        bool isOpen = text.StartsWith('[');
+        ReadOnlySpan<char> text = Utf8.GetString(buffer).AsSpan();
+        bool isOpen = text.Length > 0 && text[0] == '[';
         var points = ParsePointList(text);
         return new Data.Path(isOpen, points);
     }
@@ -1032,7 +1032,7 @@ public static class DataTypeCodec
     private static Polygon DecodePolygonText(ReadOnlySpan<byte> buffer)
     {
         // Format: ((x1,y1),(x2,y2),...)
-        var text = Utf8.GetString(buffer);
+        ReadOnlySpan<char> text = Utf8.GetString(buffer).AsSpan();
         var points = ParsePointList(text);
         return new Polygon(points);
     }
@@ -1040,8 +1040,8 @@ public static class DataTypeCodec
     private static Circle DecodeCircleText(ReadOnlySpan<byte> buffer)
     {
         // Format: <(x,y),r>
-        var text = Utf8.GetString(buffer);
-        if (text.StartsWith('<') && text.EndsWith('>'))
+        ReadOnlySpan<char> text = Utf8.GetString(buffer).AsSpan();
+        if (text.Length >= 2 && text[0] == '<' && text[^1] == '>')
         {
             var inner = text[1..^1];
             // Find the last comma which separates center from radius
@@ -1059,13 +1059,13 @@ public static class DataTypeCodec
                 }
             }
         }
-        throw new FormatException($"Invalid circle format: {text}");
+        throw new FormatException($"Invalid circle format: {text.ToString()}");
     }
 
     private static Inet DecodeInetText(ReadOnlySpan<byte> buffer)
     {
         // Format: 192.168.1.1 or 192.168.1.1/24 or ::1 etc.
-        var text = Utf8.GetString(buffer);
+        ReadOnlySpan<char> text = Utf8.GetString(buffer).AsSpan();
         int slashIndex = text.IndexOf('/');
         if (slashIndex >= 0)
         {
@@ -1084,7 +1084,7 @@ public static class DataTypeCodec
     private static Cidr DecodeCidrText(ReadOnlySpan<byte> buffer)
     {
         // Format: 192.168.1.0/24
-        var text = Utf8.GetString(buffer);
+        ReadOnlySpan<char> text = Utf8.GetString(buffer).AsSpan();
         int slashIndex = text.IndexOf('/');
         if (slashIndex >= 0)
         {
@@ -1158,7 +1158,7 @@ public static class DataTypeCodec
         return result.ToArray();
     }
 
-    private static List<Point> ParsePointList(string text)
+    private static List<Point> ParsePointList(ReadOnlySpan<char> text)
     {
         // Parse a list of points from formats like ((x1,y1),(x2,y2)) or [(x1,y1),(x2,y2)]
         var points = new List<Point>();
@@ -1173,9 +1173,10 @@ public static class DataTypeCodec
                 if (depth == 2) // We're inside an inner point
                 {
                     int start = i + 1;
-                    int end = text.IndexOf(')', i);
-                    if (end > start)
+                    int end = text[i..].IndexOf(')');
+                    if (end > 0)
                     {
+                        end += i; // Adjust to absolute position
                         var pointStr = text[start..end];
                         int comma = pointStr.IndexOf(',');
                         if (comma > 0)
@@ -1209,11 +1210,13 @@ public static class DataTypeCodec
             i = 0;
             while (i < text.Length)
             {
-                int start = text.IndexOf('(', i);
+                int start = text[i..].IndexOf('(');
                 if (start < 0) break;
+                start += i; // Adjust to absolute position
                 
-                int end = text.IndexOf(')', start);
+                int end = text[start..].IndexOf(')');
                 if (end < 0) break;
+                end += start; // Adjust to absolute position
                 
                 var pointStr = text[(start + 1)..end];
                 int comma = pointStr.IndexOf(',');

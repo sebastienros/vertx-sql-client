@@ -17,4 +17,5 @@ Note:
 
 - Use `ReadOnlySpan<char>` based string operations like parsing, splitting.
 - Use `ReadOnlySpan<byte>` based parsing when its content is ASCII.
+- Use the `MemoryExtensions.Split` method returns a `SpanSplitEnumerator` that can iterate over spans without allocating.
 - `if` statements and other blocks MUST use braces.

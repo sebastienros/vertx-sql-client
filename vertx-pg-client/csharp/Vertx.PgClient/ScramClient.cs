@@ -194,16 +194,21 @@ internal sealed class ScramClient
     private static Dictionary<string, string> ParseMessage(string message)
     {
         var result = new Dictionary<string, string>();
-        foreach (var part in message.Split(','))
+        ReadOnlySpan<char> span = message.AsSpan();
+        
+        foreach (var range in span.Split(','))
         {
-            var eq = part.IndexOf('=');
+            var part = span[range];
+            // Find '=' in this part
+            int eq = part.IndexOf('=');
             if (eq > 0)
             {
-                var key = part[..eq];
-                var value = part[(eq + 1)..];
+                var key = part[..eq].ToString();
+                var value = part[(eq + 1)..].ToString();
                 result[key] = value;
             }
         }
+        
         return result;
     }
 

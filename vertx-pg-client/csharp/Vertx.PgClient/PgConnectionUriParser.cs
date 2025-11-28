@@ -77,20 +77,23 @@ internal static partial class PgConnectionUriParser
             return;
         }
 
-        if (OccursExactlyOnce(userInfo, ':'))
+        ReadOnlySpan<char> span = userInfo.AsSpan();
+        int colonIndex = span.IndexOf(':');
+        int lastColonIndex = span.LastIndexOf(':');
+        
+        if (colonIndex >= 0 && colonIndex == lastColonIndex)
         {
-            var index = userInfo.IndexOf(':');
-            var user = userInfo[..index];
-            if (string.IsNullOrEmpty(user))
+            // Exactly one colon
+            if (colonIndex == 0)
             {
                 throw new ArgumentException("Cannot only specify the password without a concrete user");
             }
-            var password = userInfo[(index + 1)..];
-            options.User = DecodeUrl(user);
-            options.Password = DecodeUrl(password);
+            options.User = DecodeUrl(span[..colonIndex].ToString());
+            options.Password = DecodeUrl(span[(colonIndex + 1)..].ToString());
         }
-        else if (!userInfo.Contains(':'))
+        else if (colonIndex < 0)
         {
+            // No colon
             options.User = DecodeUrl(userInfo);
         }
         else
@@ -144,50 +147,53 @@ internal static partial class PgConnectionUriParser
             return;
         }
 
-        foreach (var parameterPair in parametersInfo.Split('&'))
+        ReadOnlySpan<char> span = parametersInfo.AsSpan();
+        
+        foreach (var range in span.Split('&'))
         {
-            if (string.IsNullOrEmpty(parameterPair))
+            var parameterPair = span[range];
+            
+            if (parameterPair.IsEmpty)
             {
                 continue;
             }
 
-            var indexOfDelimiter = parameterPair.IndexOf('=');
+            int indexOfDelimiter = parameterPair.IndexOf('=');
             if (indexOfDelimiter < 0)
             {
-                throw new ArgumentException($"Missing delimiter '=' of parameters \"{parametersInfo}\" in the part \"{parameterPair}\"");
+                throw new ArgumentException($"Missing delimiter '=' of parameters \"{parametersInfo}\" in the part \"{parameterPair.ToString()}\"");
             }
-            else
-            {
-                var key = parameterPair[..indexOfDelimiter].ToLowerInvariant();
-                var value = DecodeUrl(parameterPair[(indexOfDelimiter + 1)..].Trim());
+            
+            // Key needs to be lowercase, so we need a string anyway
+            var key = parameterPair[..indexOfDelimiter].ToString().ToLowerInvariant();
+            var value = DecodeUrl(parameterPair[(indexOfDelimiter + 1)..].Trim().ToString());
 
-                switch (key)
-                {
-                    case "port":
-                        ParsePort(value, options);
-                        break;
-                    case "host":
-                        ParseNetLocationValue(value, options);
-                        break;
-                    case "hostaddr":
-                        options.Host = value;
-                        break;
-                    case "user":
-                        options.User = value;
-                        break;
-                    case "password":
-                        options.Password = value;
-                        break;
-                    case "dbname":
-                        options.Database = value;
-                        break;
-                    case "sslmode":
-                        options.SslMode = SslModeExtensions.Parse(value);
-                        break;
-                    default:
-                        options.Properties[key] = value;
-                        break;
-                }
+            switch (key)
+            {
+                case "port":
+                    ParsePort(value, options);
+                    break;
+                case "host":
+                    ParseNetLocationValue(value, options);
+                    break;
+                case "hostaddr":
+                    options.Host = value;
+                    break;
+                case "user":
+                    options.User = value;
+                    break;
+                case "password":
+                    options.Password = value;
+                    break;
+                case "dbname":
+                    options.Database = value;
+                    break;
+                case "sslmode":
+                    options.SslMode = SslModeExtensions.Parse(value);
+                    break;
+                default:
+                    options.Properties[key] = value;
+                    break;
             }
         }
     }
@@ -206,16 +212,11 @@ internal static partial class PgConnectionUriParser
 
     private static bool IsRegardedAsIpv6Address(string hostAddress)
     {
-        return hostAddress.StartsWith('[') && hostAddress.EndsWith(']');
+        return hostAddress.Length >= 2 && hostAddress[0] == '[' && hostAddress[^1] == ']';
     }
 
     private static string DecodeUrl(string url)
     {
         return HttpUtility.UrlDecode(url);
-    }
-
-    private static bool OccursExactlyOnce(string uri, char character)
-    {
-        return uri.Contains(character) && uri.IndexOf(character) == uri.LastIndexOf(character);
     }
 }
