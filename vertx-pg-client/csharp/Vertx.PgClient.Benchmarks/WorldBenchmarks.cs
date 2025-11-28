@@ -91,7 +91,7 @@ public class WorldBenchmarks
             int id = _random.Next(1, 10001);
             tasks[i] = _pool.PreparedQueryAsync(
                 "SELECT id, randomnumber FROM world WHERE id = $1",
-                Tuple.Create(id)).AsTask();
+                Tuple.Create(id));
         }
 
         await Task.WhenAll(tasks);

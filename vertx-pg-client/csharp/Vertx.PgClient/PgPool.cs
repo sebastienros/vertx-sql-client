@@ -78,10 +78,24 @@ public sealed class PgPool : IAsyncDisposable
 
     /// <summary>
     /// Executes a simple query using a pooled connection.
+    /// When pipelining is enabled, uses multiplexed connections for better throughput.
     /// The connection is automatically returned to the pool after the query completes.
     /// </summary>
-    public async ValueTask<RowSet> QueryAsync(string sql, CancellationToken cancellationToken = default)
+    public async Task<RowSet> QueryAsync(string sql, CancellationToken cancellationToken = default)
     {
+        if (_poolOptions.Pipelined)
+        {
+            var connection = await AcquireMultiplexedAsync(cancellationToken);
+            try
+            {
+                return await connection.QueryAsync(sql, cancellationToken);
+            }
+            finally
+            {
+                _multiplexedAvailable.Release();
+            }
+        }
+
         var pooled = await AcquireAsync(cancellationToken);
         try
         {
@@ -95,10 +109,24 @@ public sealed class PgPool : IAsyncDisposable
 
     /// <summary>
     /// Executes a prepared query with parameters using a pooled connection.
+    /// When pipelining is enabled, uses multiplexed connections for better throughput.
     /// The connection is automatically returned to the pool after the query completes.
     /// </summary>
-    public async ValueTask<RowSet> PreparedQueryAsync(string sql, ITuple? parameters = null, CancellationToken cancellationToken = default)
+    public async Task<RowSet> PreparedQueryAsync(string sql, ITuple? parameters = null, CancellationToken cancellationToken = default)
     {
+        if (_poolOptions.Pipelined)
+        {
+            var connection = await AcquireMultiplexedAsync(cancellationToken);
+            try
+            {
+                return await connection.PreparedQueryAsync(sql, parameters, cancellationToken);
+            }
+            finally
+            {
+                _multiplexedAvailable.Release();
+            }
+        }
+
         var pooled = await AcquireAsync(cancellationToken);
         try
         {
@@ -230,31 +258,6 @@ public sealed class PgPool : IAsyncDisposable
     }
 
     /// <summary>
-    /// Schedules a command for multiplexed execution.
-    /// Multiple concurrent callers can share the same physical connection,
-    /// with queries being pipelined and responses routed to the correct caller.
-    /// </summary>
-    public async Task<RowSet> ScheduleAsync(string sql, CancellationToken cancellationToken = default)
-    {
-        if (!_poolOptions.Pipelined)
-        {
-            // Pipelining disabled - use regular query
-            return await QueryAsync(sql, cancellationToken);
-        }
-
-        var connection = await AcquireMultiplexedAsync(cancellationToken);
-        try
-        {
-            return await connection.QueryAsync(sql, cancellationToken);
-        }
-        finally
-        {
-            // Signal that a slot might be available now
-            _multiplexedAvailable.Release();
-        }
-    }
-
-    /// <summary>
     /// Acquires a multiplexed connection with available pipeline slots.
     /// Creates new connections as needed up to MaxSize.
     /// </summary>
@@ -302,8 +305,11 @@ public sealed class PgPool : IAsyncDisposable
                     var connection = await MultiplexedConnection.CreateAsync(_connectOptions, _logger, linkedToken);
                     _multiplexedConnections.Add(connection);
 
-                    _logger.LogDebug("Created new multiplexed connection. Total connections: {Size}/{MaxSize}",
-                        totalConnections + 1, _poolOptions.MaxSize);
+                    if (_logger.IsEnabled(LogLevel.Debug))
+                    {
+                        _logger.LogDebug("Created new multiplexed connection. Total connections: {Size}/{MaxSize}",
+                            totalConnections + 1, _poolOptions.MaxSize);
+                    }
 
                     return connection;
                 }
@@ -312,8 +318,11 @@ public sealed class PgPool : IAsyncDisposable
                 // (it will queue the command)
                 if (best is not null)
                 {
-                    _logger.LogDebug("Pool saturated: all {ConnectionCount} connections at capacity, queuing on connection with {AvailableSlots} available slots",
-                        _multiplexedConnections.Count, best.AvailableSlots);
+                    if (_logger.IsEnabled(LogLevel.Debug))
+                    {
+                        _logger.LogDebug("Pool saturated: all {ConnectionCount} connections at capacity, queuing on connection with {AvailableSlots} available slots",
+                            _multiplexedConnections.Count, best.AvailableSlots);
+                    }
                     return best;
                 }
 
@@ -384,10 +393,13 @@ public sealed class PgPool : IAsyncDisposable
                     var pooled = new PooledConnection(this, socket);
                     pooled.TryAcquire(); // Mark as in use
                     _connections.Add(pooled);
-                    
-                    _logger.LogDebug("Created new connection. Pool size: {Size}/{MaxSize}", 
-                        _connections.Count, _poolOptions.MaxSize);
-                    
+
+                    if (_logger.IsEnabled(LogLevel.Debug))
+                    {
+                        _logger.LogDebug("Created new connection. Pool size: {Size}/{MaxSize}",
+                            _connections.Count, _poolOptions.MaxSize);
+                    }
+
                     return pooled;
                 }
             }
@@ -463,10 +475,13 @@ public sealed class PgPool : IAsyncDisposable
                 var pooled = new PooledConnection(this, socket);
                 pooled.IncrementInflight();
                 _connections.Add(pooled);
-                
-                _logger.LogDebug("Created new connection for pipelining. Pool size: {Size}/{MaxSize}", 
-                    _connections.Count, _poolOptions.MaxSize);
-                
+
+                if (_logger.IsEnabled(LogLevel.Debug))
+                {
+                    _logger.LogDebug("Created new connection for pipelining. Pool size: {Size}/{MaxSize}",
+                        _connections.Count, _poolOptions.MaxSize);
+                }
+
                 return pooled;
             }
 

@@ -17,11 +17,25 @@ public class ThroughputBenchmarks
     private PgPool _pool = null!;
 
     private const int DurationSeconds = 10;
-    private const int ConcurrencyLevel = 64;
 
+    // Number of connections in the pool
+    private int Connections;
+
+    // Number of concurrent clients
+    private int ConcurrencyLevel;
+
+    // Max number of in-flight queries per connection
+    private int PipeliningFactor;
+    
     [GlobalSetup]
     public async Task Setup()
     {
+        // Start with the number of connections the server can sustain:
+        var processorCount = Environment.ProcessorCount;
+        Connections =  processorCount;
+        ConcurrencyLevel = processorCount * 4;
+        PipeliningFactor = processorCount * 2;
+
         _fixture = new PostgresFixture();
         await _fixture.InitializeAsync();
 
@@ -30,14 +44,14 @@ public class ThroughputBenchmarks
 
         _pool = PgPool.Create(options, new PgPoolOptions
         {
-            MaxSize = 16,
+            MaxSize = Connections,
             Pipelined = true
         });
 
         // Warmup: run a few queries to establish connections
         for (int i = 0; i < 100; i++)
         {
-            await _pool.ScheduleAsync("SELECT id, message FROM fortune");
+            await _pool.QueryAsync("SELECT id, message FROM fortune");
         }
     }
 
@@ -59,36 +73,28 @@ public class ThroughputBenchmarks
         var cts = new CancellationTokenSource(TimeSpan.FromSeconds(DurationSeconds));
         var token = cts.Token;
 
-        // Use a semaphore to maintain fixed concurrency
-        var semaphore = new SemaphoreSlim(ConcurrencyLevel, ConcurrencyLevel);
         var tasks = new List<Task>();
         var stopwatch = Stopwatch.StartNew();
 
-        try
+        for (int i = 0; i < ConcurrencyLevel; i++)
         {
-            while (!token.IsCancellationRequested)
+            var task = Task.Run(async () =>
             {
-                await semaphore.WaitAsync(token);
-
-                var task = Task.Run(async () =>
+                try
                 {
-                    try
+                    while (!token.IsCancellationRequested)
                     {
-                        await _pool.ScheduleAsync("SELECT id, message FROM fortune");
+                        await _pool.QueryAsync("SELECT id, message FROM fortune");
                         Interlocked.Increment(ref completedQueries);
                     }
-                    finally
-                    {
-                        semaphore.Release();
-                    }
-                }, CancellationToken.None);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Expected when duration expires
+                }
+            }, CancellationToken.None);
 
-                tasks.Add(task);
-            }
-        }
-        catch (OperationCanceledException)
-        {
-            // Expected when duration expires
+            tasks.Add(task);
         }
 
         // Wait for all in-flight queries to complete

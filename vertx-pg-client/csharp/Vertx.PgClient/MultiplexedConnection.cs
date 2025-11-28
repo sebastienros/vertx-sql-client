@@ -23,6 +23,7 @@ internal sealed class MultiplexedConnection : IAsyncDisposable
     private readonly Task _commandSenderTask;
     private readonly Task _responseDispatcherTask;
     private readonly Queue<PgCommand> _inflight = new();
+    private readonly PreparedStatementCache? _preparedStatementCache;
     private bool _disposed;
 
     /// <summary>
@@ -54,10 +55,11 @@ internal sealed class MultiplexedConnection : IAsyncDisposable
     /// </summary>
     public bool IsConnected => _socket.IsConnected && !_disposed;
 
-    private MultiplexedConnection(PgSocketConnection socket, ILogger? logger)
+    private MultiplexedConnection(PgSocketConnection socket, ILogger? logger, PreparedStatementCache? cache)
     {
         _socket = socket;
         _logger = logger ?? NullLogger.Instance;
+        _preparedStatementCache = cache;
         
         // Bounded channel to provide backpressure
         _commandChannel = Channel.CreateBounded<PgCommand>(new BoundedChannelOptions(PipeliningLimit * 2)
@@ -82,7 +84,15 @@ internal sealed class MultiplexedConnection : IAsyncDisposable
     {
         var socket = new PgSocketConnection(options, logger);
         await socket.ConnectAsync(cancellationToken);
-        return new MultiplexedConnection(socket, logger);
+        
+        // Create cache if enabled in options
+        PreparedStatementCache? cache = null;
+        if (options.PreparedStatementCacheMaxSize > 0)
+        {
+            cache = new PreparedStatementCache(options.PreparedStatementCacheMaxSize, options.PreparedStatementCacheSqlLimit);
+        }
+        
+        return new MultiplexedConnection(socket, logger, cache);
     }
 
     /// <summary>
@@ -90,7 +100,7 @@ internal sealed class MultiplexedConnection : IAsyncDisposable
     /// </summary>
     public static MultiplexedConnection Wrap(PgSocketConnection socket, ILogger? logger = null)
     {
-        return new MultiplexedConnection(socket, logger);
+        return new MultiplexedConnection(socket, logger, null);
     }
 
     /// <summary>
@@ -107,6 +117,20 @@ internal sealed class MultiplexedConnection : IAsyncDisposable
     }
 
     /// <summary>
+    /// Schedules a prepared query for execution and returns immediately.
+    /// Uses the extended query protocol with automatic statement caching.
+    /// The returned task completes when the query result is available.
+    /// </summary>
+    public async Task<RowSet> PreparedQueryAsync(string sql, ITuple? parameters = null, CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        var command = new PreparedQueryCommand(sql, parameters, _preparedStatementCache);
+        await ScheduleCommandAsync(command, cancellationToken);
+        return await command.Task;
+    }
+
+    /// <summary>
     /// Schedules a command for execution by writing it to the command channel.
     /// The background command sender task will pick it up and send it to the server.
     /// </summary>
@@ -118,26 +142,45 @@ internal sealed class MultiplexedConnection : IAsyncDisposable
 
     /// <summary>
     /// Background task that reads commands from the channel and sends them to the server.
+    /// Batches multiple pending commands together for true pipelining.
     /// </summary>
     private async Task CommandSenderAsync()
     {
+        var batch = new List<PgCommand>(PipeliningLimit);
+        
         try
         {
-            await foreach (var command in _commandChannel.Reader.ReadAllAsync(_disposeCts.Token))
+            while (await _commandChannel.Reader.WaitToReadAsync(_disposeCts.Token))
             {
+                batch.Clear();
+                
+                // Drain all available commands from the channel (up to pipelining limit)
+                while (batch.Count < PipeliningLimit && _commandChannel.Reader.TryRead(out var command))
+                {
+                    batch.Add(command);
+                }
+                
+                if (batch.Count == 0)
+                {
+                    continue;
+                }
+
                 try
                 {
-                    // Add to inflight queue
+                    // Add all commands to inflight queue first
                     lock (_inflight)
                     {
-                        _inflight.Enqueue(command);
+                        foreach (var command in batch)
+                        {
+                            _inflight.Enqueue(command);
+                        }
                     }
 
-                    // Send to server (with lock to serialize writes)
+                    // Send all commands in a single batch (with lock to serialize writes)
                     await _sendLock.WaitAsync(_disposeCts.Token);
                     try
                     {
-                        await _socket.SendCommandAsync(command, _disposeCts.Token);
+                        await _socket.SendCommandsAsync(batch, _disposeCts.Token);
                     }
                     finally
                     {
@@ -146,23 +189,27 @@ internal sealed class MultiplexedConnection : IAsyncDisposable
                 }
                 catch (Exception ex) when (!_disposeCts.Token.IsCancellationRequested)
                 {
-                    _logger.LogError(ex, "Error sending command");
+                    _logger.LogError(ex, "Error sending {Count} commands", batch.Count);
                     
-                    // Remove from inflight and complete with error
+                    // Complete all commands in the batch with error
                     lock (_inflight)
                     {
-                        // Rebuild queue excluding the failed command
+                        // Rebuild queue excluding the failed commands
                         int count = _inflight.Count;
                         for (int i = 0; i < count; i++)
                         {
                             var c = _inflight.Dequeue();
-                            if (c != command)
+                            if (!batch.Contains(c))
                             {
                                 _inflight.Enqueue(c);
                             }
                         }
                     }
-                    command.Complete(ex);
+                    
+                    foreach (var command in batch)
+                    {
+                        command.Complete(ex);
+                    }
                 }
             }
         }
@@ -228,6 +275,21 @@ internal sealed class MultiplexedConnection : IAsyncDisposable
 
                     // Dispatch to the current command
                     bool complete = current.HandleResponse(response);
+
+                    // Handle two-phase prepared query commands
+                    if (!complete && current is PreparedQueryCommand preparedCmd && preparedCmd.ParseDescribeComplete)
+                    {
+                        // Parse/describe phase complete, send bind/execute phase
+                        await _sendLock.WaitAsync(_disposeCts.Token);
+                        try
+                        {
+                            await _socket.SendPreparedBindExecuteAsync(preparedCmd, _disposeCts.Token);
+                        }
+                        finally
+                        {
+                            _sendLock.Release();
+                        }
+                    }
 
                     if (complete)
                     {

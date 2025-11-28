@@ -158,7 +158,7 @@ public class PoolTests
         
         // Run 4 concurrent slow queries
         var tasks = Enumerable.Range(0, 4)
-            .Select(_ => pool.QueryAsync("SELECT pg_sleep(0.1)").AsTask())
+            .Select(_ => pool.QueryAsync("SELECT pg_sleep(0.1)"))
             .ToArray();
         
         await Task.WhenAll(tasks);
@@ -263,14 +263,14 @@ public class PoolTests
     }
 
     [Fact]
-    public async Task ScheduleAsyncExecutesQueries()
+    public async Task QueryAsyncExecutesQueries()
     {
         await using var pool = PgPool.Create(_fixture.CreateConnectOptions());
         
         // Schedule queries - they execute in order
-        var result1 = await pool.ScheduleAsync("SELECT 1 as value");
-        var result2 = await pool.ScheduleAsync("SELECT 2 as value");
-        var result3 = await pool.ScheduleAsync("SELECT 3 as value");
+        var result1 = await pool.QueryAsync("SELECT 1 as value");
+        var result2 = await pool.QueryAsync("SELECT 2 as value");
+        var result3 = await pool.QueryAsync("SELECT 3 as value");
         
         Assert.Equal(1, result1[0].GetValue(0).GetInteger());
         Assert.Equal(2, result2[0].GetValue(0).GetInteger());
@@ -278,14 +278,14 @@ public class PoolTests
     }
 
     [Fact]
-    public async Task ScheduleAsyncMultiplexesConcurrentQueries()
+    public async Task QueryAsyncMultiplexesConcurrentQueries()
     {
         var poolOptions = new PgPoolOptions { MaxSize = 1, Pipelined = true };
         await using var pool = PgPool.Create(_fixture.CreateConnectOptions(), poolOptions);
         
         // Schedule multiple queries concurrently - they should all use the same connection
         var tasks = Enumerable.Range(0, 10)
-            .Select(i => pool.ScheduleAsync($"SELECT {i} as value"))
+            .Select(i => pool.QueryAsync($"SELECT {i} as value"))
             .ToArray();
         
         var results = await Task.WhenAll(tasks);
@@ -299,7 +299,7 @@ public class PoolTests
     }
 
     [Fact]
-    public async Task ScheduleAsyncQueriesAreTrulyPipelined()
+    public async Task QueryAsyncQueriesAreTrulyPipelined()
     {
         // This test proves queries are pipelined by measuring network efficiency.
         // With pipelining, we send all queries before waiting for responses,
@@ -318,7 +318,7 @@ public class PoolTests
         
         // Schedule all queries concurrently - they should be pipelined
         var tasks = Enumerable.Range(0, queryCount)
-            .Select(i => pool.ScheduleAsync($"SELECT {i} as id"))
+            .Select(i => pool.QueryAsync($"SELECT {i} as id"))
             .ToArray();
         
         var results = await Task.WhenAll(tasks);
@@ -375,7 +375,7 @@ public class PoolTests
             await allReady.Task;
             
             // Now all tasks race to schedule their queries
-            var result = await pool.ScheduleAsync($"SELECT {i} as id");
+            var result = await pool.QueryAsync($"SELECT {i} as id");
             return result;
         }).ToArray();
         
@@ -426,7 +426,7 @@ public class PoolTests
         
         // Generate concurrent queries that will be distributed across connections
         var tasks = Enumerable.Range(0, 20)
-            .Select(i => pool.QueryAsync($"SELECT {i} as value").AsTask())
+            .Select(i => pool.QueryAsync($"SELECT {i} as value"))
             .ToArray();
         
         var results = await Task.WhenAll(tasks);
@@ -504,7 +504,7 @@ public class PoolTests
                     {
                         int s = seq; // Capture for closure
                         // Include pg_sleep to make queries take time and saturate the pool
-                        var queryTask = pool.ScheduleAsync(
+                        var queryTask = pool.QueryAsync(
                             $"INSERT INTO {tableName} (producer_id, seq) SELECT {pid}, {s} FROM pg_sleep({sleepTime})"
                         ).ContinueWith(t =>
                         {
@@ -626,14 +626,14 @@ public class PoolTests
         
         // First, warm up to create all connections by sending slow queries concurrently
         var warmupTasks = Enumerable.Range(0, connectionCount)
-            .Select(_ => pool.ScheduleAsync("SELECT pg_sleep(0.05), 1 as result"))
+            .Select(_ => pool.QueryAsync("SELECT pg_sleep(0.05), 1 as result"))
             .ToList();
         
         // While warmup is running, send more queries to trigger pool saturation
         await Task.Delay(10); // Let warmup queries start
         
         var moreTasks = Enumerable.Range(0, totalQueries)
-            .Select(i => pool.ScheduleAsync($"SELECT {i} as id"))
+            .Select(i => pool.QueryAsync($"SELECT {i} as id"))
             .ToList();
 
         // Wait for all queries
@@ -707,7 +707,7 @@ public class PoolTests
         await using var pool = PgPool.Create(connectOptions, poolOptions);
 
         // Start a slow query that will hold the only slot
-        var slowQueryTask = pool.ScheduleAsync("SELECT pg_sleep(2)"); // 2 second sleep
+        var slowQueryTask = pool.QueryAsync("SELECT pg_sleep(2)"); // 2 second sleep
 
         // Give the slow query time to start
         await Task.Delay(50);
@@ -718,7 +718,7 @@ public class PoolTests
         // Try to schedule another query - should timeout waiting for a slot
         var exception = await Assert.ThrowsAsync<TimeoutException>(async () =>
         {
-            await pool.ScheduleAsync("SELECT 1");
+            await pool.QueryAsync("SELECT 1");
         });
         
         stopwatch.Stop();

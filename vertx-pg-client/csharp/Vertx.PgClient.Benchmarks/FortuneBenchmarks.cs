@@ -155,7 +155,7 @@ public class FortuneBenchmarks
         var tasks = new Task<RowSet>[10];
         for (int i = 0; i < 10; i++)
         {
-            tasks[i] = _pool.QueryAsync("SELECT id, message FROM fortune").AsTask();
+            tasks[i] = _pool.QueryAsync("SELECT id, message FROM fortune");
         }
 
         await Task.WhenAll(tasks);
@@ -169,7 +169,7 @@ public class FortuneBenchmarks
     }
 
     /// <summary>
-    /// Pipelined queries using ScheduleAsync for maximum throughput.
+    /// Pipelined queries using QueryAsync for maximum throughput.
     /// </summary>
     [Benchmark(Description = "10 pipelined fortune queries")]
     public async Task<int> PipelinedFortuneQueries()
@@ -177,7 +177,7 @@ public class FortuneBenchmarks
         var tasks = new Task<RowSet>[10];
         for (int i = 0; i < 10; i++)
         {
-            tasks[i] = _pool.ScheduleAsync("SELECT id, message FROM fortune");
+            tasks[i] = _pool.QueryAsync("SELECT id, message FROM fortune");
         }
 
         await Task.WhenAll(tasks);

@@ -90,7 +90,10 @@ internal sealed class PgSocketConnection : IAsyncDisposable
         var host = _options.Host;
         var port = _options.Port;
 
-        _logger.LogDebug("Connecting to {Host}:{Port}", host, port);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Connecting to {Host}:{Port}", host, port);
+        }
 
         await _socket.ConnectAsync(host, port, cancellationToken);
         _networkStream = new NetworkStream(_socket, ownsSocket: false);
@@ -108,7 +111,10 @@ internal sealed class PgSocketConnection : IAsyncDisposable
         // Handle authentication and wait for ReadyForQuery
         await HandleStartupResponseAsync(cancellationToken);
 
-        _logger.LogDebug("Connected successfully. ProcessId={ProcessId}", ProcessId);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Connected successfully. ProcessId={ProcessId}", ProcessId);
+        }
     }
 
     private async ValueTask NegotiateSslAsync(CancellationToken cancellationToken)
@@ -126,7 +132,10 @@ internal sealed class PgSocketConnection : IAsyncDisposable
         if (response[0] == 'S')
         {
             // Server supports SSL
-            _logger.LogDebug("Server supports SSL, establishing secure connection");
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Server supports SSL, establishing secure connection");
+            }
             
             var sslOptions = _options.SslOptions ?? new PgSslOptions();
             
@@ -145,7 +154,10 @@ internal sealed class PgSocketConnection : IAsyncDisposable
             await _sslStream.AuthenticateAsClientAsync(sslClientOptions, cancellationToken);
             _stream = _sslStream;
 
-            _logger.LogDebug("SSL connection established. Protocol: {Protocol}", _sslStream.SslProtocol);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("SSL connection established. Protocol: {Protocol}", _sslStream.SslProtocol);
+            }
         }
         else if (response[0] == 'N')
         {
@@ -156,8 +168,11 @@ internal sealed class PgSocketConnection : IAsyncDisposable
             {
                 throw new PgException("Server does not support SSL but sslmode requires it", "08000", "");
             }
-            
-            _logger.LogDebug("Server does not support SSL, continuing with unencrypted connection");
+
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Server does not support SSL, continuing with unencrypted connection");
+            }
         }
         else
         {
@@ -219,7 +234,10 @@ internal sealed class PgSocketConnection : IAsyncDisposable
             switch (response)
             {
                 case AuthenticationOkResponse:
-                    _logger.LogDebug("Authentication successful");
+                    if (_logger.IsEnabled(LogLevel.Debug))
+                    {
+                        _logger.LogDebug("Authentication successful");
+                    }
                     break;
 
                 case AuthenticationCleartextPasswordResponse:
@@ -324,7 +342,10 @@ internal sealed class PgSocketConnection : IAsyncDisposable
             );
         }
 
-        _logger.LogDebug("Using SCRAM authentication with mechanism: {Mechanism}", scram.Mechanism);
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("Using SCRAM authentication with mechanism: {Mechanism}", scram.Mechanism);
+        }
 
         // Step 1: Send client-first-message
         var clientFirstMessage = scram.CreateClientFirstMessage();
@@ -365,7 +386,10 @@ internal sealed class PgSocketConnection : IAsyncDisposable
         // Verify server signature
         scram.VerifyServerFinalMessage(serverFinalMessage);
 
-        _logger.LogDebug("SCRAM authentication successful");
+        if (_logger.IsEnabled(LogLevel.Debug))
+        {
+            _logger.LogDebug("SCRAM authentication successful");
+        }
     }
 
     public async ValueTask<RowSet> QueryAsync(string sql, CancellationToken cancellationToken = default)
@@ -837,6 +861,30 @@ internal sealed class PgSocketConnection : IAsyncDisposable
     {
         _encoder.Reset();
         command.Encode(_encoder);
+        await SendAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Sends multiple commands to the server in a single batch. Used by MultiplexedConnection for true pipelining.
+    /// All commands are encoded into the buffer before sending, reducing round trips.
+    /// </summary>
+    internal async ValueTask SendCommandsAsync(IReadOnlyList<PgCommand> commands, CancellationToken cancellationToken = default)
+    {
+        _encoder.Reset();
+        foreach (var command in commands)
+        {
+            command.Encode(_encoder);
+        }
+        await SendAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Sends the bind/execute phase for a prepared query command. Used by MultiplexedConnection.
+    /// </summary>
+    internal async ValueTask SendPreparedBindExecuteAsync(PreparedQueryCommand command, CancellationToken cancellationToken = default)
+    {
+        _encoder.Reset();
+        command.EncodeBindExecute(_encoder);
         await SendAsync(cancellationToken);
     }
 
