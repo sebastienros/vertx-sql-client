@@ -88,3 +88,4 @@ TestResults/
 
 # Publish output
 publish/
+BenchmarkDotNet.Artifacts/
