@@ -33,13 +33,23 @@ public abstract class TupleBase : ITuple
 /// </summary>
 public sealed class Tuple : TupleBase
 {
-    private readonly List<PgValue> _values = new();
+    private Tuple()
+    {
+        _values = new ();
+    }
+
+    private Tuple(List<PgValue> values)
+    {
+        _values = values;
+    }
+
+    private readonly List<PgValue> _values;
 
     public override int Size => _values.Count;
 
     public override PgValue GetValue(int position) => _values[position];
 
-    public Tuple AddValue(object? value)
+    public Tuple AddValue<T>(T? value)
     {
         _values.Add(PgValue.From(value));
         return this;
@@ -51,7 +61,7 @@ public sealed class Tuple : TupleBase
         return this;
     }
 
-    public Tuple SetValue(int position, object? value)
+    public Tuple SetValue<T>(int position, T? value)
     {
         while (_values.Count <= position)
         {
@@ -83,60 +93,33 @@ public sealed class Tuple : TupleBase
 
     public static Tuple Create() => new();
 
-    public static Tuple Create(object? value1)
+    public static Tuple Create<T>(T? value1)
     {
-        var tuple = new Tuple();
-        tuple.AddValue(value1);
-        return tuple;
+        return new Tuple([PgValue.From(value1)]);
     }
 
     public static Tuple Create(object? value1, object? value2)
     {
-        var tuple = new Tuple();
-        tuple.AddValue(value1);
-        tuple.AddValue(value2);
-        return tuple;
+        return new Tuple([PgValue.From(value1), PgValue.From(value2)]);
     }
 
     public static Tuple Create(object? value1, object? value2, object? value3)
     {
-        var tuple = new Tuple();
-        tuple.AddValue(value1);
-        tuple.AddValue(value2);
-        tuple.AddValue(value3);
-        return tuple;
+        return new Tuple([PgValue.From(value1), PgValue.From(value2), PgValue.From(value3)]);
     }
 
     public static Tuple Create(object? value1, object? value2, object? value3, object? value4)
     {
-        var tuple = new Tuple();
-        tuple.AddValue(value1);
-        tuple.AddValue(value2);
-        tuple.AddValue(value3);
-        tuple.AddValue(value4);
-        return tuple;
+        return new Tuple([PgValue.From(value1), PgValue.From(value2), PgValue.From(value3), PgValue.From(value4)]);
     }
 
     public static Tuple Create(object? value1, object? value2, object? value3, object? value4, object? value5)
     {
-        var tuple = new Tuple();
-        tuple.AddValue(value1);
-        tuple.AddValue(value2);
-        tuple.AddValue(value3);
-        tuple.AddValue(value4);
-        tuple.AddValue(value5);
-        return tuple;
+        return new Tuple([PgValue.From(value1), PgValue.From(value2), PgValue.From(value3), PgValue.From(value4), PgValue.From(value5)]);
     }
 
     public static Tuple Create(object? value1, object? value2, object? value3, object? value4, object? value5, object? value6)
     {
-        var tuple = new Tuple();
-        tuple.AddValue(value1);
-        tuple.AddValue(value2);
-        tuple.AddValue(value3);
-        tuple.AddValue(value4);
-        tuple.AddValue(value5);
-        tuple.AddValue(value6);
-        return tuple;
+        return new Tuple([PgValue.From(value1), PgValue.From(value2), PgValue.From(value3), PgValue.From(value4), PgValue.From(value5), PgValue.From(value6)]);
     }
 }

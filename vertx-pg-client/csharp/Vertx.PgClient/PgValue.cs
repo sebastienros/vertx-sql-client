@@ -65,7 +65,7 @@ public readonly struct PgValue
     /// <summary>
     /// Creates a PgValue from any object, determining the appropriate type at runtime.
     /// </summary>
-    public static PgValue From(object? value)
+    public static PgValue From<T>(T? value)
     {
         return value switch
         {
