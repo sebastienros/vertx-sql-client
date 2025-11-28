@@ -512,7 +512,8 @@ internal sealed class PgSocketConnection : IAsyncDisposable
 
     private async ValueTask<RowSet> ReceiveQueryResultAsync(CancellationToken cancellationToken)
     {
-        var rows = new List<Row>();
+        // Initial capacity of 16 to reduce list resizing for typical queries
+        var rows = new List<Row>(16);
         PgColumnDesc[]? columnDesc = null;
         string[]? columnNames = null;
         int rowsAffected = 0;
@@ -575,7 +576,8 @@ internal sealed class PgSocketConnection : IAsyncDisposable
 
     private async ValueTask<RowSet> ReceiveExtendedQueryResultAsync(PgColumnDesc[]? rowDesc, CancellationToken cancellationToken)
     {
-        var rows = new List<Row>();
+        // Initial capacity of 16 to reduce list resizing for typical queries
+        var rows = new List<Row>(16);
         int rowsAffected = 0;
         
         // Cache column names array once for all rows
