@@ -73,6 +73,16 @@ public interface IPgConnection : IAsyncDisposable
     ValueTask CloseAsync(CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Begins a new transaction with default options.
+    /// </summary>
+    ValueTask<IPgTransaction> BeginTransactionAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Begins a new transaction with the specified options.
+    /// </summary>
+    ValueTask<IPgTransaction> BeginTransactionAsync(TransactionOptions options, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Event raised when a notification is received.
     /// </summary>
     event Action<PgNotification>? NotificationReceived;
@@ -295,6 +305,27 @@ public sealed class PgConnection : IPgConnection
             await _socket.CloseAsync(cancellationToken);
             _socket = null;
         }
+    }
+
+    /// <inheritdoc/>
+    public ValueTask<IPgTransaction> BeginTransactionAsync(CancellationToken cancellationToken = default)
+    {
+        return BeginTransactionAsync(new TransactionOptions(), cancellationToken);
+    }
+
+    /// <inheritdoc/>
+    public async ValueTask<IPgTransaction> BeginTransactionAsync(TransactionOptions options, CancellationToken cancellationToken = default)
+    {
+        if (_socket is null || !IsOpen)
+            throw new InvalidOperationException("Connection is not open");
+
+        if (TransactionStatus != 'I')
+            throw new InvalidOperationException("Connection is already in a transaction");
+
+        var sql = $"BEGIN {options.ToSql()}";
+        await _socket.QueryAsync(sql, cancellationToken);
+
+        return new PgTransaction(this);
     }
 
     /// <inheritdoc/>

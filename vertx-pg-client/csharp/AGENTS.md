@@ -12,3 +12,9 @@ Note:
 - Wildcard '*' is supported at the beginning and/or end of each filter.
 - Specifying more than one is an OR operation.
 - The the solution is already built, use the `--no-build` to skip the build before starting tests.
+
+## Code guidelines
+
+- Use `ReadOnlySpan<char>` based string operations like parsing, splitting.
+- Use `ReadOnlySpan<byte>` based parsing when its content is ASCII.
+- `if` statements and other blocks MUST use braces.

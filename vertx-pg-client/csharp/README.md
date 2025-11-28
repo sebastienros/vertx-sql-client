@@ -9,6 +9,7 @@ A high-performance PostgreSQL client for .NET, ported from the [Vert.x pg-client
 - Binary and text protocol support
 - **Connection pooling** with configurable size and timeouts
 - **Query pipelining/multiplexing** - multiple concurrent queries on shared connections
+- **Transactions** with savepoints and isolation levels
 - PostgreSQL notifications (LISTEN/NOTIFY)
 - SSL/TLS support (Prefer, Require, VerifyCa, VerifyFull modes)
 - Connection URI parsing
@@ -104,6 +105,68 @@ var tasks = Enumerable.Range(0, 1000)
     .Select(i => pool.ScheduleAsync($"SELECT {i} as id"))
     .ToList();
 await Task.WhenAll(tasks);
+```
+
+## Transactions
+
+```csharp
+// Begin a transaction on a connection
+await using var connection = await PgConnection.ConnectAsync(options);
+await using var tx = await connection.BeginTransactionAsync();
+
+await tx.QueryAsync("INSERT INTO users (name) VALUES ('Alice')");
+await tx.QueryAsync("INSERT INTO users (name) VALUES ('Bob')");
+
+await tx.CommitAsync();  // Or tx.RollbackAsync() to discard changes
+```
+
+### Transaction Options
+
+```csharp
+var txOptions = new TransactionOptions
+{
+    IsolationLevel = IsolationLevel.Serializable,  // Default: ReadCommitted
+    AccessMode = TransactionAccessMode.ReadOnly,   // Default: ReadWrite
+    Deferrable = true  // Only for serializable read-only transactions
+};
+
+await using var tx = await connection.BeginTransactionAsync(txOptions);
+```
+
+### Savepoints
+
+```csharp
+await using var tx = await connection.BeginTransactionAsync();
+
+await tx.QueryAsync("INSERT INTO users (name) VALUES ('Alice')");
+await tx.SavepointAsync("sp1");
+
+await tx.QueryAsync("INSERT INTO users (name) VALUES ('Bob')");
+await tx.RollbackToSavepointAsync("sp1");  // Undo Bob's insert
+
+await tx.QueryAsync("INSERT INTO users (name) VALUES ('Charlie')");
+await tx.CommitAsync();  // Only Alice and Charlie are committed
+```
+
+### Pool Transactions
+
+```csharp
+await using var pool = PgPool.Create(options);
+
+// Option 1: Manual transaction management
+await using var tx = await pool.BeginTransactionAsync();
+await tx.QueryAsync("INSERT INTO users (name) VALUES ('Alice')");
+await tx.CommitAsync();
+// Connection automatically returns to pool when transaction is disposed
+
+// Option 2: Automatic commit/rollback with WithTransactionAsync
+var result = await pool.WithTransactionAsync(async tx =>
+{
+    await tx.QueryAsync("INSERT INTO users (name) VALUES ('Alice')");
+    await tx.QueryAsync("INSERT INTO users (name) VALUES ('Bob')");
+    return 2;  // Return value
+});
+// Commits on success, rolls back on exception
 ```
 
 ## Supported PostgreSQL Types

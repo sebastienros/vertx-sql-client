@@ -135,6 +135,101 @@ public sealed class PgPool : IAsyncDisposable
     }
 
     /// <summary>
+    /// Acquires a connection from the pool and begins a transaction.
+    /// The connection is exclusively held until the transaction is committed, rolled back, or disposed.
+    /// </summary>
+    public async ValueTask<IPooledTransaction> BeginTransactionAsync(CancellationToken cancellationToken = default)
+    {
+        return await BeginTransactionAsync(new TransactionOptions(), cancellationToken);
+    }
+
+    /// <summary>
+    /// Acquires a connection from the pool and begins a transaction with the specified options.
+    /// The connection is exclusively held until the transaction is committed, rolled back, or disposed.
+    /// </summary>
+    public async ValueTask<IPooledTransaction> BeginTransactionAsync(TransactionOptions options, CancellationToken cancellationToken = default)
+    {
+        var pooled = await AcquireAsync(cancellationToken);
+        try
+        {
+            var transaction = await pooled.BeginTransactionAsync(options, cancellationToken);
+            return new PooledTransaction(this, pooled, transaction);
+        }
+        catch
+        {
+            Release(pooled);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Executes a function within a transaction. The transaction is automatically 
+    /// committed if the function succeeds, or rolled back if an exception is thrown.
+    /// </summary>
+    public async ValueTask<T> WithTransactionAsync<T>(
+        Func<IPgTransaction, ValueTask<T>> action, 
+        CancellationToken cancellationToken = default)
+    {
+        return await WithTransactionAsync(action, new TransactionOptions(), cancellationToken);
+    }
+
+    /// <summary>
+    /// Executes a function within a transaction with the specified options. The transaction 
+    /// is automatically committed if the function succeeds, or rolled back if an exception is thrown.
+    /// </summary>
+    public async ValueTask<T> WithTransactionAsync<T>(
+        Func<IPgTransaction, ValueTask<T>> action,
+        TransactionOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        await using var transaction = await BeginTransactionAsync(options, cancellationToken);
+        try
+        {
+            var result = await action(transaction);
+            await transaction.CommitAsync(cancellationToken);
+            return result;
+        }
+        catch
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Executes an action within a transaction. The transaction is automatically 
+    /// committed if the action succeeds, or rolled back if an exception is thrown.
+    /// </summary>
+    public async ValueTask WithTransactionAsync(
+        Func<IPgTransaction, ValueTask> action,
+        CancellationToken cancellationToken = default)
+    {
+        await WithTransactionAsync(action, new TransactionOptions(), cancellationToken);
+    }
+
+    /// <summary>
+    /// Executes an action within a transaction with the specified options. The transaction 
+    /// is automatically committed if the action succeeds, or rolled back if an exception is thrown.
+    /// </summary>
+    public async ValueTask WithTransactionAsync(
+        Func<IPgTransaction, ValueTask> action,
+        TransactionOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        await using var transaction = await BeginTransactionAsync(options, cancellationToken);
+        try
+        {
+            await action(transaction);
+            await transaction.CommitAsync(cancellationToken);
+        }
+        catch
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            throw;
+        }
+    }
+
+    /// <summary>
     /// Schedules a command for multiplexed execution.
     /// Multiple concurrent callers can share the same physical connection,
     /// with queries being pipelined and responses routed to the correct caller.
@@ -406,6 +501,14 @@ public sealed class PgPool : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Internal release method for pooled transactions.
+    /// </summary>
+    internal void ReleasePooledConnection(PooledConnection connection)
+    {
+        Release(connection);
+    }
+
     private void ReleaseFromPipelining(PooledConnection connection)
     {
         connection.DecrementInflight();
@@ -621,6 +724,28 @@ internal sealed class PooledConnection : IPooledConnection
     {
         // Use the socket's pipelining infrastructure
         return await _socket.ScheduleAndWaitAsync(command, cancellationToken);
+    }
+
+    /// <summary>
+    /// Begins a transaction on this connection.
+    /// </summary>
+    internal async ValueTask<IPgTransaction> BeginTransactionAsync(TransactionOptions options, CancellationToken cancellationToken)
+    {
+        await _commandLock.WaitAsync(cancellationToken);
+        try
+        {
+            if (_socket.TransactionStatus != 'I')
+                throw new InvalidOperationException("Connection is already in a transaction");
+
+            var sql = $"BEGIN {options.ToSql()}";
+            await _socket.QueryAsync(sql, cancellationToken);
+
+            return new PooledConnectionTransaction(this);
+        }
+        finally
+        {
+            _commandLock.Release();
+        }
     }
 
     public void Close()
