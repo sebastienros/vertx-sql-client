@@ -284,12 +284,10 @@ Per additional row:
 **Original Issue**: Allocated string via interpolation and then byte[] for each new statement.
 **Solution**: Now uses a pre-allocated buffer for hex conversion, eliminating the intermediate string allocation. Only the final byte[] result is allocated.
 
-#### 6. List Resizing in ReceiveQueryResultAsync
-**Location**: `PgSocketConnection.cs:515`
-```csharp
-var rows = new List<Row>();
-```
-**Recommendation**: If row count is known (from command tag), pre-allocate list capacity.
+#### 6. List Resizing in ReceiveQueryResultAsync - FIXED
+**Location**: `PgSocketConnection.cs`
+**Original Issue**: List was created with default capacity (0), causing multiple reallocations for typical queries.
+**Solution**: List is now created with initial capacity of 16, reducing reallocations for most query result sets.
 
 ---
 
