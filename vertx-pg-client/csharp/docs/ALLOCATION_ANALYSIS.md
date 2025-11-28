@@ -278,14 +278,10 @@ values[i] = payload.Slice(pos, length).ToArray();
 
 ### 🟢 Low Priority
 
-#### 5. Statement Name Generation
-**Location**: `PgEncoder.cs:34-38`
-```csharp
-var name = $"S_{_statementCounter++:X}";
-return Encoding.ASCII.GetBytes(name);
-```
-**Issue**: Allocates string and byte[] for each new statement.
-**Recommendation**: Use stackalloc and pre-compute common names.
+#### 5. Statement Name Generation - FIXED
+**Location**: `PgEncoder.cs:34-75`
+**Original Issue**: Allocated string via interpolation and then byte[] for each new statement.
+**Solution**: Now uses a pre-allocated buffer for hex conversion, eliminating the intermediate string allocation. Only the final byte[] result is allocated.
 
 #### 6. List Resizing in ReceiveQueryResultAsync
 **Location**: `PgSocketConnection.cs:515`
