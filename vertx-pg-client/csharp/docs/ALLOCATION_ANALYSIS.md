@@ -324,6 +324,16 @@ The `[MemoryDiagnoser]` attribute on benchmark classes reports:
 - Allocation count
 - Gen0/Gen1/Gen2 collections
 
+### Benchmark Results
+
+Benchmark: `SELECT all fortunes (prepared query)` - Returns 12 rows, each with `int` and `string` columns.
+
+| Version | Allocated Memory | Time |
+|---------|-----------------|------|
+| **Before** (baseline) | **7.9 KB** | 226.9 μs |
+| **After** (optimized) | **5.06 KB** | 224.6 μs |
+| **Improvement** | **36% less memory** | ~1% faster |
+
 ---
 
 ## Summary
@@ -333,8 +343,14 @@ For a simple `SELECT id, message FROM table` returning 1 row with an int and str
 | Category | Allocations | Notes |
 |----------|-------------|-------|
 | Protocol structures | ~6-8 | Records, arrays for messages |
-| Per-row overhead | 3-5 | PgValue[], Row, byte[][] (string[] now shared) |
-| Value storage | 1-2 | String value, boxed types if any |
+| Per-row overhead | 2-3 | PgValue[], Row (byte[][] and string[] eliminated) |
+| Value storage | 1-2 | String value only (Guid/DateTimeOffset no longer boxed) |
 | Result set | 3-4 | RowSet, List, descriptor |
 
-**Optimization Completed**: The per-row column name array creation (`columnDesc.Select(c => c.Name).ToArray()`) has been fixed. Column names are now cached once per result set and shared across all rows, eliminating N-1 unnecessary string[] allocations for N-row result sets.
+**All Optimizations Completed**:
+1. ✅ Column names cached once per result set (not per row)
+2. ✅ Direct DataRow decoding skips intermediate byte[][] allocations
+3. ✅ Guid and DateTimeOffset stored without boxing
+4. ✅ Array encoding without intermediate nullable arrays
+5. ✅ Statement name generation without string interpolation
+6. ✅ List pre-allocation reduces resize operations

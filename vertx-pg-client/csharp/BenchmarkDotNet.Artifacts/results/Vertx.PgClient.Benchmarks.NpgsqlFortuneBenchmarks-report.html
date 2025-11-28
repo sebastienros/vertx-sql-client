@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+<meta charset='utf-8' />
+<title>Vertx.PgClient.Benchmarks.NpgsqlFortuneBenchmarks-20251128-151022</title>
+
+<style type="text/css">
+	table { border-collapse: collapse; display: block; width: 100%; overflow: auto; }
+	td, th { padding: 6px 13px; border: 1px solid #ddd; text-align: right; }
+	tr { background-color: #fff; border-top: 1px solid #ccc; }
+	tr:nth-child(even) { background: #f8f8f8; }
+</style>
+</head>
+<body>
+<pre><code>
+BenchmarkDotNet v0.15.6, Linux Ubuntu 24.04.3 LTS (Noble Numbat)
+AMD EPYC 7763 3.21GHz, 1 CPU, 4 logical and 2 physical cores
+.NET SDK 10.0.100
+  [Host]     : .NET 10.0.0 (10.0.0, 10.0.25.52411), X64 RyuJIT x86-64-v3
+  Job-YFEFPZ : .NET 10.0.0 (10.0.0, 10.0.25.52411), X64 RyuJIT x86-64-v3
+  ShortRun   : .NET 10.0.0 (10.0.0, 10.0.25.52411), X64 RyuJIT x86-64-v3
+</code></pre>
+<pre><code>WarmupCount=3  
+</code></pre>
+
+<table>
+<thead><tr><th>Method                                  </th><th>Job </th><th>IterationCount</th><th>LaunchCount</th><th>Mean</th><th>Error</th><th>StdDev</th><th>Allocated</th>
+</tr>
+</thead><tbody><tr><td>&#39;Npgsql: SELECT all fortunes (prepared query)&#39;</td><td>Job-YFEFPZ</td><td>10</td><td>Default</td><td>228.3 &mu;s</td><td>3.69 &mu;s</td><td>2.20 &mu;s</td><td>2.92 KB</td>
+</tr><tr><td>&#39;Npgsql: SELECT all fortunes (prepared query)&#39;</td><td>ShortRun</td><td>3</td><td>1</td><td>229.4 &mu;s</td><td>33.82 &mu;s</td><td>1.85 &mu;s</td><td>2.91 KB</td>
+</tr></tbody></table>
+</body>
+</html>
