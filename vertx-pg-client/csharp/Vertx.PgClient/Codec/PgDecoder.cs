@@ -17,6 +17,15 @@ internal sealed class PgDecoder
     /// </summary>
     public bool TryParse(ReadOnlySpan<byte> buffer, out Response? response, out int bytesConsumed)
     {
+        return TryParse(buffer, null, out response, out bytesConsumed);
+    }
+
+    /// <summary>
+    /// Attempts to parse a message from the buffer with optional column descriptors for direct DataRow decoding.
+    /// When columnDesc is provided, DataRow messages are decoded directly to PgValue[] avoiding intermediate byte[] allocations.
+    /// </summary>
+    public bool TryParse(ReadOnlySpan<byte> buffer, PgColumnDesc[]? columnDesc, out Response? response, out int bytesConsumed)
+    {
         response = null;
         bytesConsumed = 0;
 
@@ -33,12 +42,12 @@ internal sealed class PgDecoder
             return false;
 
         var payload = buffer.Slice(5, length - 4);
-        response = ParseMessage(messageType, payload);
+        response = ParseMessage(messageType, payload, columnDesc);
         bytesConsumed = totalLength;
         return true;
     }
 
-    private Response ParseMessage(byte messageType, ReadOnlySpan<byte> payload)
+    private Response ParseMessage(byte messageType, ReadOnlySpan<byte> payload, PgColumnDesc[]? columnDesc)
     {
         return messageType switch
         {
@@ -51,7 +60,9 @@ internal sealed class PgDecoder
             PgProtocolConstants.CopyDone => new CopyDoneResponse(),
             PgProtocolConstants.CopyInResponse => ParseCopyResponse(payload, isCopyIn: true),
             PgProtocolConstants.CopyOutResponse => ParseCopyResponse(payload, isCopyIn: false),
-            PgProtocolConstants.DataRow => ParseDataRow(payload),
+            PgProtocolConstants.DataRow => columnDesc is not null 
+                ? new DecodedDataRowResponse(DecodeDataRowDirect(payload, columnDesc))
+                : ParseDataRow(payload),
             PgProtocolConstants.EmptyQueryResponse => new EmptyQueryResponse(),
             PgProtocolConstants.ErrorResponse => ParseErrorOrNotice(payload, isError: true),
             PgProtocolConstants.NoData => new NoDataResponse(),
@@ -147,6 +158,38 @@ internal sealed class PgDecoder
         }
 
         return new DataRowResponse(values);
+    }
+
+    /// <summary>
+    /// Decodes a DataRow message directly to PgValue array, avoiding intermediate byte[] allocations.
+    /// </summary>
+    public static PgValue[] DecodeDataRowDirect(ReadOnlySpan<byte> payload, PgColumnDesc[] columnDesc)
+    {
+        short columnCount = BinaryPrimitives.ReadInt16BigEndian(payload);
+        var values = new PgValue[columnCount];
+        int pos = 2;
+
+        for (int i = 0; i < columnCount; i++)
+        {
+            int length = BinaryPrimitives.ReadInt32BigEndian(payload.Slice(pos));
+            pos += 4;
+
+            if (length == -1)
+            {
+                values[i] = PgValue.CreateNull(columnDesc[i].DataType);
+            }
+            else
+            {
+                var column = columnDesc[i];
+                var valueSpan = payload.Slice(pos, length);
+                values[i] = column.DataFormat == DataFormat.Binary
+                    ? PgValue.DecodeBinary(column.DataType, valueSpan)
+                    : PgValue.DecodeText(column.DataType, valueSpan);
+                pos += length;
+            }
+        }
+
+        return values;
     }
 
     private Response ParseErrorOrNotice(ReadOnlySpan<byte> payload, bool isError)

@@ -253,13 +253,14 @@ Per additional row:
 
 ### 🔴 High Priority (Remaining)
 
-#### 2. DataRow byte[] Per Column (ParseDataRow)
-**Location**: `PgDecoder.cs:144`
-```csharp
-values[i] = payload.Slice(pos, length).ToArray();
-```
-**Issue**: Creates a new `byte[]` for every column in every row.
-**Recommendation**: Consider using pooled buffers or decode directly from the receive buffer without intermediate copy.
+#### 2. DataRow byte[] Per Column (ParseDataRow) - FIXED
+**Location**: `PgDecoder.cs`, `PgSocketConnection.cs`, `Response.cs`
+**Original Issue**: Created a new `byte[]` for every column in every row via `payload.Slice(pos, length).ToArray()`.
+**Solution**: Added direct decoding path that skips intermediate byte[] allocations:
+- New `DecodeDataRowDirect()` method decodes values directly from the payload span to PgValue[]
+- New `DecodedDataRowResponse` type holds pre-decoded PgValue array
+- `TryParse()` now accepts optional column descriptors and uses direct decoding when available
+- `ReceiveQueryResultAsync` and `ReceiveExtendedQueryResultAsync` pass column descriptors to enable direct decoding
 
 ### 🟡 Medium Priority
 

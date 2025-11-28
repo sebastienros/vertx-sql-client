@@ -60,6 +60,11 @@ internal sealed record CopyDataResponse(byte[] Data) : Response;
 internal sealed record CopyDoneResponse : Response;
 internal sealed record CopyResponse(bool IsBinary, short[] Formats, bool IsCopyIn) : Response;
 internal sealed record DataRowResponse(byte[][] Values) : Response;
+/// <summary>
+/// A decoded data row response that skips intermediate byte[] allocations.
+/// Contains pre-decoded PgValue array.
+/// </summary>
+internal sealed record DecodedDataRowResponse(PgValue[] Values) : Response;
 internal sealed record EmptyQueryResponse : Response;
 internal sealed record NoDataResponse : Response;
 internal sealed record ParseCompleteResponse : Response;
