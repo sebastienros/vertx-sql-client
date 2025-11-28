@@ -653,4 +653,86 @@ public class PoolTests
         Assert.True(connectionCreatedCount >= 1, 
             $"Should have created at least one multiplexed connection. Messages: {string.Join("; ", logger.Messages.Where(m => m.Contains("connection", StringComparison.OrdinalIgnoreCase)).Take(5))}");
     }
+
+    [Fact]
+    public async Task RegularPoolConnectionTimeoutIsRespected()
+    {
+        // Configure pool with 1 connection and short timeout
+        var poolOptions = new PgPoolOptions 
+        { 
+            MaxSize = 1, 
+            ConnectionTimeout = 500, // 500ms timeout
+            Pipelined = false // Use regular (non-multiplexed) mode
+        };
+        await using var pool = PgPool.Create(_fixture.CreateConnectOptions(), poolOptions);
+
+        // Acquire the only connection
+        var connection = await pool.GetConnectionAsync();
+
+        // Measure time for timeout
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        
+        // Try to get another connection - should timeout
+        var exception = await Assert.ThrowsAsync<TimeoutException>(async () =>
+        {
+            await pool.GetConnectionAsync();
+        });
+        
+        stopwatch.Stop();
+
+        // Verify the timeout was respected (should be around 500ms, allow some margin)
+        Assert.True(stopwatch.ElapsedMilliseconds >= 450, 
+            $"Timeout should wait at least 450ms, but only waited {stopwatch.ElapsedMilliseconds}ms");
+        Assert.True(stopwatch.ElapsedMilliseconds <= 1500, 
+            $"Timeout should not wait more than 1500ms, but waited {stopwatch.ElapsedMilliseconds}ms");
+        
+        Assert.Contains("Timed out", exception.Message);
+
+        // Release the connection
+        connection.Close();
+    }
+
+    [Fact]
+    public async Task MultiplexedPoolConnectionTimeoutIsRespected()
+    {
+        // Configure pool with 1 connection, very low pipelining limit, and short timeout
+        var connectOptions = new PgConnectOptions(_fixture.CreateConnectOptions())
+            .SetPipeliningLimit(1); // Only allow 1 inflight command
+        
+        var poolOptions = new PgPoolOptions 
+        { 
+            MaxSize = 1, 
+            ConnectionTimeout = 500, // 500ms timeout
+            Pipelined = true // Use multiplexed mode
+        };
+        await using var pool = PgPool.Create(connectOptions, poolOptions);
+
+        // Start a slow query that will hold the only slot
+        var slowQueryTask = pool.ScheduleAsync("SELECT pg_sleep(2)"); // 2 second sleep
+
+        // Give the slow query time to start
+        await Task.Delay(50);
+
+        // Measure time for timeout
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        
+        // Try to schedule another query - should timeout waiting for a slot
+        var exception = await Assert.ThrowsAsync<TimeoutException>(async () =>
+        {
+            await pool.ScheduleAsync("SELECT 1");
+        });
+        
+        stopwatch.Stop();
+
+        // Verify the timeout was respected (should be around 500ms, allow some margin)
+        Assert.True(stopwatch.ElapsedMilliseconds >= 450, 
+            $"Timeout should wait at least 450ms, but only waited {stopwatch.ElapsedMilliseconds}ms");
+        Assert.True(stopwatch.ElapsedMilliseconds <= 1500, 
+            $"Timeout should not wait more than 1500ms, but waited {stopwatch.ElapsedMilliseconds}ms");
+        
+        Assert.Contains("Timed out", exception.Message);
+        Assert.Contains("multiplexed", exception.Message);
+
+        // Wait for the slow query to complete (or just let it run, pool disposal will handle it)
+    }
 }
