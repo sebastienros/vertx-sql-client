@@ -519,7 +519,8 @@ internal sealed class PgSocketConnection : IAsyncDisposable
 
         while (true)
         {
-            var response = await ReceiveAsync(cancellationToken);
+            // Use direct decoding when column descriptors are available
+            var response = await ReceiveAsync(columnDesc, cancellationToken);
 
             switch (response)
             {
@@ -529,7 +530,16 @@ internal sealed class PgSocketConnection : IAsyncDisposable
                     columnNames = ExtractColumnNames(rd.Columns);
                     break;
 
+                case DecodedDataRowResponse decodedRow:
+                    // Direct decoding path - no intermediate byte[] allocations
+                    if (columnNames is not null)
+                    {
+                        rows.Add(new Row(decodedRow.Values, columnNames));
+                    }
+                    break;
+
                 case DataRowResponse dataRow:
+                    // Fallback path for when column descriptors weren't available
                     if (columnDesc is not null && columnNames is not null)
                     {
                         var row = DecodeRow(dataRow.Values, columnDesc, columnNames);
@@ -573,14 +583,24 @@ internal sealed class PgSocketConnection : IAsyncDisposable
 
         while (true)
         {
-            var response = await ReceiveAsync(cancellationToken);
+            // Use direct decoding when row descriptors are available
+            var response = await ReceiveAsync(rowDesc, cancellationToken);
 
             switch (response)
             {
                 case BindCompleteResponse:
                     break;
 
+                case DecodedDataRowResponse decodedRow:
+                    // Direct decoding path - no intermediate byte[] allocations
+                    if (columnNames is not null)
+                    {
+                        rows.Add(new Row(decodedRow.Values, columnNames));
+                    }
+                    break;
+
                 case DataRowResponse dataRow:
+                    // Fallback path for when row descriptors weren't available
                     if (rowDesc is not null && columnNames is not null)
                     {
                         var row = DecodeRow(dataRow.Values, rowDesc, columnNames);
@@ -1009,6 +1029,11 @@ internal sealed class PgSocketConnection : IAsyncDisposable
 
     private async ValueTask<Response> ReceiveAsync(CancellationToken cancellationToken)
     {
+        return await ReceiveAsync(null, cancellationToken);
+    }
+
+    private async ValueTask<Response> ReceiveAsync(PgColumnDesc[]? columnDesc, CancellationToken cancellationToken)
+    {
         if (_stream is null)
             throw new InvalidOperationException("Not connected");
 
@@ -1016,7 +1041,7 @@ internal sealed class PgSocketConnection : IAsyncDisposable
         {
             // Try to parse from existing buffer
             var availableData = new ReadOnlySpan<byte>(_receiveBuffer, _receiveBufferOffset, _receiveBufferLength);
-            if (_decoder.TryParse(availableData, out var response, out int bytesConsumed))
+            if (_decoder.TryParse(availableData, columnDesc, out var response, out int bytesConsumed))
             {
                 _receiveBufferOffset += bytesConsumed;
                 _receiveBufferLength -= bytesConsumed;
