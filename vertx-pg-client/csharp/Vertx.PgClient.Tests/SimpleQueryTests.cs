@@ -104,33 +104,39 @@ public class SimpleQueryTests
         var options = _fixture.CreateConnectOptions();
         await using var connection = await PgConnection.ConnectAsync(options);
 
+        var tableName = $"users_{Guid.NewGuid():N}";
+
         // Create table
-        await connection.QueryAsync(@"
-            CREATE TABLE IF NOT EXISTS test_users (
+        await connection.QueryAsync($@"
+            CREATE TABLE {tableName} (
                 id SERIAL PRIMARY KEY,
                 name TEXT NOT NULL,
                 age INT
             )
         ");
 
-        // Insert data
-        await connection.QueryAsync("DELETE FROM test_users");
-        await connection.QueryAsync("INSERT INTO test_users (name, age) VALUES ('Alice', 30)");
-        await connection.QueryAsync("INSERT INTO test_users (name, age) VALUES ('Bob', 25)");
-        await connection.QueryAsync("INSERT INTO test_users (name, age) VALUES ('Charlie', 35)");
+        try
+        {
+            // Insert data
+            await connection.QueryAsync($"INSERT INTO {tableName} (name, age) VALUES ('Alice', 30)");
+            await connection.QueryAsync($"INSERT INTO {tableName} (name, age) VALUES ('Bob', 25)");
+            await connection.QueryAsync($"INSERT INTO {tableName} (name, age) VALUES ('Charlie', 35)");
 
-        // Query
-        var result = await connection.QueryAsync("SELECT name, age FROM test_users ORDER BY name");
+            // Query
+            var result = await connection.QueryAsync($"SELECT name, age FROM {tableName} ORDER BY name");
 
-        Assert.Equal(3, result.Count);
-        Assert.Equal("Alice", result[0].GetValue("name").GetString());
-        Assert.Equal(30, result[0].GetValue("age").GetInteger());
-        Assert.Equal("Bob", result[1].GetValue("name").GetString());
-        Assert.Equal(25, result[1].GetValue("age").GetInteger());
-        Assert.Equal("Charlie", result[2].GetValue("name").GetString());
-        Assert.Equal(35, result[2].GetValue("age").GetInteger());
-
-        // Cleanup
-        await connection.QueryAsync("DROP TABLE test_users");
+            Assert.Equal(3, result.Count);
+            Assert.Equal("Alice", result[0].GetValue("name").GetString());
+            Assert.Equal(30, result[0].GetValue("age").GetInteger());
+            Assert.Equal("Bob", result[1].GetValue("name").GetString());
+            Assert.Equal(25, result[1].GetValue("age").GetInteger());
+            Assert.Equal("Charlie", result[2].GetValue("name").GetString());
+            Assert.Equal(35, result[2].GetValue("age").GetInteger());
+        }
+        finally
+        {
+            // Cleanup
+            await connection.QueryAsync($"DROP TABLE {tableName}");
+        }
     }
 }

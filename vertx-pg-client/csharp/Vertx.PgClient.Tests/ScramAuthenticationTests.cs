@@ -97,20 +97,27 @@ public class ScramAuthenticationTests : IAsyncLifetime
 
         await using var connection = await PgConnection.ConnectAsync(options);
 
+        var tableName = $"scram_test_{Guid.NewGuid():N}";
+
         // Create a table
-        await connection.QueryAsync("CREATE TABLE IF NOT EXISTS scram_test (id SERIAL PRIMARY KEY, name TEXT)");
+        await connection.QueryAsync($"CREATE TABLE {tableName} (id SERIAL PRIMARY KEY, name TEXT)");
 
-        // Insert data
-        await connection.QueryAsync("INSERT INTO scram_test (name) VALUES ('test1'), ('test2')");
+        try
+        {
+            // Insert data
+            await connection.QueryAsync($"INSERT INTO {tableName} (name) VALUES ('test1'), ('test2')");
 
-        // Query data
-        var result = await connection.QueryAsync("SELECT * FROM scram_test ORDER BY id");
-        Assert.Equal(2, result.Count);
-        Assert.Equal("test1", result[0].GetValue("name").GetString());
-        Assert.Equal("test2", result[1].GetValue("name").GetString());
-
-        // Cleanup
-        await connection.QueryAsync("DROP TABLE scram_test");
+            // Query data
+            var result = await connection.QueryAsync($"SELECT * FROM {tableName} ORDER BY id");
+            Assert.Equal(2, result.Count);
+            Assert.Equal("test1", result[0].GetValue("name").GetString());
+            Assert.Equal("test2", result[1].GetValue("name").GetString());
+        }
+        finally
+        {
+            // Cleanup
+            await connection.QueryAsync($"DROP TABLE {tableName}");
+        }
     }
 
     [Fact]
@@ -128,25 +135,27 @@ public class ScramAuthenticationTests : IAsyncLifetime
 
         await using var connection = await PgConnection.ConnectAsync(options);
 
+        var tableName = $"scram_prepared_{Guid.NewGuid():N}";
+
         // Create a table
-        await connection.QueryAsync("CREATE TABLE IF NOT EXISTS scram_prepared_test (id INT, value TEXT)");
+        await connection.QueryAsync($"CREATE TABLE {tableName} (id INT, value TEXT)");
 
         try
         {
             // Use prepared query with parameters
             await connection.PreparedQueryAsync(
-                "INSERT INTO scram_prepared_test (id, value) VALUES ($1, $2)",
+                $"INSERT INTO {tableName} (id, value) VALUES ($1, $2)",
                 Tuple.Create(1, "hello")
             );
 
             await connection.PreparedQueryAsync(
-                "INSERT INTO scram_prepared_test (id, value) VALUES ($1, $2)",
+                $"INSERT INTO {tableName} (id, value) VALUES ($1, $2)",
                 Tuple.Create(2, "world")
             );
 
             // Query with prepared statement
             var result = await connection.PreparedQueryAsync(
-                "SELECT * FROM scram_prepared_test WHERE id = $1",
+                $"SELECT * FROM {tableName} WHERE id = $1",
                 Tuple.Create(1)
             );
 
@@ -155,7 +164,7 @@ public class ScramAuthenticationTests : IAsyncLifetime
         }
         finally
         {
-            await connection.QueryAsync("DROP TABLE scram_prepared_test");
+            await connection.QueryAsync($"DROP TABLE {tableName}");
         }
     }
 }

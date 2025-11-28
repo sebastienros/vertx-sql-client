@@ -97,40 +97,45 @@ public class PreparedQueryTests
         var options = _fixture.CreateConnectOptions();
         await using var connection = await PgConnection.ConnectAsync(options);
 
+        var tableName = $"products_{Guid.NewGuid():N}";
+
         // Create table
-        await connection.QueryAsync(@"
-            CREATE TABLE IF NOT EXISTS test_products (
+        await connection.QueryAsync($@"
+            CREATE TABLE {tableName} (
                 id SERIAL PRIMARY KEY,
                 name TEXT NOT NULL,
                 price FLOAT8 NOT NULL
             )
         ");
 
-        await connection.QueryAsync("DELETE FROM test_products");
+        try
+        {
+            // Insert with prepared query
+            await connection.PreparedQueryAsync(
+                $"INSERT INTO {tableName} (name, price) VALUES ($1, $2)",
+                Tuple.Create("Widget", 19.99)
+            );
 
-        // Insert with prepared query
-        await connection.PreparedQueryAsync(
-            "INSERT INTO test_products (name, price) VALUES ($1, $2)",
-            Tuple.Create("Widget", 19.99)
-        );
+            await connection.PreparedQueryAsync(
+                $"INSERT INTO {tableName} (name, price) VALUES ($1, $2)",
+                Tuple.Create("Gadget", 29.99)
+            );
 
-        await connection.PreparedQueryAsync(
-            "INSERT INTO test_products (name, price) VALUES ($1, $2)",
-            Tuple.Create("Gadget", 29.99)
-        );
+            // Query with prepared query
+            var result = await connection.PreparedQueryAsync(
+                $"SELECT name, price FROM {tableName} WHERE price > $1 ORDER BY name",
+                Tuple.Create(20.0)
+            );
 
-        // Query with prepared query
-        var result = await connection.PreparedQueryAsync(
-            "SELECT name, price FROM test_products WHERE price > $1 ORDER BY name",
-            Tuple.Create(20.0)
-        );
-
-        Assert.Equal(1, result.Count);
-        Assert.Equal("Gadget", result[0].GetValue("name").GetString());
-        Assert.Equal(29.99, result[0].GetValue("price").GetDouble(), 0.01);
-
-        // Cleanup
-        await connection.QueryAsync("DROP TABLE test_products");
+            Assert.Equal(1, result.Count);
+            Assert.Equal("Gadget", result[0].GetValue("name").GetString());
+            Assert.Equal(29.99, result[0].GetValue("price").GetDouble(), 0.01);
+        }
+        finally
+        {
+            // Cleanup
+            await connection.QueryAsync($"DROP TABLE {tableName}");
+        }
     }
 
     [Fact]

@@ -308,22 +308,20 @@ public sealed class PgDataReader : IAsyncDisposable
         if (_isDisposed)
             return;
 
-        _isDisposed = true;
-
         // Consume any remaining rows if not completed
         if (!_isCompleted)
         {
             try
             {
-                while (await ReadAsync())
-                {
-                    // Discard remaining rows
-                }
+                await _consumeUntilReady(default);
+                _isCompleted = true;
             }
             catch
             {
                 // Ignore errors during cleanup
             }
         }
+
+        _isDisposed = true;
     }
 }
