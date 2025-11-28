@@ -514,6 +514,7 @@ internal sealed class PgSocketConnection : IAsyncDisposable
     {
         var rows = new List<Row>();
         PgColumnDesc[]? columnDesc = null;
+        string[]? columnNames = null;
         int rowsAffected = 0;
 
         while (true)
@@ -524,12 +525,14 @@ internal sealed class PgSocketConnection : IAsyncDisposable
             {
                 case RowDescriptionResponse rd:
                     columnDesc = rd.Columns;
+                    // Cache column names array once for all rows
+                    columnNames = ExtractColumnNames(rd.Columns);
                     break;
 
                 case DataRowResponse dataRow:
-                    if (columnDesc is not null)
+                    if (columnDesc is not null && columnNames is not null)
                     {
-                        var row = DecodeRow(dataRow.Values, columnDesc);
+                        var row = DecodeRow(dataRow.Values, columnDesc, columnNames);
                         rows.Add(row);
                     }
                     break;
@@ -543,8 +546,7 @@ internal sealed class PgSocketConnection : IAsyncDisposable
 
                 case ReadyForQueryResponse ready:
                     TransactionStatus = ready.Status;
-                    var columnNames = columnDesc?.Select(c => c.Name).ToArray() ?? Array.Empty<string>();
-                    return new RowSet(rows, columnNames, rowsAffected);
+                    return new RowSet(rows, columnNames ?? Array.Empty<string>(), rowsAffected);
 
                 case ErrorResponse error:
                     await ConsumeUntilReadyAsync(cancellationToken);
@@ -565,6 +567,9 @@ internal sealed class PgSocketConnection : IAsyncDisposable
     {
         var rows = new List<Row>();
         int rowsAffected = 0;
+        
+        // Cache column names array once for all rows
+        string[]? columnNames = rowDesc is not null ? ExtractColumnNames(rowDesc) : null;
 
         while (true)
         {
@@ -576,9 +581,9 @@ internal sealed class PgSocketConnection : IAsyncDisposable
                     break;
 
                 case DataRowResponse dataRow:
-                    if (rowDesc is not null)
+                    if (rowDesc is not null && columnNames is not null)
                     {
-                        var row = DecodeRow(dataRow.Values, rowDesc);
+                        var row = DecodeRow(dataRow.Values, rowDesc, columnNames);
                         rows.Add(row);
                     }
                     break;
@@ -595,8 +600,7 @@ internal sealed class PgSocketConnection : IAsyncDisposable
 
                 case ReadyForQueryResponse ready:
                     TransactionStatus = ready.Status;
-                    var columnNames = rowDesc?.Select(c => c.Name).ToArray() ?? Array.Empty<string>();
-                    return new RowSet(rows, columnNames, rowsAffected);
+                    return new RowSet(rows, columnNames ?? Array.Empty<string>(), rowsAffected);
 
                 case ErrorResponse error:
                     await ConsumeUntilReadyAsync(cancellationToken);
@@ -613,7 +617,7 @@ internal sealed class PgSocketConnection : IAsyncDisposable
         }
     }
 
-    private Row DecodeRow(byte[][] values, PgColumnDesc[] columnDesc)
+    private Row DecodeRow(byte[][] values, PgColumnDesc[] columnDesc, string[] columnNames)
     {
         var decodedValues = new PgValue[values.Length];
         
@@ -632,7 +636,15 @@ internal sealed class PgSocketConnection : IAsyncDisposable
             }
         }
 
-        return new Row(decodedValues, columnDesc.Select(c => c.Name).ToArray());
+        return new Row(decodedValues, columnNames);
+    }
+
+    /// <summary>
+    /// Extracts column names from column descriptors as a reusable array.
+    /// </summary>
+    private static string[] ExtractColumnNames(PgColumnDesc[] columns)
+    {
+        return Array.ConvertAll(columns, c => c.Name);
     }
 
     private static int ParseRowsAffected(string tag)

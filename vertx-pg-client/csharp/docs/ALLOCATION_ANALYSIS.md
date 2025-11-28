@@ -219,24 +219,24 @@ PgValue.DecodeBinary(DataType dataType, ReadOnlySpan<byte> buffer)
 | ParseDataRow | byte[][] | 1 | 24 bytes + refs |
 | ParseDataRow | byte[] | 2 | 4 + N bytes each |
 | DecodeRow | PgValue[] | 1 | 24 bytes + 2×24 bytes |
-| DecodeRow | string[] (col names) | 1 ⚠️ | ~40 bytes |
+| DecodeRow | string[] (col names) | 0 ✅ | Cached once per result set |
 | PgValue (int) | - | 0 | Stored in struct |
 | PgValue (string) | string | 1 | N + ~26 bytes |
 | Row | Row object | 1 | 32 bytes |
 | RowSet | List<Row> | 1 | 32 bytes |
 | RowSet | RowSet | 1 | 40 bytes |
-| RowSet | string[] | 1 | 24 bytes + refs |
+| RowSet | string[] | 1 | 24 bytes + refs (shared with rows) |
 | RowSet | PgRowDescriptor | 1 | 24 bytes |
 | CommandComplete | string | 1 | ~40 bytes |
 
-**Approximate Total for 1 row: ~15-20 allocations, ~500-800 bytes**
+**Approximate Total for 1 row: ~14-18 allocations, ~450-750 bytes**
 
 ### For N Rows
 
 Per additional row:
 - 1× byte[][] + N×byte[] (in ParseDataRow)
 - 1× PgValue[]
-- 1× string[] (column names) ⚠️ **Redundant**
+- 0× string[] (column names) ✅ **Now shared across all rows**
 - 1× string (message value)
 - 1× Row object
 
@@ -244,15 +244,14 @@ Per additional row:
 
 ## Identified Improvement Opportunities
 
-### 🔴 High Priority
+### ✅ Implemented
 
-#### 1. Column Name Array Per Row (DecodeRow)
-**Location**: `PgSocketConnection.cs:635`
-```csharp
-return new Row(decodedValues, columnDesc.Select(c => c.Name).ToArray());
-```
-**Issue**: Creates a new `string[]` for every row decoded.
-**Recommendation**: Cache the column names array at the result set level and pass the same reference to all rows.
+#### 1. Column Name Array Per Row (DecodeRow) - FIXED
+**Location**: `PgSocketConnection.cs` - `ReceiveQueryResultAsync` and `ReceiveExtendedQueryResultAsync`
+**Original Issue**: Created a new `string[]` for every row decoded via `columnDesc.Select(c => c.Name).ToArray()`.
+**Solution**: Column names array is now created once when the `RowDescriptionResponse` is received and shared across all rows in the result set.
+
+### 🔴 High Priority (Remaining)
 
 #### 2. DataRow byte[] Per Column (ParseDataRow)
 **Location**: `PgDecoder.cs:144`
@@ -339,8 +338,8 @@ For a simple `SELECT id, message FROM table` returning 1 row with an int and str
 | Category | Allocations | Notes |
 |----------|-------------|-------|
 | Protocol structures | ~6-8 | Records, arrays for messages |
-| Per-row overhead | 4-6 | PgValue[], string[], Row, byte[][] |
+| Per-row overhead | 3-5 | PgValue[], Row, byte[][] (string[] now shared) |
 | Value storage | 1-2 | String value, boxed types if any |
 | Result set | 3-4 | RowSet, List, descriptor |
 
-**Key Optimization Target**: The per-row column name array creation (`columnDesc.Select(c => c.Name).ToArray()`) is the most impactful improvement opportunity as it affects every row in every query result.
+**Optimization Completed**: The per-row column name array creation (`columnDesc.Select(c => c.Name).ToArray()`) has been fixed. Column names are now cached once per result set and shared across all rows, eliminating N-1 unnecessary string[] allocations for N-row result sets.
