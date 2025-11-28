@@ -7,6 +7,8 @@ A high-performance PostgreSQL client for .NET, ported from the [Vert.x pg-client
 - Fully asynchronous API using `async/await`
 - Simple and prepared query execution
 - Binary and text protocol support
+- **Connection pooling** with configurable size and timeouts
+- **Query pipelining/multiplexing** - multiple concurrent queries on shared connections
 - PostgreSQL notifications (LISTEN/NOTIFY)
 - SSL/TLS support (Prefer, Require, VerifyCa, VerifyFull modes)
 - Connection URI parsing
@@ -49,6 +51,58 @@ var users = await connection.PreparedQueryAsync(
     "SELECT * FROM users WHERE age > $1",
     Tuple.Create(21)
 );
+```
+
+## Connection Pooling
+
+```csharp
+using Vertx.PgClient;
+
+// Create a connection pool
+var poolOptions = new PgPoolOptions
+{
+    MaxSize = 10,              // Maximum connections in the pool
+    ConnectionTimeout = 30000, // Timeout waiting for a connection (ms)
+    Pipelined = true           // Enable multiplexing (default: true)
+};
+
+await using var pool = PgPool.Create(options, poolOptions);
+
+// Execute queries - connections are automatically managed
+var result = await pool.QueryAsync("SELECT * FROM users");
+
+// Or use multiplexed execution for high concurrency
+var tasks = Enumerable.Range(0, 100)
+    .Select(i => pool.ScheduleAsync($"SELECT {i}"))
+    .ToList();
+var results = await Task.WhenAll(tasks);
+```
+
+## Pipelining
+
+When `Pipelined = true` (the default), multiple concurrent callers can share the same physical connection. Queries are pipelined to the server and responses are routed back to the correct caller. This dramatically improves throughput for concurrent workloads.
+
+```csharp
+// Configure pipelining limit per connection
+var options = new PgConnectOptions
+{
+    Host = "localhost",
+    PipeliningLimit = 256  // Max concurrent queries per connection (default: 256)
+};
+
+var poolOptions = new PgPoolOptions
+{
+    MaxSize = 4,       // 4 connections
+    Pipelined = true   // Enable multiplexing
+};
+
+await using var pool = PgPool.Create(options, poolOptions);
+
+// 1000 concurrent queries across 4 connections
+var tasks = Enumerable.Range(0, 1000)
+    .Select(i => pool.ScheduleAsync($"SELECT {i} as id"))
+    .ToList();
+await Task.WhenAll(tasks);
 ```
 
 ## Supported PostgreSQL Types
@@ -94,8 +148,6 @@ await connection.QueryAsync("LISTEN my_channel");
 The following features from the original Vert.x pg-client are not yet implemented:
 
 - **SCRAM authentication** - Only MD5 and cleartext password authentication are supported. For now, configure PostgreSQL to use `md5` or `trust` authentication.
-- **Connection pooling** - Each connection is independent. Use external pooling if needed.
-- **Pipelining** - Queries are executed sequentially.
 - **COPY protocol** - COPY IN/OUT for bulk data transfer is not implemented.
 - **Custom type handlers** - Extended type registration is not available.
 
