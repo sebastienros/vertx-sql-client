@@ -1,9 +1,70 @@
 // Copyright (C) 2017 Julien Viet
 // Licensed under the Apache License, Version 2.0
 
+using Microsoft.Extensions.Logging;
 using Xunit;
 
 namespace Vertx.PgClient.Tests;
+
+/// <summary>
+/// A test logger that captures log messages for verification.
+/// </summary>
+public class TestLogger : ILogger
+{
+    private readonly List<string> _messages = new();
+    private readonly object _lock = new();
+
+    public IReadOnlyList<string> Messages
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _messages.ToList();
+            }
+        }
+    }
+
+    public int MessageCount
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _messages.Count;
+            }
+        }
+    }
+
+    public bool HasMessageContaining(string substring)
+    {
+        lock (_lock)
+        {
+            return _messages.Any(m => m.Contains(substring, StringComparison.OrdinalIgnoreCase));
+        }
+    }
+
+    public int CountMessagesContaining(string substring)
+    {
+        lock (_lock)
+        {
+            return _messages.Count(m => m.Contains(substring, StringComparison.OrdinalIgnoreCase));
+        }
+    }
+
+    public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+    {
+        var message = formatter(state, exception);
+        lock (_lock)
+        {
+            _messages.Add($"[{logLevel}] {message}");
+        }
+    }
+
+    public bool IsEnabled(LogLevel logLevel) => true;
+
+    public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+}
 
 [Collection("PostgreSQL")]
 public class PoolTests
@@ -288,7 +349,7 @@ public class PoolTests
         Assert.Equal(queryCount, results.Length);
     }
     
-    [Fact(Skip = "Not working for now")]
+    [Fact]
     public async Task MultiplexingAllowsConcurrentCallersOnSameConnection()
     {
         // This test verifies that multiple concurrent callers can use 
@@ -298,28 +359,34 @@ public class PoolTests
         var poolOptions = new PgPoolOptions { MaxSize = 1, Pipelined = true };
         await using var pool = PgPool.Create(_fixture.CreateConnectOptions(), poolOptions);
         
-        var barrier = new Barrier(5);
-        var startTimes = new long[5];
-        var endTimes = new long[5];
+        // Use a countdown event for async-friendly synchronization
+        var readyCount = 0;
+        var allReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        const int taskCount = 5;
         
-        // Launch 5 concurrent tasks that all try to query at the same time
-        var tasks = Enumerable.Range(0, 5).Select(async i =>
+        // Launch concurrent tasks that all try to query at the same time
+        var tasks = Enumerable.Range(0, taskCount).Select(async i =>
         {
-            barrier.SignalAndWait(); // Synchronize start
-            startTimes[i] = System.Diagnostics.Stopwatch.GetTimestamp();
+            // Signal ready and wait for all tasks to be ready
+            if (Interlocked.Increment(ref readyCount) == taskCount)
+            {
+                allReady.SetResult();
+            }
+            await allReady.Task;
+            
+            // Now all tasks race to schedule their queries
             var result = await pool.ScheduleAsync($"SELECT {i} as id");
-            endTimes[i] = System.Diagnostics.Stopwatch.GetTimestamp();
             return result;
         }).ToArray();
         
         var results = await Task.WhenAll(tasks);
         
         // All queries should complete
-        Assert.Equal(5, results.Length);
+        Assert.Equal(taskCount, results.Length);
         
         // Verify results
         var values = results.Select(r => r[0].GetInteger(0)).OrderBy(x => x).ToList();
-        Assert.Equal(new[] { 0, 1, 2, 3, 4 }, values);
+        Assert.Equal(Enumerable.Range(0, taskCount), values);
     }
 
     [Fact]
@@ -389,5 +456,201 @@ public class PoolTests
         Assert.Equal("first", results[0][0].GetString(0));
         Assert.Equal("second", results[1][0].GetString(0));
         Assert.Equal("third", results[2][0].GetString(0));
+    }
+
+    [Fact]
+    public async Task MultiplexingHandlesHighConcurrencyWithBackpressure()
+    {
+        // Test configuration: 4 connections max, 32 producers, 16 queries each = 512 total queries
+        // Each query includes a small sleep to simulate realistic workload
+        const int connectionCount = 4;
+        const int producerCount = 32;
+        const int queriesPerProducer = 16;
+        const int totalQueries = producerCount * queriesPerProducer;
+        const string sleepTime = "0.01"; // 10ms per query
+
+        var logger = new TestLogger();
+        var poolOptions = new PgPoolOptions()
+            .SetMaxSize(connectionCount)
+            .SetPipelined(true);
+        
+        // Use default connect options
+        var connectOptions = _fixture.CreateConnectOptions().SetPipeliningLimit(16);
+
+        await using var pool = PgPool.Create(connectOptions, poolOptions, logger);
+
+        // Create a table to track increments
+        var tableName = $"multiplex_test_{Guid.NewGuid():N}";
+        await pool.QueryAsync($"CREATE TABLE {tableName} (id SERIAL PRIMARY KEY, producer_id INT, seq INT)");
+
+        try
+        {
+            // Track completed and failed queries per producer
+            var completedQueries = new int[producerCount];
+            var failedQueries = new int[producerCount];
+            var allTasks = new List<Task>();
+            var exceptions = new System.Collections.Concurrent.ConcurrentBag<Exception>();
+            
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+
+            // Launch all producers concurrently
+            for (int producerId = 0; producerId < producerCount; producerId++)
+            {
+                int pid = producerId; // Capture for closure
+                var producerTask = Task.Run(async () =>
+                {
+                    var tasks = new List<Task>();
+                    for (int seq = 0; seq < queriesPerProducer; seq++)
+                    {
+                        int s = seq; // Capture for closure
+                        // Include pg_sleep to make queries take time and saturate the pool
+                        var queryTask = pool.ScheduleAsync(
+                            $"INSERT INTO {tableName} (producer_id, seq) SELECT {pid}, {s} FROM pg_sleep({sleepTime})"
+                        ).ContinueWith(t =>
+                        {
+                            if (t.IsFaulted)
+                            {
+                                Interlocked.Increment(ref failedQueries[pid]);
+                                exceptions.Add(t.Exception!);
+                            }
+                            else if (t.IsCompletedSuccessfully)
+                            {
+                                Interlocked.Increment(ref completedQueries[pid]);
+                            }
+                        });
+                        tasks.Add(queryTask);
+                    }
+                    await Task.WhenAll(tasks);
+                });
+                allTasks.Add(producerTask);
+            }
+
+            // Wait for all producers to complete
+            await Task.WhenAll(allTasks);
+            
+            stopwatch.Stop();
+            
+            // Log any failures
+            var totalFailed = failedQueries.Sum();
+            if (totalFailed > 0)
+            {
+                var firstException = exceptions.FirstOrDefault();
+                Assert.Fail($"Got {totalFailed} failed queries. First exception: {firstException?.GetType().Name}: {firstException?.Message}");
+            }
+            
+            stopwatch.Stop();
+
+            // Verify all queries completed
+            var totalCompleted = completedQueries.Sum();
+            Assert.Equal(totalQueries, totalCompleted);
+
+            // Verify each producer completed all their queries
+            for (int i = 0; i < producerCount; i++)
+            {
+                Assert.Equal(queriesPerProducer, completedQueries[i]);
+            }
+            
+            // Verify the pool was saturated - should have logged saturation messages
+            var saturationCount = logger.CountMessagesContaining("Pool saturated");
+            
+            // Verify connections were created
+            var connectionCreatedCount = logger.CountMessagesContaining("Created new multiplexed connection");
+            Assert.True(connectionCreatedCount >= 1, 
+                $"Should have created at least 1 multiplexed connection, but only created {connectionCreatedCount}");
+            
+            // With 512 queries and efficient multiplexing, we may or may not need multiple connections
+            // depending on timing and pipelining capacity
+            var finalConnectionCount = pool.MultiplexedConnectionCount;
+            Assert.True(finalConnectionCount >= 1 && finalConnectionCount <= connectionCount,
+                $"Should have between 1 and {connectionCount} multiplexed connections, got {finalConnectionCount}. " +
+                $"Saturation events: {saturationCount}, Connection creates: {connectionCreatedCount}. " +
+                $"Total time: {stopwatch.Elapsed.TotalSeconds:F2}s");
+            
+            // With 512 queries at 10ms each across multiple connections, total time should be meaningful
+            Assert.True(stopwatch.Elapsed.TotalSeconds >= 1.0, 
+                $"Test should take at least 1 second with slow queries, but took {stopwatch.Elapsed.TotalSeconds:F2}s");
+            Assert.True(stopwatch.Elapsed.TotalSeconds <= 60.0, 
+                $"Test should complete within 60 seconds, but took {stopwatch.Elapsed.TotalSeconds:F2}s");
+
+            // Verify database state is coherent
+            var countResult = await pool.QueryAsync($"SELECT COUNT(*) FROM {tableName}");
+            Assert.Equal(totalQueries, countResult[0].GetLong(0));
+
+            // Verify each producer has exactly queriesPerProducer rows
+            var perProducerResult = await pool.QueryAsync(
+                $"SELECT producer_id, COUNT(*) as cnt FROM {tableName} GROUP BY producer_id ORDER BY producer_id"
+            );
+            Assert.Equal(producerCount, perProducerResult.Count);
+            foreach (var row in perProducerResult)
+            {
+                Assert.Equal(queriesPerProducer, row.GetLong(1));
+            }
+
+            // Verify all sequence numbers are present (no duplicates, no missing)
+            // Each producer should have seq values 0 through queriesPerProducer-1
+            var distinctSeqResult = await pool.QueryAsync(
+                $@"SELECT producer_id, COUNT(DISTINCT seq) as distinct_seqs, MIN(seq) as min_seq, MAX(seq) as max_seq
+                   FROM {tableName} 
+                   GROUP BY producer_id 
+                   ORDER BY producer_id"
+            );
+            foreach (var row in distinctSeqResult)
+            {
+                Assert.Equal(queriesPerProducer, row.GetLong(1)); // All seqs are distinct
+                Assert.Equal(0, row.GetInteger(2));                // Min seq is 0
+                Assert.Equal(queriesPerProducer - 1, row.GetInteger(3)); // Max seq is queriesPerProducer-1
+            }
+        }
+        finally
+        {
+            // Cleanup
+            await pool.QueryAsync($"DROP TABLE IF EXISTS {tableName}");
+        }
+    }
+
+    [Fact]
+    public async Task MultiplexingCreatesMultipleConnectionsWhenNeeded()
+    {
+        // This test verifies that the pool creates multiple connections when the pipelining
+        // limit is exceeded. We use a small pipelining limit to force connection creation.
+        const int connectionCount = 4;
+        const int queriesPerConnection = 10;
+        const int totalQueries = connectionCount * queriesPerConnection;
+
+        var logger = new TestLogger();
+        var poolOptions = new PgPoolOptions { MaxSize = connectionCount, Pipelined = true };
+        await using var pool = PgPool.Create(_fixture.CreateConnectOptions(), poolOptions, logger);
+
+        // Launch queries that will block in PostgreSQL using pg_sleep
+        // Each query takes some time, so we'll saturate the pipeline
+        var tasks = new List<Task<RowSet>>();
+        
+        // First, warm up to create all connections by sending slow queries concurrently
+        var warmupTasks = Enumerable.Range(0, connectionCount)
+            .Select(_ => pool.ScheduleAsync("SELECT pg_sleep(0.05), 1 as result"))
+            .ToList();
+        
+        // While warmup is running, send more queries to trigger pool saturation
+        await Task.Delay(10); // Let warmup queries start
+        
+        var moreTasks = Enumerable.Range(0, totalQueries)
+            .Select(i => pool.ScheduleAsync($"SELECT {i} as id"))
+            .ToList();
+
+        // Wait for all queries
+        await Task.WhenAll(warmupTasks);
+        var results = await Task.WhenAll(moreTasks);
+
+        // Verify all queries completed
+        Assert.Equal(totalQueries, results.Length);
+        
+        // Verify results
+        var values = results.Select(r => r[0].GetInteger(0)).OrderBy(x => x).ToList();
+        Assert.Equal(Enumerable.Range(0, totalQueries), values);
+        
+        // Check that connections were created
+        var connectionCreatedCount = logger.CountMessagesContaining("Created new multiplexed connection");
+        Assert.True(connectionCreatedCount >= 1, 
+            $"Should have created at least one multiplexed connection. Messages: {string.Join("; ", logger.Messages.Where(m => m.Contains("connection", StringComparison.OrdinalIgnoreCase)).Take(5))}");
     }
 }

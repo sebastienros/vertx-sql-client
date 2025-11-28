@@ -20,6 +20,7 @@ internal sealed class MultiplexedConnection : IAsyncDisposable
     private readonly Channel<PgCommand> _commandChannel;
     private readonly SemaphoreSlim _sendLock = new(1, 1);
     private readonly CancellationTokenSource _disposeCts = new();
+    private readonly Task _commandSenderTask;
     private readonly Task _responseDispatcherTask;
     private readonly Queue<PgCommand> _inflight = new();
     private bool _disposed;
@@ -66,7 +67,8 @@ internal sealed class MultiplexedConnection : IAsyncDisposable
             SingleWriter = false
         });
 
-        // Start the response dispatcher
+        // Start background tasks
+        _commandSenderTask = Task.Run(CommandSenderAsync);
         _responseDispatcherTask = Task.Run(ResponseDispatcherAsync);
     }
 
@@ -105,38 +107,70 @@ internal sealed class MultiplexedConnection : IAsyncDisposable
     }
 
     /// <summary>
-    /// Schedules a command for execution.
+    /// Schedules a command for execution by writing it to the command channel.
+    /// The background command sender task will pick it up and send it to the server.
     /// </summary>
     private async ValueTask ScheduleCommandAsync(PgCommand command, CancellationToken cancellationToken)
     {
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _disposeCts.Token);
-        
-        // Send the command immediately (with lock to serialize writes)
-        await _sendLock.WaitAsync(linkedCts.Token);
+        await _commandChannel.Writer.WriteAsync(command, linkedCts.Token);
+    }
+
+    /// <summary>
+    /// Background task that reads commands from the channel and sends them to the server.
+    /// </summary>
+    private async Task CommandSenderAsync()
+    {
         try
         {
-            // Add to inflight before sending
-            lock (_inflight)
+            await foreach (var command in _commandChannel.Reader.ReadAllAsync(_disposeCts.Token))
             {
-                _inflight.Enqueue(command);
-            }
+                try
+                {
+                    // Add to inflight queue
+                    lock (_inflight)
+                    {
+                        _inflight.Enqueue(command);
+                    }
 
-            // Encode and send
-            await _socket.SendCommandAsync(command, linkedCts.Token);
-        }
-        catch
-        {
-            // Remove from inflight on error
-            lock (_inflight)
-            {
-                // Try to remove this command if it's still at the end
-                // This is a simplified approach - in practice we might need a more robust cleanup
+                    // Send to server (with lock to serialize writes)
+                    await _sendLock.WaitAsync(_disposeCts.Token);
+                    try
+                    {
+                        await _socket.SendCommandAsync(command, _disposeCts.Token);
+                    }
+                    finally
+                    {
+                        _sendLock.Release();
+                    }
+                }
+                catch (Exception ex) when (!_disposeCts.Token.IsCancellationRequested)
+                {
+                    _logger.LogError(ex, "Error sending command");
+                    
+                    // Remove from inflight and complete with error
+                    lock (_inflight)
+                    {
+                        // Remove if it's still there (might be at the end)
+                        var list = _inflight.ToList();
+                        if (list.Remove(command))
+                        {
+                            _inflight.Clear();
+                            foreach (var c in list)
+                                _inflight.Enqueue(c);
+                        }
+                    }
+                    command.Complete(ex);
+                }
             }
-            throw;
         }
-        finally
+        catch (OperationCanceledException) when (_disposeCts.Token.IsCancellationRequested)
         {
-            _sendLock.Release();
+            // Normal shutdown
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Command sender crashed");
         }
     }
 
@@ -149,20 +183,20 @@ internal sealed class MultiplexedConnection : IAsyncDisposable
         {
             while (!_disposed && !_disposeCts.Token.IsCancellationRequested)
             {
+                // Wait for a command to be in flight before trying to read responses
                 PgCommand? current;
                 lock (_inflight)
                 {
                     if (!_inflight.TryPeek(out current))
                     {
-                        // No commands inflight, wait a bit
-                        // In a more sophisticated implementation, we'd use a signal
+                        current = null;
                     }
                 }
 
                 if (current is null)
                 {
-                    // Wait for commands to be scheduled
-                    await Task.Delay(1, _disposeCts.Token);
+                    // No commands yet, wait a bit
+                    await Task.Delay(10, _disposeCts.Token);
                     continue;
                 }
 
@@ -266,12 +300,15 @@ internal sealed class MultiplexedConnection : IAsyncDisposable
             return;
 
         _disposed = true;
+        
+        // Signal shutdown and complete the channel
+        _commandChannel.Writer.Complete();
         _disposeCts.Cancel();
 
-        // Wait for response dispatcher to finish
+        // Wait for background tasks to finish
         try
         {
-            await _responseDispatcherTask.WaitAsync(TimeSpan.FromSeconds(5));
+            await Task.WhenAll(_commandSenderTask, _responseDispatcherTask).WaitAsync(TimeSpan.FromSeconds(5));
         }
         catch
         {
