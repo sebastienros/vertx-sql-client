@@ -22,7 +22,12 @@ public readonly struct PgValue
     // We use Unsafe.As to reinterpret the bits for different types
     private readonly long _primitiveValue;
     
-    // Reference type storage for strings, arrays, complex types, and large value types (Guid, DateTimeOffset, etc.)
+    // Second primitive storage for 16-byte value types (Guid, DateTimeOffset)
+    // For Guid: stores the second 8 bytes
+    // For DateTimeOffset: stores the offset in minutes (as short)
+    private readonly long _primitiveValue2;
+    
+    // Reference type storage for strings, arrays, complex types, and large value types (decimal)
     private readonly object? _objectValue;
 
     // Type discriminator and metadata
@@ -182,14 +187,19 @@ public readonly struct PgValue
 
     public PgValue(DateTimeOffset value, DataType? dataType = null)
     {
-        _objectValue = value; // DateTimeOffset is 16 bytes, store as object (boxed)
+        _primitiveValue = value.UtcTicks;
+        _primitiveValue2 = (long)value.Offset.TotalMinutes;
         _dataType = dataType ?? DataType.Timestamptz;
         _kind = PgValueKind.DateTimeOffset;
     }
 
     public PgValue(Guid value, DataType? dataType = null)
     {
-        _objectValue = value; // Guid is 16 bytes, store as object (boxed)
+        // Store Guid as two longs using Unsafe to reinterpret the 16 bytes
+        Span<byte> bytes = stackalloc byte[16];
+        value.TryWriteBytes(bytes);
+        _primitiveValue = Unsafe.ReadUnaligned<long>(ref bytes[0]);
+        _primitiveValue2 = Unsafe.ReadUnaligned<long>(ref bytes[8]);
         _dataType = dataType ?? DataType.Uuid;
         _kind = PgValueKind.Guid;
     }
@@ -399,8 +409,8 @@ public readonly struct PgValue
             PgValueKind.DateOnly => DateOnly.FromDayNumber((int)_primitiveValue).ToString(),
             PgValueKind.TimeOnly => new TimeOnly(_primitiveValue).ToString(),
             PgValueKind.DateTime => new DateTime(_primitiveValue).ToString(),
-            PgValueKind.DateTimeOffset => ((DateTimeOffset)_objectValue!).ToString(),
-            PgValueKind.Guid => ((Guid)_objectValue!).ToString(),
+            PgValueKind.DateTimeOffset => GetDateTimeOffset().ToString(),
+            PgValueKind.Guid => ReconstructGuid().ToString(),
             _ => _objectValue?.ToString()
         };
     }
@@ -413,7 +423,7 @@ public readonly struct PgValue
         return _kind switch
         {
             PgValueKind.DateTime => new DateTime(_primitiveValue),
-            PgValueKind.DateTimeOffset => ((DateTimeOffset)_objectValue!).DateTime,
+            PgValueKind.DateTimeOffset => GetDateTimeOffset().DateTime,
             PgValueKind.DateOnly => DateOnly.FromDayNumber((int)_primitiveValue).ToDateTime(TimeOnly.MinValue),
             PgValueKind.String => DateTime.Parse((string)_objectValue!),
             PgValueKind.Null => default,
@@ -428,7 +438,7 @@ public readonly struct PgValue
     {
         return _kind switch
         {
-            PgValueKind.DateTimeOffset => (DateTimeOffset)_objectValue!,
+            PgValueKind.DateTimeOffset => new DateTimeOffset(new DateTime(_primitiveValue, DateTimeKind.Utc)).ToOffset(TimeSpan.FromMinutes(_primitiveValue2)),
             PgValueKind.DateTime => new DateTimeOffset(new DateTime(_primitiveValue)),
             PgValueKind.DateOnly => new DateTimeOffset(DateOnly.FromDayNumber((int)_primitiveValue).ToDateTime(TimeOnly.MinValue)),
             PgValueKind.String => DateTimeOffset.Parse((string)_objectValue!),
@@ -446,7 +456,7 @@ public readonly struct PgValue
         {
             PgValueKind.DateOnly => DateOnly.FromDayNumber((int)_primitiveValue),
             PgValueKind.DateTime => DateOnly.FromDateTime(new DateTime(_primitiveValue)),
-            PgValueKind.DateTimeOffset => DateOnly.FromDateTime(((DateTimeOffset)_objectValue!).DateTime),
+            PgValueKind.DateTimeOffset => DateOnly.FromDateTime(GetDateTimeOffset().DateTime),
             PgValueKind.String => DateOnly.Parse((string)_objectValue!),
             PgValueKind.Null => default,
             _ => (DateOnly)GetObject()!
@@ -462,7 +472,7 @@ public readonly struct PgValue
         {
             PgValueKind.TimeOnly => new TimeOnly(_primitiveValue),
             PgValueKind.DateTime => TimeOnly.FromDateTime(new DateTime(_primitiveValue)),
-            PgValueKind.DateTimeOffset => TimeOnly.FromDateTime(((DateTimeOffset)_objectValue!).DateTime),
+            PgValueKind.DateTimeOffset => TimeOnly.FromDateTime(GetDateTimeOffset().DateTime),
             PgValueKind.String => TimeOnly.Parse((string)_objectValue!),
             PgValueKind.Null => default,
             _ => (TimeOnly)GetObject()!
@@ -476,12 +486,21 @@ public readonly struct PgValue
     {
         return _kind switch
         {
-            PgValueKind.Guid => (Guid)_objectValue!,
+            PgValueKind.Guid => ReconstructGuid(),
             PgValueKind.String => Guid.Parse((string)_objectValue!),
             PgValueKind.ByteArray => new Guid((byte[])_objectValue!),
             PgValueKind.Null => Guid.Empty,
             _ => (Guid)GetObject()!
         };
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private Guid ReconstructGuid()
+    {
+        Span<byte> bytes = stackalloc byte[16];
+        Unsafe.WriteUnaligned(ref bytes[0], _primitiveValue);
+        Unsafe.WriteUnaligned(ref bytes[8], _primitiveValue2);
+        return new Guid(bytes);
     }
 
     /// <summary>
@@ -555,6 +574,8 @@ public readonly struct PgValue
             PgValueKind.DateOnly => DateOnly.FromDayNumber((int)_primitiveValue),
             PgValueKind.TimeOnly => new TimeOnly(_primitiveValue),
             PgValueKind.DateTime => new DateTime(_primitiveValue),
+            PgValueKind.DateTimeOffset => GetDateTimeOffset(),
+            PgValueKind.Guid => ReconstructGuid(),
             _ => _objectValue
         };
     }
@@ -762,8 +783,8 @@ public readonly struct PgValue
             PgValueKind.DateOnly => DataTypeCodec.EncodeDateBinary(DateOnly.FromDayNumber((int)_primitiveValue), buffer),
             PgValueKind.TimeOnly => DataTypeCodec.EncodeTimeBinary(new TimeOnly(_primitiveValue), buffer),
             PgValueKind.DateTime => DataTypeCodec.EncodeTimestampBinary(new DateTime(_primitiveValue), buffer),
-            PgValueKind.DateTimeOffset => DataTypeCodec.EncodeTimestampTzBinary((DateTimeOffset)_objectValue!, buffer),
-            PgValueKind.Guid => DataTypeCodec.EncodeGuidBinary((Guid)_objectValue!, buffer),
+            PgValueKind.DateTimeOffset => DataTypeCodec.EncodeTimestampTzBinary(GetDateTimeOffset(), buffer),
+            PgValueKind.Guid => DataTypeCodec.EncodeGuidBinary(ReconstructGuid(), buffer),
             PgValueKind.ByteArray => DataTypeCodec.EncodeByteArrayBinary((byte[])_objectValue!, buffer),
             PgValueKind.Object => EncodeObjectBinary(buffer),
             _ => 0

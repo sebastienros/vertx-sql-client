@@ -263,10 +263,13 @@ values[i] = payload.Slice(pos, length).ToArray();
 
 ### 🟡 Medium Priority
 
-#### 3. Large Value Type Boxing
-**Location**: `PgValue.cs:143-195`
-**Issue**: `decimal`, `Guid`, `DateTimeOffset` are boxed because they exceed 8 bytes.
-**Recommendation**: Consider using separate fields or a union struct approach for these types.
+#### 3. Large Value Type Boxing - FIXED (Guid, DateTimeOffset)
+**Location**: `PgValue.cs`
+**Original Issue**: `decimal`, `Guid`, `DateTimeOffset` were boxed because they exceed 8 bytes.
+**Solution**: Added a second primitive field `_primitiveValue2` to store 16-byte value types without boxing:
+- `Guid` (16 bytes): stored as two 8-byte longs using `Unsafe.ReadUnaligned`/`WriteUnaligned`
+- `DateTimeOffset` (12 bytes): stored as UTC ticks in `_primitiveValue` and offset minutes in `_primitiveValue2`
+- `decimal` (16 bytes): still boxed due to complexity of its internal representation
 
 #### 4. Array Encoding Intermediate Allocations - FIXED
 **Location**: `DataTypeCodec.cs:719-785`
