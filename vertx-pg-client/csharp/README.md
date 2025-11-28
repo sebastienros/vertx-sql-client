@@ -6,6 +6,7 @@ A high-performance PostgreSQL client for .NET, ported from the [Vert.x pg-client
 
 - Fully asynchronous API using `async/await`
 - Simple and prepared query execution
+- **Prepared statement caching** with LRU eviction
 - Binary and text protocol support
 - **Connection pooling** with configurable size and timeouts
 - **Query pipelining/multiplexing** - multiple concurrent queries on shared connections
@@ -54,6 +55,39 @@ var users = await connection.PreparedQueryAsync(
     Tuple.Create(21)
 );
 ```
+
+## Prepared Statement Caching
+
+Enable prepared statement caching to reuse parsed statements across multiple executions of the same SQL query. This reduces server round-trips and improves performance for repeated queries.
+
+```csharp
+var options = new PgConnectOptions
+{
+    Host = "localhost",
+    Database = "mydb",
+    User = "myuser",
+    Password = "mypassword",
+    CachePreparedStatements = true,          // Enable caching (default: false)
+    PreparedStatementCacheMaxSize = 256,     // Max cached statements (default: 256)
+    PreparedStatementCacheSqlLimit = 2048    // Max SQL length to cache (default: 2048)
+};
+
+await using var connection = await PgConnection.ConnectAsync(options);
+
+// First call: parses, caches, and executes
+var result1 = await connection.PreparedQueryAsync(
+    "SELECT * FROM users WHERE id = $1",
+    Tuple.Create(1)
+);
+
+// Subsequent calls: reuses cached statement (no parse needed)
+var result2 = await connection.PreparedQueryAsync(
+    "SELECT * FROM users WHERE id = $1",
+    Tuple.Create(2)
+);
+```
+
+The cache uses LRU (Least Recently Used) eviction when the maximum size is reached. Evicted statements are automatically closed on the server.
 
 ## Connection Pooling
 
@@ -243,7 +277,6 @@ The following features from the original Vert.x pg-client are not yet implemente
 | **Row streaming** | Reactive stream of rows with pause/resume/backpressure |
 | **Batch queries** | Execute same prepared statement with multiple parameter sets |
 | **Cancel request** | Cancel a running query from another connection |
-| **Prepared statement caching** | Cache prepared statements with configurable size |
 | **Row mapping** | Transform rows to custom objects via mapping function |
 | **Layer 7 proxy support** | PgBouncer transaction mode support |
 | **Unix domain sockets** | Connect via Unix socket instead of TCP |

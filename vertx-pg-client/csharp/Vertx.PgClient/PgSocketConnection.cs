@@ -39,6 +39,9 @@ internal sealed class PgSocketConnection : IAsyncDisposable
 #pragma warning restore CS0649
     private readonly SemaphoreSlim _sendLock = new(1, 1);
 
+    // Prepared statement cache
+    private readonly PreparedStatementCache? _preparedStatementCache;
+
     private Socket? _socket;
     private Stream? _stream;
     private NetworkStream? _networkStream;
@@ -68,6 +71,13 @@ internal sealed class PgSocketConnection : IAsyncDisposable
         _encoder = new PgEncoder();
         _decoder = new PgDecoder();
         _receiveBuffer = ArrayPool<byte>.Shared.Rent(65536);
+        
+        if (options.CachePreparedStatements)
+        {
+            _preparedStatementCache = new PreparedStatementCache(
+                options.PreparedStatementCacheMaxSize,
+                options.PreparedStatementCacheSqlLimit);
+        }
     }
 
     public async ValueTask ConnectAsync(CancellationToken cancellationToken = default)
@@ -369,7 +379,15 @@ internal sealed class PgSocketConnection : IAsyncDisposable
 
     public async ValueTask<RowSet> PreparedQueryAsync(string sql, ITuple? parameters, CancellationToken cancellationToken = default)
     {
+        // Check if we have a cached statement
+        if (_preparedStatementCache is not null && _preparedStatementCache.TryGet(sql, out var cached))
+        {
+            _logger.LogTrace("Using cached prepared statement for: {Sql}", sql);
+            return await ExecuteCachedStatementAsync(cached!, parameters, cancellationToken);
+        }
+
         var statementName = _encoder.GenerateStatementName();
+        var shouldCache = _preparedStatementCache?.ShouldCache(sql) ?? false;
         
         _encoder.Reset();
         _encoder.WriteParse(sql, statementName);
@@ -433,15 +451,63 @@ internal sealed class PgSocketConnection : IAsyncDisposable
             }
         }
 
+        // Cache the prepared statement if caching is enabled
+        if (shouldCache)
+        {
+            _preparedStatementCache!.Add(sql, new CachedPreparedStatement
+            {
+                StatementName = statementName,
+                ParameterTypes = paramTypes,
+                RowDescription = rowDesc
+            });
+            _logger.LogTrace("Cached prepared statement for: {Sql}", sql);
+        }
+
         // Now bind and execute
         _encoder.Reset();
         _encoder.WriteBind(statementName, "", parameters, paramTypes);
         _encoder.WriteExecute();
-        _encoder.WriteClose('S', statementName);
+        
+        // Only close the statement if we're not caching it
+        if (!shouldCache)
+        {
+            _encoder.WriteClose('S', statementName);
+        }
+        
+        // Close any evicted statements from the cache
+        if (_preparedStatementCache is not null)
+        {
+            foreach (var stmtToClose in _preparedStatementCache.GetStatementsToClose())
+            {
+                _encoder.WriteClose('S', stmtToClose);
+            }
+        }
+        
         _encoder.WriteSync();
         await SendAsync(cancellationToken);
 
         return await ReceiveExtendedQueryResultAsync(rowDesc, cancellationToken);
+    }
+
+    private async ValueTask<RowSet> ExecuteCachedStatementAsync(
+        CachedPreparedStatement cached, 
+        ITuple? parameters, 
+        CancellationToken cancellationToken)
+    {
+        _encoder.Reset();
+        _encoder.WriteBind(cached.StatementName, "", parameters, cached.ParameterTypes);
+        _encoder.WriteExecute();
+        
+        // Close any evicted statements from the cache
+        foreach (var stmtToClose in _preparedStatementCache!.GetStatementsToClose())
+        {
+            _encoder.WriteClose('S', stmtToClose);
+        }
+        
+        _encoder.WriteSync();
+        await SendAsync(cancellationToken);
+
+        return await ReceiveExtendedQueryResultAsync(cached.RowDescription, cancellationToken);
     }
 
     private async ValueTask<RowSet> ReceiveQueryResultAsync(CancellationToken cancellationToken)

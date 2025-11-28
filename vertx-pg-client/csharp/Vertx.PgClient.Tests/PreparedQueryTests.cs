@@ -132,4 +132,100 @@ public class PreparedQueryTests
         // Cleanup
         await connection.QueryAsync("DROP TABLE test_products");
     }
+
+    [Fact]
+    public async Task CanUsePreparedStatementCaching()
+    {
+        var options = _fixture.CreateConnectOptions()
+            .SetCachePreparedStatements(true)
+            .SetPreparedStatementCacheMaxSize(10);
+        await using var connection = await PgConnection.ConnectAsync(options);
+
+        const string sql = "SELECT $1::int as value";
+
+        // Execute the same query multiple times - should reuse the cached statement
+        for (int i = 0; i < 5; i++)
+        {
+            var result = await connection.PreparedQueryAsync(sql, Tuple.Create(i * 10));
+            Assert.Equal(1, result.Count);
+            Assert.Equal(i * 10, result[0].GetValue("value").GetInteger());
+        }
+    }
+
+    [Fact]
+    public async Task PreparedStatementCachingWithMultipleQueries()
+    {
+        var options = _fixture.CreateConnectOptions()
+            .SetCachePreparedStatements(true)
+            .SetPreparedStatementCacheMaxSize(10);
+        await using var connection = await PgConnection.ConnectAsync(options);
+
+        const string sql1 = "SELECT $1::int + $2::int as sum";
+        const string sql2 = "SELECT $1::text as name";
+
+        // Interleave different queries
+        for (int i = 0; i < 3; i++)
+        {
+            var result1 = await connection.PreparedQueryAsync(sql1, Tuple.Create(i, i + 1));
+            Assert.Equal(i + (i + 1), result1[0].GetValue("sum").GetInteger());
+
+            var result2 = await connection.PreparedQueryAsync(sql2, Tuple.Create($"test{i}"));
+            Assert.Equal($"test{i}", result2[0].GetValue("name").GetString());
+        }
+    }
+
+    [Fact]
+    public async Task PreparedStatementCacheLRUEviction()
+    {
+        // Small cache to test eviction
+        var options = _fixture.CreateConnectOptions()
+            .SetCachePreparedStatements(true)
+            .SetPreparedStatementCacheMaxSize(3);
+        await using var connection = await PgConnection.ConnectAsync(options);
+
+        // Execute more unique queries than cache size
+        for (int i = 0; i < 10; i++)
+        {
+            var sql = $"SELECT {i} as value, $1::int as param";
+            var result = await connection.PreparedQueryAsync(sql, Tuple.Create(i * 100));
+            Assert.Equal(i, result[0].GetValue("value").GetInteger());
+            Assert.Equal(i * 100, result[0].GetValue("param").GetInteger());
+        }
+    }
+
+    [Fact]
+    public async Task PreparedStatementCachingDisabledByDefault()
+    {
+        // Default options should not have caching
+        var options = _fixture.CreateConnectOptions();
+        await using var connection = await PgConnection.ConnectAsync(options);
+
+        // This should work without caching
+        for (int i = 0; i < 3; i++)
+        {
+            var result = await connection.PreparedQueryAsync(
+                "SELECT $1::int as value",
+                Tuple.Create(i)
+            );
+            Assert.Equal(i, result[0].GetValue("value").GetInteger());
+        }
+    }
+
+    [Fact]
+    public async Task PreparedStatementCacheRespectsSqlLengthLimit()
+    {
+        var options = _fixture.CreateConnectOptions()
+            .SetCachePreparedStatements(true)
+            .SetPreparedStatementCacheSqlLimit(50);  // Very short limit
+        await using var connection = await PgConnection.ConnectAsync(options);
+
+        // Short query should work
+        var result1 = await connection.PreparedQueryAsync("SELECT $1::int", Tuple.Create(1));
+        Assert.Equal(1, result1[0].GetValue("int4").GetInteger());
+
+        // Long query should also work (but won't be cached - no error expected)
+        var longSql = $"SELECT $1::int /* {new string('x', 100)} */";
+        var result2 = await connection.PreparedQueryAsync(longSql, Tuple.Create(2));
+        Assert.Equal(2, result2[0].GetValue("int4").GetInteger());
+    }
 }

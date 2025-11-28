@@ -25,7 +25,10 @@ public class ThroughputBenchmarks
         _fixture = new PostgresFixture();
         await _fixture.InitializeAsync();
 
-        _pool = PgPool.Create(_fixture.CreateConnectOptions(), new PgPoolOptions
+        var options = _fixture.CreateConnectOptions()
+            .SetCachePreparedStatements(true);
+
+        _pool = PgPool.Create(options, new PgPoolOptions
         {
             MaxSize = 16,
             Pipelined = true

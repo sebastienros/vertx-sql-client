@@ -23,9 +23,12 @@ public class WorldBenchmarks
         _fixture = new PostgresFixture();
         await _fixture.InitializeAsync();
 
-        _connection = await PgConnection.ConnectAsync(_fixture.CreateConnectOptions());
+        var options = _fixture.CreateConnectOptions()
+            .SetCachePreparedStatements(true);
 
-        _pool = PgPool.Create(_fixture.CreateConnectOptions(), new PgPoolOptions
+        _connection = await PgConnection.ConnectAsync(options);
+
+        _pool = PgPool.Create(options, new PgPoolOptions
         {
             MaxSize = 16,
             Pipelined = true
