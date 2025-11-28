@@ -236,8 +236,17 @@ The authentication method is negotiated automatically based on the server's conf
 
 The following features from the original Vert.x pg-client are not yet implemented:
 
-- **COPY protocol** - COPY IN/OUT for bulk data transfer is not implemented.
-- **Custom type handlers** - Extended type registration is not available.
+| Feature | Description |
+|---------|-------------|
+| **COPY protocol** | COPY IN/OUT for bulk data transfer |
+| **Cursors** | Server-side cursors for paginating large result sets |
+| **Row streaming** | Reactive stream of rows with pause/resume/backpressure |
+| **Batch queries** | Execute same prepared statement with multiple parameter sets |
+| **Cancel request** | Cancel a running query from another connection |
+| **Prepared statement caching** | Cache prepared statements with configurable size |
+| **Row mapping** | Transform rows to custom objects via mapping function |
+| **Layer 7 proxy support** | PgBouncer transaction mode support |
+| **Unix domain sockets** | Connect via Unix socket instead of TCP |
 
 ## License
 
