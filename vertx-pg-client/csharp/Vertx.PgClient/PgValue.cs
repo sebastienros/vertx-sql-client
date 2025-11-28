@@ -187,7 +187,8 @@ public readonly struct PgValue
 
     public PgValue(DateTimeOffset value, DataType? dataType = null)
     {
-        _primitiveValue = value.UtcTicks;
+        // Store original DateTime ticks and offset minutes separately
+        _primitiveValue = value.Ticks;
         _primitiveValue2 = (long)value.Offset.TotalMinutes;
         _dataType = dataType ?? DataType.Timestamptz;
         _kind = PgValueKind.DateTimeOffset;
@@ -438,7 +439,7 @@ public readonly struct PgValue
     {
         return _kind switch
         {
-            PgValueKind.DateTimeOffset => new DateTimeOffset(new DateTime(_primitiveValue, DateTimeKind.Utc)).ToOffset(TimeSpan.FromMinutes(_primitiveValue2)),
+            PgValueKind.DateTimeOffset => new DateTimeOffset(_primitiveValue, TimeSpan.FromMinutes(_primitiveValue2)),
             PgValueKind.DateTime => new DateTimeOffset(new DateTime(_primitiveValue)),
             PgValueKind.DateOnly => new DateTimeOffset(DateOnly.FromDayNumber((int)_primitiveValue).ToDateTime(TimeOnly.MinValue)),
             PgValueKind.String => DateTimeOffset.Parse((string)_objectValue!),

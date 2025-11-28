@@ -8,6 +8,7 @@ namespace Vertx.PgClient.Codec;
 
 /// <summary>
 /// Encodes PostgreSQL frontend messages.
+/// This class is not thread-safe and should be used by a single connection.
 /// </summary>
 internal sealed class PgEncoder
 {
@@ -32,6 +33,7 @@ internal sealed class PgEncoder
     }
 
     // Pre-allocated buffer for statement name generation (max: "S_FFFFFFFF" = 10 bytes + null = 11)
+    // Thread-safety note: This buffer is only used within GenerateStatementName which is not called concurrently
     private readonly byte[] _statementNameBuffer = new byte[11];
 
     public byte[] GenerateStatementName()
