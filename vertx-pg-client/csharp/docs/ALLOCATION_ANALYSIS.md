@@ -268,13 +268,10 @@ values[i] = payload.Slice(pos, length).ToArray();
 **Issue**: `decimal`, `Guid`, `DateTimeOffset` are boxed because they exceed 8 bytes.
 **Recommendation**: Consider using separate fields or a union struct approach for these types.
 
-#### 4. Array Encoding Intermediate Allocations
-**Location**: `DataTypeCodec.cs:722-752`
-```csharp
-=> EncodeArrayBinaryGeneric(array.Cast<bool?>().ToArray(), ...)
-```
-**Issue**: Creates intermediate nullable array for encoding.
-**Recommendation**: Use direct iteration or Span-based encoding.
+#### 4. Array Encoding Intermediate Allocations - FIXED
+**Location**: `DataTypeCodec.cs:719-785`
+**Original Issue**: Used `array.Cast<T?>().ToArray()` which created intermediate nullable arrays.
+**Solution**: Added `EncodeValueTypeArrayBinary<T>` method that encodes value type arrays directly without creating intermediate allocations. Since value types cannot be null, we skip the nullable conversion entirely.
 
 ### 🟢 Low Priority
 

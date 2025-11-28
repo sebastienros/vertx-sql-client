@@ -716,40 +716,82 @@ public static class DataTypeCodec
         return Utf8.GetBytes(str, buffer);
     }
 
-    // Public typed array encode methods
+    // Public typed array encode methods - optimized to avoid intermediate nullable array allocations
 
     public static int EncodeBoolArrayBinary(bool[] array, Span<byte> buffer)
-        => EncodeArrayBinaryGeneric(array.Cast<bool?>().ToArray(), DataType.Bool, buffer);
+        => EncodeValueTypeArrayBinary(array, DataType.Bool, buffer, static (v, b) => EncodeBoolBinary(v, b));
 
     public static int EncodeInt16ArrayBinary(short[] array, Span<byte> buffer)
-        => EncodeArrayBinaryGeneric(array.Cast<short?>().ToArray(), DataType.Int2, buffer);
+        => EncodeValueTypeArrayBinary(array, DataType.Int2, buffer, static (v, b) => EncodeInt16Binary(v, b));
 
     public static int EncodeInt32ArrayBinary(int[] array, Span<byte> buffer)
-        => EncodeArrayBinaryGeneric(array.Cast<int?>().ToArray(), DataType.Int4, buffer);
+        => EncodeValueTypeArrayBinary(array, DataType.Int4, buffer, static (v, b) => EncodeInt32Binary(v, b));
 
     public static int EncodeInt64ArrayBinary(long[] array, Span<byte> buffer)
-        => EncodeArrayBinaryGeneric(array.Cast<long?>().ToArray(), DataType.Int8, buffer);
+        => EncodeValueTypeArrayBinary(array, DataType.Int8, buffer, static (v, b) => EncodeInt64Binary(v, b));
 
     public static int EncodeFloatArrayBinary(float[] array, Span<byte> buffer)
-        => EncodeArrayBinaryGeneric(array.Cast<float?>().ToArray(), DataType.Float4, buffer);
+        => EncodeValueTypeArrayBinary(array, DataType.Float4, buffer, static (v, b) => EncodeFloatBinary(v, b));
 
     public static int EncodeDoubleArrayBinary(double[] array, Span<byte> buffer)
-        => EncodeArrayBinaryGeneric(array.Cast<double?>().ToArray(), DataType.Float8, buffer);
+        => EncodeValueTypeArrayBinary(array, DataType.Float8, buffer, static (v, b) => EncodeDoubleBinary(v, b));
 
     public static int EncodeStringArrayBinary(string?[] array, Span<byte> buffer)
         => EncodeArrayBinaryGeneric(array, DataType.Text, buffer);
 
     public static int EncodeDateArrayBinary(DateOnly[] array, Span<byte> buffer)
-        => EncodeArrayBinaryGeneric(array.Cast<DateOnly?>().ToArray(), DataType.Date, buffer);
+        => EncodeValueTypeArrayBinary(array, DataType.Date, buffer, static (v, b) => EncodeDateBinary(v, b));
 
     public static int EncodeDateTimeArrayBinary(DateTime[] array, Span<byte> buffer)
-        => EncodeArrayBinaryGeneric(array.Cast<DateTime?>().ToArray(), DataType.Timestamp, buffer);
+        => EncodeValueTypeArrayBinary(array, DataType.Timestamp, buffer, static (v, b) => EncodeTimestampBinary(v, b));
 
     public static int EncodeDateTimeOffsetArrayBinary(DateTimeOffset[] array, Span<byte> buffer)
-        => EncodeArrayBinaryGeneric(array.Cast<DateTimeOffset?>().ToArray(), DataType.Timestamptz, buffer);
+        => EncodeValueTypeArrayBinary(array, DataType.Timestamptz, buffer, static (v, b) => EncodeTimestampTzBinary(v, b));
 
     public static int EncodeGuidArrayBinary(Guid[] array, Span<byte> buffer)
-        => EncodeArrayBinaryGeneric(array.Cast<Guid?>().ToArray(), DataType.Uuid, buffer);
+        => EncodeValueTypeArrayBinary(array, DataType.Uuid, buffer, static (v, b) => EncodeGuidBinary(v, b));
+
+    /// <summary>
+    /// Encodes a value type array directly without creating an intermediate nullable array.
+    /// </summary>
+    private static int EncodeValueTypeArrayBinary<T>(T[] array, DataType elementType, Span<byte> buffer, Func<T, Span<byte>, int> encoder) where T : struct
+    {
+        int offset = 0;
+        
+        // ndim = 1
+        BinaryPrimitives.WriteInt32BigEndian(buffer.Slice(offset), 1);
+        offset += 4;
+        
+        // hasNull = 0 (value type arrays cannot have null elements)
+        BinaryPrimitives.WriteInt32BigEndian(buffer.Slice(offset), 0);
+        offset += 4;
+        
+        // elemType OID
+        BinaryPrimitives.WriteInt32BigEndian(buffer.Slice(offset), (int)elementType.Id);
+        offset += 4;
+        
+        // dim = array length
+        BinaryPrimitives.WriteInt32BigEndian(buffer.Slice(offset), array.Length);
+        offset += 4;
+        
+        // lbound = 1 (PostgreSQL arrays are 1-indexed by default)
+        BinaryPrimitives.WriteInt32BigEndian(buffer.Slice(offset), 1);
+        offset += 4;
+        
+        // Elements - no null checks needed for value types
+        foreach (var elem in array)
+        {
+            // Reserve space for length, encode element, then write length
+            int lengthOffset = offset;
+            offset += 4;
+            
+            int elemBytes = encoder(elem, buffer.Slice(offset));
+            BinaryPrimitives.WriteInt32BigEndian(buffer.Slice(lengthOffset), elemBytes);
+            offset += elemBytes;
+        }
+        
+        return offset;
+    }
 
     /// <summary>
     /// Encodes a .NET array as PostgreSQL binary array format.
