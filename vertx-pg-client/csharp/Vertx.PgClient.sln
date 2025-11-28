@@ -7,6 +7,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Vertx.PgClient", "Vertx.PgC
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Vertx.PgClient.Tests", "Vertx.PgClient.Tests\Vertx.PgClient.Tests.csproj", "{19F09085-BEB1-4FAC-9148-68E7C479EE31}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Vertx.PgClient.Benchmarks", "Vertx.PgClient.Benchmarks\Vertx.PgClient.Benchmarks.csproj", "{F23225D4-0257-480A-8D06-2BC86FA8831D}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -41,6 +43,18 @@ Global
 		{19F09085-BEB1-4FAC-9148-68E7C479EE31}.Release|x64.Build.0 = Release|Any CPU
 		{19F09085-BEB1-4FAC-9148-68E7C479EE31}.Release|x86.ActiveCfg = Release|Any CPU
 		{19F09085-BEB1-4FAC-9148-68E7C479EE31}.Release|x86.Build.0 = Release|Any CPU
+		{F23225D4-0257-480A-8D06-2BC86FA8831D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F23225D4-0257-480A-8D06-2BC86FA8831D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F23225D4-0257-480A-8D06-2BC86FA8831D}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{F23225D4-0257-480A-8D06-2BC86FA8831D}.Debug|x64.Build.0 = Debug|Any CPU
+		{F23225D4-0257-480A-8D06-2BC86FA8831D}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{F23225D4-0257-480A-8D06-2BC86FA8831D}.Debug|x86.Build.0 = Debug|Any CPU
+		{F23225D4-0257-480A-8D06-2BC86FA8831D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F23225D4-0257-480A-8D06-2BC86FA8831D}.Release|Any CPU.Build.0 = Release|Any CPU
+		{F23225D4-0257-480A-8D06-2BC86FA8831D}.Release|x64.ActiveCfg = Release|Any CPU
+		{F23225D4-0257-480A-8D06-2BC86FA8831D}.Release|x64.Build.0 = Release|Any CPU
+		{F23225D4-0257-480A-8D06-2BC86FA8831D}.Release|x86.ActiveCfg = Release|Any CPU
+		{F23225D4-0257-480A-8D06-2BC86FA8831D}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
