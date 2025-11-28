@@ -16,7 +16,7 @@ public class PipeliningTests
         _fixture = fixture;
     }
 
-    [Fact]
+    [Fact(Timeout = 30000)]
     public async Task CanPipelineMultipleQueries()
     {
         var options = _fixture.CreateConnectOptions();
@@ -35,7 +35,7 @@ public class PipeliningTests
         Assert.Equal(3, results[2][0].GetInteger("num"));
     }
 
-    [Fact]
+    [Fact(Timeout = 30000)]
     public async Task CanPipelineDifferentQueryTypes()
     {
         var options = _fixture.CreateConnectOptions();
@@ -55,7 +55,7 @@ public class PipeliningTests
         Assert.Equal(3.14, results[3][0].GetDouble("pi"), 0.01);
     }
 
-    [Fact]
+    [Fact(Timeout = 30000)]
     public async Task CanPipelineQueriesWithMultipleRows()
     {
         var options = _fixture.CreateConnectOptions();
@@ -79,7 +79,7 @@ public class PipeliningTests
         Assert.Equal(12, results[1][2].GetInteger(0));
     }
 
-    [Fact]
+    [Fact(Timeout = 30000)]
     public async Task PipeliningIsFasterThanSequential()
     {
         var options = _fixture.CreateConnectOptions();
@@ -128,7 +128,7 @@ public class PipeliningTests
             $"Pipelining ({pipelinedTime}ms) should not be slower than sequential ({sequentialTime}ms)");
     }
 
-    [Fact]
+    [Fact(Timeout = 30000)]
     public async Task PipeliningRespectsLimit()
     {
         var options = _fixture.CreateConnectOptions();
@@ -152,7 +152,7 @@ public class PipeliningTests
         }
     }
 
-    [Fact]
+    [Fact(Timeout = 30000)]
     public async Task CanPipelineWithNullResults()
     {
         var options = _fixture.CreateConnectOptions();
@@ -170,7 +170,7 @@ public class PipeliningTests
         Assert.Null(results[2][0].GetValue("empty_int"));
     }
 
-    [Fact]
+    [Fact(Timeout = 30000)]
     public async Task CanPipelineEmptyResults()
     {
         var options = _fixture.CreateConnectOptions();
@@ -190,14 +190,14 @@ public class PipeliningTests
         Assert.Equal(1, results[1][0].GetInteger("num"));
     }
 
-    [Fact]
+    [Fact(Timeout = 30000)]
     public async Task DefaultPipeliningLimitIs256()
     {
         var options = _fixture.CreateConnectOptions();
         Assert.Equal(256, options.PipeliningLimit);
     }
 
-    [Fact]
+    [Fact(Timeout = 30000)]
     public async Task CanSetPipeliningLimit()
     {
         var options = _fixture.CreateConnectOptions();

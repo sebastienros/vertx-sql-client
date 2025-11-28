@@ -92,6 +92,61 @@ public interface ITuple
     /// Gets a typed value at the specified position.
     /// </summary>
     T? Get<T>(int position);
+
+    /// <summary>
+    /// Gets an integer array at the specified position.
+    /// </summary>
+    int[]? GetIntegerArray(int position);
+
+    /// <summary>
+    /// Gets a long array at the specified position.
+    /// </summary>
+    long[]? GetLongArray(int position);
+
+    /// <summary>
+    /// Gets a short array at the specified position.
+    /// </summary>
+    short[]? GetShortArray(int position);
+
+    /// <summary>
+    /// Gets a float array at the specified position.
+    /// </summary>
+    float[]? GetFloatArray(int position);
+
+    /// <summary>
+    /// Gets a double array at the specified position.
+    /// </summary>
+    double[]? GetDoubleArray(int position);
+
+    /// <summary>
+    /// Gets a boolean array at the specified position.
+    /// </summary>
+    bool[]? GetBooleanArray(int position);
+
+    /// <summary>
+    /// Gets a string array at the specified position.
+    /// </summary>
+    string?[]? GetStringArray(int position);
+
+    /// <summary>
+    /// Gets a Guid array at the specified position.
+    /// </summary>
+    Guid[]? GetGuidArray(int position);
+
+    /// <summary>
+    /// Gets a DateTime array at the specified position.
+    /// </summary>
+    DateTime[]? GetDateTimeArray(int position);
+
+    /// <summary>
+    /// Gets a DateTimeOffset array at the specified position.
+    /// </summary>
+    DateTimeOffset[]? GetDateTimeOffsetArray(int position);
+
+    /// <summary>
+    /// Gets a DateOnly array at the specified position.
+    /// </summary>
+    DateOnly[]? GetDateArray(int position);
 }
 
 /// <summary>
@@ -124,6 +179,18 @@ public abstract class TupleBase : ITuple
         if (value is T typedValue) return typedValue;
         return (T)Convert.ChangeType(value, typeof(T));
     }
+
+    public int[]? GetIntegerArray(int position) => GetValue(position) as int[];
+    public long[]? GetLongArray(int position) => GetValue(position) as long[];
+    public short[]? GetShortArray(int position) => GetValue(position) as short[];
+    public float[]? GetFloatArray(int position) => GetValue(position) as float[];
+    public double[]? GetDoubleArray(int position) => GetValue(position) as double[];
+    public bool[]? GetBooleanArray(int position) => GetValue(position) as bool[];
+    public string?[]? GetStringArray(int position) => GetValue(position) as string?[];
+    public Guid[]? GetGuidArray(int position) => GetValue(position) as Guid[];
+    public DateTime[]? GetDateTimeArray(int position) => GetValue(position) as DateTime[];
+    public DateTimeOffset[]? GetDateTimeOffsetArray(int position) => GetValue(position) as DateTimeOffset[];
+    public DateOnly[]? GetDateArray(int position) => GetValue(position) as DateOnly[];
 }
 
 /// <summary>

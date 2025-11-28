@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0
 
 using System.Buffers.Binary;
+using System.Buffers.Text;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -59,6 +60,20 @@ public static class DataTypeCodec
             DataTypeId.Cidr => DecodeCidr(buffer),
             DataTypeId.Money => DecodeMoney(buffer),
             DataTypeId.Numeric => DecodeNumeric(buffer),
+            // Array types
+            DataTypeId.BoolArray => DecodeArrayBinary<bool>(buffer, DataType.Bool),
+            DataTypeId.Int2Array => DecodeArrayBinary<short>(buffer, DataType.Int2),
+            DataTypeId.Int4Array => DecodeArrayBinary<int>(buffer, DataType.Int4),
+            DataTypeId.Int8Array => DecodeArrayBinary<long>(buffer, DataType.Int8),
+            DataTypeId.Float4Array => DecodeArrayBinary<float>(buffer, DataType.Float4),
+            DataTypeId.Float8Array => DecodeArrayBinary<double>(buffer, DataType.Float8),
+            DataTypeId.NumericArray => DecodeArrayBinary<decimal>(buffer, DataType.Numeric),
+            DataTypeId.VarcharArray or DataTypeId.TextArray or DataTypeId.BpcharArray or DataTypeId.NameArray => DecodeArrayBinary<string>(buffer, DataType.Text),
+            DataTypeId.DateArray => DecodeArrayBinary<DateOnly>(buffer, DataType.Date),
+            DataTypeId.TimestampArray => DecodeArrayBinary<DateTime>(buffer, DataType.Timestamp),
+            DataTypeId.TimestamptzArray => DecodeArrayBinary<DateTimeOffset>(buffer, DataType.Timestamptz),
+            DataTypeId.UuidArray => DecodeArrayBinary<Guid>(buffer, DataType.Uuid),
+            DataTypeId.ByteaArray => DecodeArrayBinary<byte[]>(buffer, DataType.Bytea),
             _ => DecodeString(buffer) // Unknown types decode as string
         };
     }
@@ -320,6 +335,62 @@ public static class DataTypeCodec
         return result;
     }
 
+    /// <summary>
+    /// Decodes a PostgreSQL array in binary format.
+    /// Binary array format:
+    /// - ndim (4 bytes): number of dimensions
+    /// - hasNull (4 bytes): 1 if array contains NULLs
+    /// - elemType (4 bytes): OID of element type
+    /// - For each dimension: dim (4 bytes), lbound (4 bytes)
+    /// - For each element: length (4 bytes, -1 for NULL), data (length bytes)
+    /// </summary>
+    private static T?[] DecodeArrayBinary<T>(ReadOnlySpan<byte> buffer, DataType elementType)
+    {
+        if (buffer.Length < 12)
+            return Array.Empty<T?>();
+
+        int ndim = BinaryPrimitives.ReadInt32BigEndian(buffer);
+        int hasNull = BinaryPrimitives.ReadInt32BigEndian(buffer.Slice(4));
+        int elemTypeOid = BinaryPrimitives.ReadInt32BigEndian(buffer.Slice(8));
+        
+        if (ndim == 0)
+            return Array.Empty<T?>();
+
+        // For now, only support 1-dimensional arrays
+        if (ndim != 1)
+            throw new NotSupportedException($"Multi-dimensional arrays (ndim={ndim}) are not yet supported");
+
+        int offset = 12;
+        
+        // Read dimension info
+        int dim = BinaryPrimitives.ReadInt32BigEndian(buffer.Slice(offset));
+        int lbound = BinaryPrimitives.ReadInt32BigEndian(buffer.Slice(offset + 4));
+        offset += 8;
+
+        var result = new T?[dim];
+        
+        for (int i = 0; i < dim; i++)
+        {
+            int elemLen = BinaryPrimitives.ReadInt32BigEndian(buffer.Slice(offset));
+            offset += 4;
+            
+            if (elemLen == -1)
+            {
+                // NULL element
+                result[i] = default;
+            }
+            else
+            {
+                var elemData = buffer.Slice(offset, elemLen);
+                var decoded = DecodeBinaryCore(elementType, elemData);
+                result[i] = decoded is T typedValue ? typedValue : default;
+                offset += elemLen;
+            }
+        }
+        
+        return result;
+    }
+
     #endregion
 
     #region Binary Encode
@@ -361,6 +432,18 @@ public static class DataTypeCodec
             DataTypeId.Inet => EncodeInet((Inet)value, buffer),
             DataTypeId.Cidr => EncodeCidr((Cidr)value, buffer),
             DataTypeId.Interval => EncodeInterval((Interval)value, buffer),
+            // Array types
+            DataTypeId.BoolArray => EncodeArrayBinary((bool[])value, DataType.Bool, buffer),
+            DataTypeId.Int2Array => EncodeArrayBinary((short[])value, DataType.Int2, buffer),
+            DataTypeId.Int4Array => EncodeArrayBinary((int[])value, DataType.Int4, buffer),
+            DataTypeId.Int8Array => EncodeArrayBinary((long[])value, DataType.Int8, buffer),
+            DataTypeId.Float4Array => EncodeArrayBinary((float[])value, DataType.Float4, buffer),
+            DataTypeId.Float8Array => EncodeArrayBinary((double[])value, DataType.Float8, buffer),
+            DataTypeId.VarcharArray or DataTypeId.TextArray => EncodeArrayBinary((string[])value, DataType.Text, buffer),
+            DataTypeId.DateArray => EncodeArrayBinary((DateOnly[])value, DataType.Date, buffer),
+            DataTypeId.TimestampArray => EncodeArrayBinary((DateTime[])value, DataType.Timestamp, buffer),
+            DataTypeId.TimestamptzArray => EncodeArrayBinary((DateTimeOffset[])value, DataType.Timestamptz, buffer),
+            DataTypeId.UuidArray => EncodeArrayBinary((Guid[])value, DataType.Uuid, buffer),
             _ => EncodeString(value.ToString() ?? "", buffer)
         };
     }
@@ -580,6 +663,65 @@ public static class DataTypeCodec
         return Utf8.GetBytes(str, buffer);
     }
 
+    /// <summary>
+    /// Encodes a .NET array as PostgreSQL binary array format.
+    /// Binary array format:
+    /// - ndim (4 bytes): number of dimensions (always 1 for now)
+    /// - hasNull (4 bytes): 1 if array contains NULLs
+    /// - elemType (4 bytes): OID of element type
+    /// - dim (4 bytes): size of dimension
+    /// - lbound (4 bytes): lower bound (always 1)
+    /// - For each element: length (4 bytes, -1 for NULL), data (length bytes)
+    /// </summary>
+    private static int EncodeArrayBinary<T>(T?[] array, DataType elementType, Span<byte> buffer)
+    {
+        int offset = 0;
+        
+        // ndim = 1
+        BinaryPrimitives.WriteInt32BigEndian(buffer.Slice(offset), 1);
+        offset += 4;
+        
+        // hasNull - check if any element is null
+        bool hasNull = array.Any(x => x is null);
+        BinaryPrimitives.WriteInt32BigEndian(buffer.Slice(offset), hasNull ? 1 : 0);
+        offset += 4;
+        
+        // elemType OID
+        BinaryPrimitives.WriteInt32BigEndian(buffer.Slice(offset), (int)elementType.Id);
+        offset += 4;
+        
+        // dim = array length
+        BinaryPrimitives.WriteInt32BigEndian(buffer.Slice(offset), array.Length);
+        offset += 4;
+        
+        // lbound = 1 (PostgreSQL arrays are 1-indexed by default)
+        BinaryPrimitives.WriteInt32BigEndian(buffer.Slice(offset), 1);
+        offset += 4;
+        
+        // Elements
+        foreach (var elem in array)
+        {
+            if (elem is null)
+            {
+                // NULL marker
+                BinaryPrimitives.WriteInt32BigEndian(buffer.Slice(offset), -1);
+                offset += 4;
+            }
+            else
+            {
+                // Reserve space for length, encode element, then write length
+                int lengthOffset = offset;
+                offset += 4;
+                
+                EncodeBinary(elementType, elem, buffer.Slice(offset), out int elemBytes);
+                BinaryPrimitives.WriteInt32BigEndian(buffer.Slice(lengthOffset), elemBytes);
+                offset += elemBytes;
+            }
+        }
+        
+        return offset;
+    }
+
     #endregion
 
     #region Text Decode
@@ -616,9 +758,16 @@ public static class DataTypeCodec
             DataTypeId.Cidr => DecodeCidrText(buffer),
             DataTypeId.Interval => DecodeIntervalText(buffer),
             DataTypeId.BoolArray => DecodeBoolArrayText(buffer),
+            DataTypeId.Int2Array => DecodeInt2ArrayText(buffer),
             DataTypeId.Int4Array => DecodeInt4ArrayText(buffer),
+            DataTypeId.Int8Array => DecodeInt8ArrayText(buffer),
+            DataTypeId.Float4Array => DecodeFloat4ArrayText(buffer),
             DataTypeId.Float8Array => DecodeFloat8ArrayText(buffer),
-            DataTypeId.TextArray => DecodeTextArrayText(buffer),
+            DataTypeId.VarcharArray or DataTypeId.TextArray or DataTypeId.BpcharArray or DataTypeId.NameArray => DecodeTextArrayText(buffer),
+            DataTypeId.DateArray => DecodeDateArrayText(buffer),
+            DataTypeId.TimestampArray => DecodeTimestampArrayText(buffer),
+            DataTypeId.TimestamptzArray => DecodeTimestamptzArrayText(buffer),
+            DataTypeId.UuidArray => DecodeUuidArrayText(buffer),
             _ => Utf8.GetString(buffer)
         };
     }
@@ -870,38 +1019,33 @@ public static class DataTypeCodec
     private static int[] DecodeInt4ArrayText(ReadOnlySpan<byte> buffer)
     {
         // Format: {1,2,3,4,5}
-        if (buffer.Length < 2 || buffer[0] != '{' || buffer[^1] != '}')
-            return Array.Empty<int>();
-        
-        if (buffer.Length == 2) // Empty array "{}"
-            return Array.Empty<int>();
-        
-        var inner = buffer[1..^1];
-        var result = new List<int>();
-        
-        int start = 0;
-        for (int i = 0; i <= inner.Length; i++)
+        if (!TryGetArrayInner(buffer, out var inner))
+            return [];
+
+        int count = 1;
+        foreach (var b in inner)
+            if (b == ',') count++;
+
+        var result = new int[count];
+        int index = 0;
+        foreach (var range in inner.Split((byte)','))
         {
-            if (i == inner.Length || inner[i] == ',')
+            var element = inner[range];
+            // NULL handling - treat as 0
+            if (element.Length == 4 && 
+                element[0] is (byte)'N' or (byte)'n' &&
+                element[1] is (byte)'U' or (byte)'u' &&
+                element[2] is (byte)'L' or (byte)'l' &&
+                element[3] is (byte)'L' or (byte)'l')
             {
-                var element = inner[start..i];
-                if (element.Length == 4 && 
-                    (element[0] == 'N' || element[0] == 'n') &&
-                    (element[1] == 'U' || element[1] == 'u') &&
-                    (element[2] == 'L' || element[2] == 'l') &&
-                    (element[3] == 'L' || element[3] == 'l'))
-                {
-                    result.Add(0); // NULL handling
-                }
-                else if (System.Buffers.Text.Utf8Parser.TryParse(element, out int value, out _))
-                {
-                    result.Add(value);
-                }
-                start = i + 1;
+                result[index++] = 0;
+            }
+            else if (Utf8Parser.TryParse(element, out int value, out _))
+            {
+                result[index++] = value;
             }
         }
-        
-        return result.ToArray();
+        return result[..index];
     }
 
     private static string[] DecodeTextArrayText(ReadOnlySpan<byte> buffer)
@@ -1103,59 +1247,197 @@ public static class DataTypeCodec
     private static bool[] DecodeBoolArrayText(ReadOnlySpan<byte> buffer)
     {
         // Format: {t,f,t}
-        if (buffer.Length < 2 || buffer[0] != '{' || buffer[^1] != '}')
-            return Array.Empty<bool>();
-        
-        if (buffer.Length == 2) // Empty array "{}"
-            return Array.Empty<bool>();
-        
-        var inner = buffer[1..^1];
-        var result = new List<bool>();
-        
-        int start = 0;
-        for (int i = 0; i <= inner.Length; i++)
+        if (!TryGetArrayInner(buffer, out var inner))
+            return [];
+
+        // Count elements to pre-allocate
+        int count = 1;
+        foreach (var b in inner)
+            if (b == ',') count++;
+
+        var result = new bool[count];
+        int index = 0;
+        foreach (var range in inner.Split((byte)','))
         {
-            if (i == inner.Length || inner[i] == ',')
+            var element = inner[range];
+            if (element.Length > 0)
             {
-                var element = inner[start..i];
-                if (element.Length > 0)
-                {
-                    result.Add(element[0] == 't' || element[0] == 'T' || element[0] == '1');
-                }
-                start = i + 1;
+                result[index++] = element[0] is (byte)'t' or (byte)'T' or (byte)'1';
             }
         }
-        
-        return result.ToArray();
+        return result;
     }
 
     private static double[] DecodeFloat8ArrayText(ReadOnlySpan<byte> buffer)
     {
         // Format: {1.1,2.2,3.3}
-        if (buffer.Length < 2 || buffer[0] != '{' || buffer[^1] != '}')
-            return Array.Empty<double>();
-        
-        if (buffer.Length == 2) // Empty array "{}"
-            return Array.Empty<double>();
-        
-        var inner = buffer[1..^1];
-        var result = new List<double>();
-        
-        int start = 0;
-        for (int i = 0; i <= inner.Length; i++)
+        if (!TryGetArrayInner(buffer, out var inner))
+            return [];
+
+        int count = 1;
+        foreach (var b in inner)
+            if (b == ',') count++;
+
+        var result = new double[count];
+        int index = 0;
+        foreach (var range in inner.Split((byte)','))
         {
-            if (i == inner.Length || inner[i] == ',')
-            {
-                var element = inner[start..i];
-                if (System.Buffers.Text.Utf8Parser.TryParse(element, out double value, out _))
-                {
-                    result.Add(value);
-                }
-                start = i + 1;
-            }
+            if (Utf8Parser.TryParse(inner[range], out double value, out _))
+                result[index++] = value;
         }
-        
-        return result.ToArray();
+        return result[..index];
+    }
+
+    private static short[] DecodeInt2ArrayText(ReadOnlySpan<byte> buffer)
+    {
+        if (!TryGetArrayInner(buffer, out var inner))
+            return [];
+
+        int count = 1;
+        foreach (var b in inner)
+            if (b == ',') count++;
+
+        var result = new short[count];
+        int index = 0;
+        foreach (var range in inner.Split((byte)','))
+        {
+            if (Utf8Parser.TryParse(inner[range], out short value, out _))
+                result[index++] = value;
+        }
+        return result[..index];
+    }
+
+    private static long[] DecodeInt8ArrayText(ReadOnlySpan<byte> buffer)
+    {
+        if (!TryGetArrayInner(buffer, out var inner))
+            return [];
+
+        int count = 1;
+        foreach (var b in inner)
+            if (b == ',') count++;
+
+        var result = new long[count];
+        int index = 0;
+        foreach (var range in inner.Split((byte)','))
+        {
+            if (Utf8Parser.TryParse(inner[range], out long value, out _))
+                result[index++] = value;
+        }
+        return result[..index];
+    }
+
+    private static float[] DecodeFloat4ArrayText(ReadOnlySpan<byte> buffer)
+    {
+        if (!TryGetArrayInner(buffer, out var inner))
+            return [];
+
+        int count = 1;
+        foreach (var b in inner)
+            if (b == ',') count++;
+
+        var result = new float[count];
+        int index = 0;
+        foreach (var range in inner.Split((byte)','))
+        {
+            if (Utf8Parser.TryParse(inner[range], out float value, out _))
+                result[index++] = value;
+        }
+        return result[..index];
+    }
+
+    private static DateOnly[] DecodeDateArrayText(ReadOnlySpan<byte> buffer)
+    {
+        if (!TryGetArrayInner(buffer, out var inner))
+            return [];
+
+        int count = 1;
+        foreach (var b in inner)
+            if (b == ',') count++;
+
+        var result = new DateOnly[count];
+        int index = 0;
+        foreach (var range in inner.Split((byte)','))
+        {
+            var element = inner[range];
+            if (element.Length > 0 && DateOnly.TryParse(Utf8.GetString(element), out var date))
+                result[index++] = date;
+        }
+        return result[..index];
+    }
+
+    private static DateTime[] DecodeTimestampArrayText(ReadOnlySpan<byte> buffer)
+    {
+        if (!TryGetArrayInner(buffer, out var inner))
+            return [];
+
+        // Timestamps may be quoted: {"2023-01-15 10:30:00","2023-06-20 15:45:00"}
+        var result = new List<DateTime>();
+        foreach (var range in inner.Split((byte)','))
+        {
+            var element = inner[range];
+            // Strip quotes if present
+            if (element.Length >= 2 && element[0] == '"' && element[^1] == '"')
+                element = element[1..^1];
+            if (element.Length > 0 && DateTime.TryParse(Utf8.GetString(element), out var dt))
+                result.Add(dt);
+        }
+        return [.. result];
+    }
+
+    private static DateTimeOffset[] DecodeTimestamptzArrayText(ReadOnlySpan<byte> buffer)
+    {
+        if (!TryGetArrayInner(buffer, out var inner))
+            return [];
+
+        var result = new List<DateTimeOffset>();
+        foreach (var range in inner.Split((byte)','))
+        {
+            var element = inner[range];
+            // Strip quotes if present
+            if (element.Length >= 2 && element[0] == '"' && element[^1] == '"')
+                element = element[1..^1];
+            if (element.Length > 0 && DateTimeOffset.TryParse(Utf8.GetString(element), out var dto))
+                result.Add(dto);
+        }
+        return [.. result];
+    }
+
+    private static Guid[] DecodeUuidArrayText(ReadOnlySpan<byte> buffer)
+    {
+        if (!TryGetArrayInner(buffer, out var inner))
+            return [];
+
+        int count = 1;
+        foreach (var b in inner)
+            if (b == ',') count++;
+
+        var result = new Guid[count];
+        int index = 0;
+        foreach (var range in inner.Split((byte)','))
+        {
+            if (Utf8Parser.TryParse(inner[range], out Guid value, out _))
+                result[index++] = value;
+        }
+        return result[..index];
+    }
+
+    /// <summary>
+    /// Extracts the inner content of a PostgreSQL array, stripping the outer braces.
+    /// </summary>
+    private static bool TryGetArrayInner(ReadOnlySpan<byte> buffer, out ReadOnlySpan<byte> inner)
+    {
+        if (buffer.Length < 2 || buffer[0] != '{' || buffer[^1] != '}')
+        {
+            inner = default;
+            return false;
+        }
+        if (buffer.Length == 2) // Empty array "{}"
+        {
+            inner = default;
+            return false;
+        }
+        inner = buffer[1..^1];
+        return true;
     }
 
     private static List<Point> ParsePointList(ReadOnlySpan<char> text)

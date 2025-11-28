@@ -176,4 +176,40 @@ public sealed class Row : TupleBase, IRow
         int index = GetColumnIndex(columnName);
         return index >= 0 ? GetString(index) : null;
     }
+
+    public int[]? GetIntegerArray(string columnName)
+    {
+        int index = GetColumnIndex(columnName);
+        return index >= 0 ? GetIntegerArray(index) : null;
+    }
+
+    public long[]? GetLongArray(string columnName)
+    {
+        int index = GetColumnIndex(columnName);
+        return index >= 0 ? GetLongArray(index) : null;
+    }
+
+    public string?[]? GetStringArray(string columnName)
+    {
+        int index = GetColumnIndex(columnName);
+        return index >= 0 ? GetStringArray(index) : null;
+    }
+
+    public bool[]? GetBooleanArray(string columnName)
+    {
+        int index = GetColumnIndex(columnName);
+        return index >= 0 ? GetBooleanArray(index) : null;
+    }
+
+    public double[]? GetDoubleArray(string columnName)
+    {
+        int index = GetColumnIndex(columnName);
+        return index >= 0 ? GetDoubleArray(index) : null;
+    }
+
+    public Guid[]? GetGuidArray(string columnName)
+    {
+        int index = GetColumnIndex(columnName);
+        return index >= 0 ? GetGuidArray(index) : null;
+    }
 }

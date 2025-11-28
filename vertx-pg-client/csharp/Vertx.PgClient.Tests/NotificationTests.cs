@@ -19,7 +19,7 @@ public class NotificationTests : IClassFixture<PostgresFixture>
         _fixture = fixture;
     }
 
-    [Fact]
+    [Fact(Timeout = 30000)]
     public async Task ListenNotify_ReceivesNotification()
     {
         var channelName = $"test_channel_{Guid.NewGuid():N}";
@@ -47,7 +47,7 @@ public class NotificationTests : IClassFixture<PostgresFixture>
         Assert.Equal("hello world", receivedNotifications[0].Payload);
     }
 
-    [Fact]
+    [Fact(Timeout = 30000)]
     public async Task ListenNotify_ReceivesMultipleNotifications()
     {
         var channelName = $"test_channel_{Guid.NewGuid():N}";
@@ -77,7 +77,7 @@ public class NotificationTests : IClassFixture<PostgresFixture>
         Assert.Equal("message3", receivedNotifications[2].Payload);
     }
 
-    [Fact]
+    [Fact(Timeout = 30000)]
     public async Task ListenNotify_EmptyPayload()
     {
         var channelName = $"test_channel_{Guid.NewGuid():N}";
@@ -104,7 +104,7 @@ public class NotificationTests : IClassFixture<PostgresFixture>
         Assert.Equal("", receivedNotifications[0].Payload);
     }
 
-    [Fact]
+    [Fact(Timeout = 30000)]
     public async Task ListenNotify_MultipleChannels()
     {
         var channel1 = $"test_channel1_{Guid.NewGuid():N}";
@@ -135,7 +135,7 @@ public class NotificationTests : IClassFixture<PostgresFixture>
         Assert.Contains(receivedNotifications, n => n.Channel == channel2 && n.Payload == "from channel 2");
     }
 
-    [Fact]
+    [Fact(Timeout = 30000)]
     public async Task Unlisten_StopsReceivingNotifications()
     {
         var channelName = $"test_channel_{Guid.NewGuid():N}";
@@ -171,7 +171,7 @@ public class NotificationTests : IClassFixture<PostgresFixture>
         Assert.Equal("before unlisten", receivedNotifications[0].Payload);
     }
 
-    [Fact]
+    [Fact(Timeout = 30000)]
     public async Task ListenNotify_SpecialCharactersInPayload()
     {
         var channelName = $"test_channel_{Guid.NewGuid():N}";
@@ -198,7 +198,7 @@ public class NotificationTests : IClassFixture<PostgresFixture>
         Assert.Equal(payload, receivedNotifications[0].Payload);
     }
 
-    [Fact]
+    [Fact(Timeout = 30000)]
     public async Task Notification_IncludesProcessId()
     {
         var channelName = $"test_channel_{Guid.NewGuid():N}";

@@ -104,6 +104,7 @@ public sealed class DataType
     public bool SupportsBinary { get; }
     public Type ClrType { get; }
     public bool IsArray { get; }
+    public DataType? ElementType { get; private set; }
 
     private DataType(DataTypeId id, bool supportsBinary, Type clrType, bool isArray = false)
     {
@@ -272,6 +273,36 @@ public sealed class DataType
         ClrTypeToDataType[typeof(Money)] = MoneyType;
         ClrTypeToDataType[typeof(Inet)] = InetType;
         ClrTypeToDataType[typeof(Cidr)] = CidrType;
+        
+        // Array CLR type mappings
+        ClrTypeToDataType[typeof(bool[])] = BoolArray;
+        ClrTypeToDataType[typeof(short[])] = Int2Array;
+        ClrTypeToDataType[typeof(int[])] = Int4Array;
+        ClrTypeToDataType[typeof(long[])] = Int8Array;
+        ClrTypeToDataType[typeof(float[])] = Float4Array;
+        ClrTypeToDataType[typeof(double[])] = Float8Array;
+        ClrTypeToDataType[typeof(decimal[])] = NumericArray;
+        ClrTypeToDataType[typeof(string[])] = TextArray;
+        ClrTypeToDataType[typeof(DateOnly[])] = DateArray;
+        ClrTypeToDataType[typeof(DateTime[])] = TimestampArray;
+        ClrTypeToDataType[typeof(DateTimeOffset[])] = TimestamptzArray;
+        ClrTypeToDataType[typeof(Guid[])] = UuidArray;
+        
+        // Set element types for array types
+        BoolArray.ElementType = Bool;
+        Int2Array.ElementType = Int2;
+        Int4Array.ElementType = Int4;
+        Int8Array.ElementType = Int8;
+        Float4Array.ElementType = Float4;
+        Float8Array.ElementType = Float8;
+        NumericArray.ElementType = Numeric;
+        VarcharArray.ElementType = Varchar;
+        TextArray.ElementType = Text;
+        DateArray.ElementType = Date;
+        TimestampArray.ElementType = Timestamp;
+        TimestamptzArray.ElementType = Timestamptz;
+        ByteaArray.ElementType = Bytea;
+        UuidArray.ElementType = Uuid;
     }
 
     private static void RegisterType(DataType type)
