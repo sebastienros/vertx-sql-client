@@ -8,7 +8,7 @@ namespace Vertx.PgClient.Tests;
 
 /// <summary>
 /// Shared PostgreSQL container fixture for all tests.
-/// Uses trust authentication to avoid SCRAM which isn't implemented.
+/// Uses SCRAM-SHA-256 authentication (PostgreSQL default since v14).
 /// </summary>
 public class PostgresFixture : IAsyncLifetime
 {
@@ -21,8 +21,9 @@ public class PostgresFixture : IAsyncLifetime
             .WithDatabase("testdb")
             .WithUsername("testuser")
             .WithPassword("testpass")
-            // Use trust authentication instead of SCRAM (host_auth_method=trust means no password needed)
-            .WithEnvironment("POSTGRES_HOST_AUTH_METHOD", "trust")
+            // Use scram-sha-256 authentication (PostgreSQL default)
+            .WithEnvironment("POSTGRES_HOST_AUTH_METHOD", "scram-sha-256")
+            .WithEnvironment("POSTGRES_INITDB_ARGS", "--auth-host=scram-sha-256")
             .Build();
     }
 

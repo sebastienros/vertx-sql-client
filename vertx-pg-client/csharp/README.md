@@ -12,7 +12,8 @@ A high-performance PostgreSQL client for .NET, ported from the [Vert.x pg-client
 - PostgreSQL notifications (LISTEN/NOTIFY)
 - SSL/TLS support (Prefer, Require, VerifyCa, VerifyFull modes)
 - Connection URI parsing
-- MD5 password authentication
+- **SCRAM-SHA-256 authentication** (recommended for PostgreSQL 10+)
+- MD5 and cleartext password authentication
 
 ## Requirements
 
@@ -143,11 +144,35 @@ connection.NotificationReceived += notification =>
 await connection.QueryAsync("LISTEN my_channel");
 ```
 
+## Authentication
+
+The client supports multiple PostgreSQL authentication methods:
+
+```csharp
+var options = new PgConnectOptions
+{
+    Host = "localhost",
+    Database = "mydb",
+    User = "myuser",
+    Password = "mypassword"  // Used for SCRAM, MD5, and cleartext authentication
+};
+```
+
+### Supported Methods
+
+| Method | Description |
+|--------|-------------|
+| **SCRAM-SHA-256** | Modern, secure authentication (PostgreSQL 10+, recommended) |
+| **MD5** | Legacy password authentication |
+| **Cleartext** | Plain password (not recommended, use with SSL) |
+| **Trust** | No password required (for local development) |
+
+The authentication method is negotiated automatically based on the server's configuration.
+
 ## Limitations
 
 The following features from the original Vert.x pg-client are not yet implemented:
 
-- **SCRAM authentication** - Only MD5 and cleartext password authentication are supported. For now, configure PostgreSQL to use `md5` or `trust` authentication.
 - **COPY protocol** - COPY IN/OUT for bulk data transfer is not implemented.
 - **Custom type handlers** - Extended type registration is not available.
 

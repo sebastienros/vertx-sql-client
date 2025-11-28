@@ -553,17 +553,16 @@ public class PoolTests
             // Verify the pool was saturated - should have logged saturation messages
             var saturationCount = logger.CountMessagesContaining("Pool saturated");
             
-            // Verify connections were created
+            // Verify connections were created (use logger-based counting, not pool properties)
             var connectionCreatedCount = logger.CountMessagesContaining("Created new multiplexed connection");
             Assert.True(connectionCreatedCount >= 1, 
                 $"Should have created at least 1 multiplexed connection, but only created {connectionCreatedCount}");
             
             // With 512 queries and efficient multiplexing, we may or may not need multiple connections
             // depending on timing and pipelining capacity
-            var finalConnectionCount = pool.MultiplexedConnectionCount;
-            Assert.True(finalConnectionCount >= 1 && finalConnectionCount <= connectionCount,
-                $"Should have between 1 and {connectionCount} multiplexed connections, got {finalConnectionCount}. " +
-                $"Saturation events: {saturationCount}, Connection creates: {connectionCreatedCount}. " +
+            Assert.True(connectionCreatedCount >= 1 && connectionCreatedCount <= connectionCount,
+                $"Should have between 1 and {connectionCount} multiplexed connections, got {connectionCreatedCount}. " +
+                $"Saturation events: {saturationCount}. " +
                 $"Total time: {stopwatch.Elapsed.TotalSeconds:F2}s");
             
             // With 512 queries at 10ms each across multiple connections, total time should be meaningful

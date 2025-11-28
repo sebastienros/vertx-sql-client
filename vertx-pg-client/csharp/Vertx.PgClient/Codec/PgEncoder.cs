@@ -241,6 +241,54 @@ internal sealed class PgEncoder
         WriteInt32(80877103); // SSL request code
     }
 
+    /// <summary>
+    /// Writes a SASLInitialResponse message for SCRAM authentication.
+    /// </summary>
+    public void WriteSaslInitialResponse(string mechanism, string clientFirstMessage)
+    {
+        var mechanismBytes = Encoding.UTF8.GetBytes(mechanism);
+        var messageBytes = Encoding.UTF8.GetBytes(clientFirstMessage);
+
+        WriteByte(PgProtocolConstants.PasswordMessage);
+        var lengthPos = _position;
+        WriteInt32(0);
+
+        // Mechanism name (null-terminated)
+        EnsureCapacity(mechanismBytes.Length + 1);
+        mechanismBytes.CopyTo(_buffer.AsSpan(_position));
+        _position += mechanismBytes.Length;
+        _buffer[_position++] = 0;
+
+        // Client first message length
+        WriteInt32(messageBytes.Length);
+
+        // Client first message data (not null-terminated)
+        EnsureCapacity(messageBytes.Length);
+        messageBytes.CopyTo(_buffer.AsSpan(_position));
+        _position += messageBytes.Length;
+
+        SetInt32(lengthPos, _position - lengthPos);
+    }
+
+    /// <summary>
+    /// Writes a SASLResponse message for SCRAM authentication.
+    /// </summary>
+    public void WriteSaslResponse(string clientFinalMessage)
+    {
+        var messageBytes = Encoding.UTF8.GetBytes(clientFinalMessage);
+
+        WriteByte(PgProtocolConstants.PasswordMessage);
+        var lengthPos = _position;
+        WriteInt32(0);
+
+        // Message data (not null-terminated)
+        EnsureCapacity(messageBytes.Length);
+        messageBytes.CopyTo(_buffer.AsSpan(_position));
+        _position += messageBytes.Length;
+
+        SetInt32(lengthPos, _position - lengthPos);
+    }
+
     private void WriteByte(byte value)
     {
         EnsureCapacity(1);

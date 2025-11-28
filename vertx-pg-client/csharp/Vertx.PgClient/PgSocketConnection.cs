@@ -221,13 +221,18 @@ internal sealed class PgSocketConnection : IAsyncDisposable
                     break;
 
                 case AuthenticationSASLResponse sasl:
-                    // SCRAM authentication is complex - skip for now and document
-                    throw new PgException(
-                        "SCRAM authentication is not implemented. Please use MD5 or trust authentication. " +
-                        "Supported SASL mechanisms: " + string.Join(", ", sasl.Mechanisms),
-                        "28000",
-                        "authentication_failed"
-                    );
+                    await HandleScramAuthenticationAsync(sasl.Mechanisms, cancellationToken);
+                    break;
+
+                case AuthenticationSASLContinueResponse saslContinue:
+                    // This is handled within HandleScramAuthenticationAsync
+                    _logger.LogWarning("Unexpected SASL Continue response outside of SCRAM flow");
+                    break;
+
+                case AuthenticationSASLFinalResponse saslFinal:
+                    // This is handled within HandleScramAuthenticationAsync
+                    _logger.LogWarning("Unexpected SASL Final response outside of SCRAM flow");
+                    break;
 
                 case BackendKeyDataResponse keyData:
                     ProcessId = keyData.ProcessId;
@@ -289,6 +294,68 @@ internal sealed class PgSocketConnection : IAsyncDisposable
         _encoder.Reset();
         _encoder.WriteMd5PasswordMessage(hash);
         await SendAsync(cancellationToken);
+    }
+
+    private async ValueTask HandleScramAuthenticationAsync(string[] mechanisms, CancellationToken cancellationToken)
+    {
+        var username = _options.User ?? Environment.UserName;
+        var password = _options.Password ?? "";
+
+        // Create SCRAM client (no channel binding data for now)
+        var scram = new ScramClient(username, password);
+
+        if (!scram.SelectMechanism(mechanisms))
+        {
+            throw new PgException(
+                $"No supported SASL mechanism. Server offered: {string.Join(", ", mechanisms)}. " +
+                "This client supports SCRAM-SHA-256.",
+                "28000",
+                "authentication_failed"
+            );
+        }
+
+        _logger.LogDebug("Using SCRAM authentication with mechanism: {Mechanism}", scram.Mechanism);
+
+        // Step 1: Send client-first-message
+        var clientFirstMessage = scram.CreateClientFirstMessage();
+        _encoder.Reset();
+        _encoder.WriteSaslInitialResponse(scram.Mechanism, clientFirstMessage);
+        await SendAsync(cancellationToken);
+
+        // Step 2: Receive server-first-message
+        var response = await ReceiveAsync(cancellationToken);
+        if (response is not AuthenticationSASLContinueResponse saslContinue)
+        {
+            if (response is ErrorResponse error)
+                throw new PgException(error.Message, error.Code, error.Severity);
+            throw new PgException($"Expected SASL Continue, got {response.GetType().Name}", "28000", "authentication_failed");
+        }
+
+        var serverFirstMessage = Encoding.UTF8.GetString(saslContinue.Data);
+        _logger.LogTrace("SCRAM server-first-message: {Message}", serverFirstMessage);
+
+        // Step 3: Send client-final-message
+        var clientFinalMessage = scram.ProcessServerFirstMessage(serverFirstMessage);
+        _encoder.Reset();
+        _encoder.WriteSaslResponse(clientFinalMessage);
+        await SendAsync(cancellationToken);
+
+        // Step 4: Receive server-final-message
+        response = await ReceiveAsync(cancellationToken);
+        if (response is not AuthenticationSASLFinalResponse saslFinal)
+        {
+            if (response is ErrorResponse error)
+                throw new PgException(error.Message, error.Code, error.Severity);
+            throw new PgException($"Expected SASL Final, got {response.GetType().Name}", "28000", "authentication_failed");
+        }
+
+        var serverFinalMessage = Encoding.UTF8.GetString(saslFinal.Data);
+        _logger.LogTrace("SCRAM server-final-message: {Message}", serverFinalMessage);
+
+        // Verify server signature
+        scram.VerifyServerFinalMessage(serverFinalMessage);
+
+        _logger.LogDebug("SCRAM authentication successful");
     }
 
     public async ValueTask<RowSet> QueryAsync(string sql, CancellationToken cancellationToken = default)
