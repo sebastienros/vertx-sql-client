@@ -31,10 +31,50 @@ internal sealed class PgEncoder
         }
     }
 
+    // Pre-allocated buffer for statement name generation (max: "S_FFFFFFFF" = 10 bytes + null = 11)
+    private readonly byte[] _statementNameBuffer = new byte[11];
+
     public byte[] GenerateStatementName()
     {
-        var name = $"S_{_statementCounter++:X}";
-        return Encoding.ASCII.GetBytes(name);
+        int counter = _statementCounter++;
+        
+        // Write "S_" prefix
+        _statementNameBuffer[0] = (byte)'S';
+        _statementNameBuffer[1] = (byte)'_';
+        
+        // Convert counter to hex and write directly to buffer
+        int pos = 2;
+        if (counter == 0)
+        {
+            _statementNameBuffer[pos++] = (byte)'0';
+        }
+        else
+        {
+            // Find the number of hex digits needed
+            int temp = counter;
+            int digits = 0;
+            while (temp > 0)
+            {
+                digits++;
+                temp >>= 4;
+            }
+            
+            // Write hex digits in reverse order
+            pos += digits;
+            int writePos = pos - 1;
+            temp = counter;
+            while (temp > 0)
+            {
+                int digit = temp & 0xF;
+                _statementNameBuffer[writePos--] = (byte)(digit < 10 ? '0' + digit : 'A' + digit - 10);
+                temp >>= 4;
+            }
+        }
+        
+        // Return a copy of just the used portion (required since the buffer is reused)
+        var result = new byte[pos];
+        _statementNameBuffer.AsSpan(0, pos).CopyTo(result);
+        return result;
     }
 
     public void WriteStartupMessage(string username, string database, IReadOnlyDictionary<string, string> properties)
