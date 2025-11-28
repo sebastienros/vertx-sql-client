@@ -156,7 +156,8 @@ internal sealed class ExtendedQueryCommand : PgCommand
     private readonly TaskCompletionSource<RowSet> _tcs;
     private readonly List<Row> _rows = new();
     private readonly PgEncoder _encoder;
-    private byte[]? _statementName;
+    private readonly byte[] _statementName = new byte[10];
+    private int _statementNameLength;
     private PgColumnDesc[]? _paramTypes;
     private PgColumnDesc[]? _rowDesc;
     private int _rowsAffected;
@@ -182,11 +183,12 @@ internal sealed class ExtendedQueryCommand : PgCommand
 
     public override void Encode(PgEncoder encoder)
     {
-        _statementName = encoder.GenerateStatementName();
+        _statementNameLength = encoder.GenerateStatementName(_statementName);
+        var statementNameSpan = GetStatementNameSpan();
         
         // Phase 1: Parse and describe
-        encoder.WriteParse(_sql, _statementName);
-        encoder.WriteDescribe('S', _statementName);
+        encoder.WriteParse(_sql, statementNameSpan);
+        encoder.WriteDescribe('S', statementNameSpan);
         encoder.WriteSync();
     }
 
@@ -219,9 +221,10 @@ internal sealed class ExtendedQueryCommand : PgCommand
                 // Parse phase complete, now bind and execute
                 _phase = ExtendedQueryPhase.Bind;
                 _encoder.Reset();
-                _encoder.WriteBind(_statementName!, "", _parameters, _paramTypes);
+                var statementNameSpan = GetStatementNameSpan();
+                _encoder.WriteBind(statementNameSpan, "", _parameters, _paramTypes);
                 _encoder.WriteExecute();
-                _encoder.WriteClose('S', _statementName!);
+                _encoder.WriteClose('S', statementNameSpan);
                 _encoder.WriteSync();
                 return false; // Not complete yet, need to send bind/execute
 
@@ -268,6 +271,8 @@ internal sealed class ExtendedQueryCommand : PgCommand
     /// Gets the encoder buffer for sending bind/execute.
     /// </summary>
     public ReadOnlyMemory<byte> GetBindExecuteBuffer() => _encoder.Buffer;
+
+    private ReadOnlySpan<byte> GetStatementNameSpan() => _statementName.AsSpan(0, _statementNameLength);
 
     public override void Complete(Exception? error = null)
     {

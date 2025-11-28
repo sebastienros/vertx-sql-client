@@ -401,7 +401,9 @@ internal sealed class PgSocketConnection : IAsyncDisposable
             return await ExecuteReaderCachedStatementAsync(cached!, parameters, cancellationToken);
         }
 
-        var statementName = _encoder.GenerateStatementName();
+        Span<byte> statementNameBuffer = stackalloc byte[10];
+        var statementNameLength = _encoder.GenerateStatementName(statementNameBuffer);
+        var statementName = statementNameBuffer[..statementNameLength].ToArray();
         var shouldCache = _preparedStatementCache?.ShouldCache(sql) ?? false;
         
         _encoder.Reset();
@@ -542,7 +544,9 @@ internal sealed class PgSocketConnection : IAsyncDisposable
             return await ExecuteCachedStatementAsync(cached!, parameters, cancellationToken);
         }
 
-        var statementName = _encoder.GenerateStatementName();
+        Span<byte> statementNameBuffer = stackalloc byte[10];
+        var statementNameLength = _encoder.GenerateStatementName(statementNameBuffer);
+        var statementName = statementNameBuffer[..statementNameLength].ToArray();
         var shouldCache = _preparedStatementCache?.ShouldCache(sql) ?? false;
         
         _encoder.Reset();

@@ -33,22 +33,25 @@ internal sealed class PgEncoder
         }
     }
 
-    // Pre-allocated buffer for statement name generation (max: "S_FFFFFFFF" = 10 bytes + null = 11)
-    // Thread-safety note: This buffer is only used within GenerateStatementName which is not called concurrently
-    private readonly byte[] _statementNameBuffer = [(byte)'S', (byte)'_', 0, 0, 0, 0, 0, 0, 0, 0, 0];
-
-    public byte[] GenerateStatementName()
+    /// <summary>
+    /// Generates a statement name into the provided buffer.
+    /// The buffer must be at least 10 bytes (max: "S_FFFFFFFF").
+    /// </summary>
+    /// <param name="buffer">The buffer to write the statement name to.</param>
+    /// <returns>The number of bytes written to the buffer.</returns>
+    public int GenerateStatementName(Span<byte> buffer)
     {
         int counter = _statementCounter++;
 
-        // "S_" prefix is already set in the buffer initialization
+        // Write "S_" prefix
+        buffer[0] = (byte)'S';
+        buffer[1] = (byte)'_';
         
         // Convert counter to hex and write directly to buffer
         int pos = 2;
         if (counter == 0)
         {
-            // Include at least one digit
-            pos++;
+            buffer[pos++] = (byte)'0';
         }
         else
         {
@@ -60,14 +63,11 @@ internal sealed class PgEncoder
 
             for (int i = 0; i < hexDigits; i++)
             {
-                _statementNameBuffer[pos++] = (byte)HEX[(counter >> (4 * (hexDigits - 1 - i))) & 0xF];
+                buffer[pos++] = (byte)HEX[(counter >> (4 * (hexDigits - 1 - i))) & 0xF];
             }
         }
 
-        // Return a copy of just the used portion (required since the buffer is reused)
-        var result = new byte[pos];
-        _statementNameBuffer.AsSpan(0, pos).CopyTo(result);
-        return result;
+        return pos;
     }
 
     public void WriteStartupMessage(string username, string database, IReadOnlyDictionary<string, string> properties)
@@ -130,7 +130,7 @@ internal sealed class PgEncoder
         SetInt32(lengthPos, _position - lengthPos);
     }
 
-    public void WriteParse(string sql, byte[] statementName, int[]? parameterTypes = null)
+    public void WriteParse(string sql, ReadOnlySpan<byte> statementName, int[]? parameterTypes = null)
     {
         WriteByte(PgProtocolConstants.Parse);
         var lengthPos = _position;
@@ -156,7 +156,7 @@ internal sealed class PgEncoder
         SetInt32(lengthPos, _position - lengthPos);
     }
 
-    public void WriteBind(byte[] statementName, string portal, ITuple? parameters, PgColumnDesc[]? parameterTypes)
+    public void WriteBind(ReadOnlySpan<byte> statementName, string portal, ITuple? parameters, PgColumnDesc[]? parameterTypes)
     {
         WriteByte(PgProtocolConstants.Bind);
         var lengthPos = _position;
@@ -212,13 +212,13 @@ internal sealed class PgEncoder
         SetInt32(lengthPos, _position - lengthPos);
     }
 
-    public void WriteDescribe(char type, byte[]? name = null)
+    public void WriteDescribe(char type, ReadOnlySpan<byte> name = default)
     {
         WriteByte(PgProtocolConstants.Describe);
         var lengthPos = _position;
         WriteInt32(0);
         WriteByte((byte)type);
-        if (name is not null)
+        if (name.Length > 0)
         {
             WriteCString(name);
         }
@@ -239,13 +239,13 @@ internal sealed class PgEncoder
         SetInt32(lengthPos, _position - lengthPos);
     }
 
-    public void WriteClose(char type, byte[]? name = null)
+    public void WriteClose(char type, ReadOnlySpan<byte> name = default)
     {
         WriteByte(PgProtocolConstants.Close);
         var lengthPos = _position;
         WriteInt32(0);
         WriteByte((byte)type);
-        if (name is not null)
+        if (name.Length > 0)
         {
             WriteCString(name);
         }
