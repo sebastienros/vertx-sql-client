@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0
 
 using System.Buffers.Binary;
+using System.Numerics;
 using System.Text;
 
 namespace Vertx.PgClient.Codec;
@@ -19,7 +20,7 @@ internal sealed class PgEncoder
     private int _position;
     private int _statementCounter;
 
-    public ReadOnlyMemory<byte> Buffer => new ReadOnlyMemory<byte>(_buffer, 0, _position);
+    public ReadOnlyMemory<byte> Buffer => new(_buffer, 0, _position);
 
     public void Reset() => _position = 0;
 
@@ -34,45 +35,35 @@ internal sealed class PgEncoder
 
     // Pre-allocated buffer for statement name generation (max: "S_FFFFFFFF" = 10 bytes + null = 11)
     // Thread-safety note: This buffer is only used within GenerateStatementName which is not called concurrently
-    private readonly byte[] _statementNameBuffer = new byte[11];
+    private readonly byte[] _statementNameBuffer = [(byte)'S', (byte)'_', 0, 0, 0, 0, 0, 0, 0, 0, 0];
 
     public byte[] GenerateStatementName()
     {
         int counter = _statementCounter++;
-        
-        // Write "S_" prefix
-        _statementNameBuffer[0] = (byte)'S';
-        _statementNameBuffer[1] = (byte)'_';
+
+        // "S_" prefix is already set in the buffer initialization
         
         // Convert counter to hex and write directly to buffer
         int pos = 2;
         if (counter == 0)
         {
-            _statementNameBuffer[pos++] = (byte)'0';
+            // Include at least one digit
+            pos++;
         }
         else
         {
             // Find the number of hex digits needed
-            int temp = counter;
-            int digits = 0;
-            while (temp > 0)
-            {
-                digits++;
-                temp >>= 4;
-            }
+            // The BitOperations.Log2 approach is the fastest since it compiles to a single CPU instruction (LZCNT or BSR)
+            int hexDigits = (BitOperations.Log2((uint)counter) >> 2) + 1;
             
-            // Write hex digits in reverse order
-            pos += digits;
-            int writePos = pos - 1;
-            temp = counter;
-            while (temp > 0)
+            const string HEX = "0123456789ABCDEF";
+
+            for (int i = 0; i < hexDigits; i++)
             {
-                int digit = temp & 0xF;
-                _statementNameBuffer[writePos--] = (byte)(digit < 10 ? '0' + digit : 'A' + digit - 10);
-                temp >>= 4;
+                _statementNameBuffer[pos++] = (byte)HEX[(counter >> (4 * (hexDigits - 1 - i))) & 0xF];
             }
         }
-        
+
         // Return a copy of just the used portion (required since the buffer is reused)
         var result = new byte[pos];
         _statementNameBuffer.AsSpan(0, pos).CopyTo(result);
