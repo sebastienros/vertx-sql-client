@@ -112,20 +112,20 @@ internal sealed class SimpleQueryCommand : PgCommand
 
     private static Row DecodeRow(byte[][] values, PgColumnDesc[] columnDesc)
     {
-        var decodedValues = new object?[values.Length];
+        var decodedValues = new PgValue[values.Length];
         
         for (int i = 0; i < values.Length; i++)
         {
+            var column = columnDesc[i];
             if (values[i] is null)
             {
-                decodedValues[i] = null;
+                decodedValues[i] = PgValue.CreateNull(column.DataType);
             }
             else
             {
-                var column = columnDesc[i];
                 decodedValues[i] = column.DataFormat == DataFormat.Binary
-                    ? DataTypeCodec.DecodeBinary(column.DataType, values[i])
-                    : DataTypeCodec.DecodeText(column.DataType, values[i]);
+                    ? PgValue.DecodeBinary(column.DataType, values[i])
+                    : PgValue.DecodeText(column.DataType, values[i]);
             }
         }
 
@@ -288,20 +288,20 @@ internal sealed class ExtendedQueryCommand : PgCommand
 
     private static Row DecodeRow(byte[][] values, PgColumnDesc[] columnDesc)
     {
-        var decodedValues = new object?[values.Length];
+        var decodedValues = new PgValue[values.Length];
         
         for (int i = 0; i < values.Length; i++)
         {
+            var column = columnDesc[i];
             if (values[i] is null)
             {
-                decodedValues[i] = null;
+                decodedValues[i] = PgValue.CreateNull(column.DataType);
             }
             else
             {
-                var column = columnDesc[i];
                 decodedValues[i] = column.DataFormat == DataFormat.Binary
-                    ? DataTypeCodec.DecodeBinary(column.DataType, values[i])
-                    : DataTypeCodec.DecodeText(column.DataType, values[i]);
+                    ? PgValue.DecodeBinary(column.DataType, values[i])
+                    : PgValue.DecodeText(column.DataType, values[i]);
             }
         }
 

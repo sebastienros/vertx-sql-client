@@ -36,7 +36,7 @@ public class ConnectionTests
         var result = await connection.QueryAsync("SELECT version()");
 
         Assert.Equal(1, result.Count);
-        var version = result[0].GetString(0);
+        var version = result[0].GetValue(0).GetString();
         Assert.Contains("PostgreSQL", version);
     }
 

@@ -33,7 +33,7 @@ public class EncodingTests
         );
 
         Assert.Equal(1, result.Count);
-        Assert.True(result[0].GetBoolean("b"));
+        Assert.True(result[0].GetValue("b").GetBoolean());
     }
 
     [Fact]
@@ -48,7 +48,7 @@ public class EncodingTests
         );
 
         Assert.Equal(1, result.Count);
-        Assert.False(result[0].GetBoolean("b"));
+        Assert.False(result[0].GetValue("b").GetBoolean());
     }
 
     #endregion
@@ -67,7 +67,7 @@ public class EncodingTests
         );
 
         Assert.Equal(1, result.Count);
-        Assert.Equal((short)12345, result[0].Get<short>("n"));
+        Assert.Equal((short)12345, result[0].GetValue("n").Get<short>());
     }
 
     [Fact]
@@ -82,7 +82,7 @@ public class EncodingTests
         );
 
         Assert.Equal(1, result.Count);
-        Assert.Equal(123456789, result[0].GetInteger("n"));
+        Assert.Equal(123456789, result[0].GetValue("n").GetInteger());
     }
 
     [Fact]
@@ -97,7 +97,7 @@ public class EncodingTests
         );
 
         Assert.Equal(1, result.Count);
-        Assert.Equal(9223372036854775807L, result[0].GetLong("n"));
+        Assert.Equal(9223372036854775807L, result[0].GetValue("n").GetLong());
     }
 
     #endregion
@@ -116,7 +116,7 @@ public class EncodingTests
         );
 
         Assert.Equal(1, result.Count);
-        Assert.Equal(3.14f, result[0].Get<float>("n"), 0.01f);
+        Assert.Equal(3.14f, result[0].GetValue("n").Get<float>(), 0.01f);
     }
 
     [Fact]
@@ -131,7 +131,7 @@ public class EncodingTests
         );
 
         Assert.Equal(1, result.Count);
-        Assert.Equal(3.141592653589793, result[0].GetDouble("n"), 0.0000000001);
+        Assert.Equal(3.141592653589793, result[0].GetValue("n").GetDouble(), 0.0000000001);
     }
 
     #endregion
@@ -150,7 +150,7 @@ public class EncodingTests
         );
 
         Assert.Equal(1, result.Count);
-        Assert.Equal("Hello, World!", result[0].GetString("t"));
+        Assert.Equal("Hello, World!", result[0].GetValue("t").GetString());
     }
 
     [Fact]
@@ -165,7 +165,7 @@ public class EncodingTests
         );
 
         Assert.Equal(1, result.Count);
-        Assert.Equal("PostgreSQL", result[0].GetString("v"));
+        Assert.Equal("PostgreSQL", result[0].GetValue("v").GetString());
     }
 
     #endregion
@@ -185,7 +185,7 @@ public class EncodingTests
         );
 
         Assert.Equal(1, result.Count);
-        Assert.Equal(date, result[0].Get<DateOnly>("d"));
+        Assert.Equal(date, result[0].GetValue("d").Get<DateOnly>());
     }
 
     [Fact]
@@ -201,7 +201,7 @@ public class EncodingTests
         );
 
         Assert.Equal(1, result.Count);
-        Assert.Equal(time, result[0].Get<TimeOnly>("t"));
+        Assert.Equal(time, result[0].GetValue("t").Get<TimeOnly>());
     }
 
     [Fact]
@@ -217,7 +217,7 @@ public class EncodingTests
         );
 
         Assert.Equal(1, result.Count);
-        var returnedTs = result[0].Get<DateTime>("ts");
+        var returnedTs = result[0].GetValue("ts").Get<DateTime>();
         Assert.Equal(timestamp, returnedTs);
     }
 
@@ -234,7 +234,7 @@ public class EncodingTests
         );
 
         Assert.Equal(1, result.Count);
-        var returnedTs = result[0].Get<DateTimeOffset>("ts");
+        var returnedTs = result[0].GetValue("ts").Get<DateTimeOffset>();
         Assert.Equal(timestamp.UtcDateTime, returnedTs.UtcDateTime);
     }
 
@@ -251,7 +251,7 @@ public class EncodingTests
         );
 
         Assert.Equal(1, result.Count);
-        var returnedInterval = result[0].Get<Data.Interval>("i");
+        var returnedInterval = result[0].GetValue("i").Get<Data.Interval>();
         Assert.NotNull(returnedInterval);
         Assert.Equal(1, returnedInterval.Years);
         Assert.Equal(2, returnedInterval.Months);
@@ -278,7 +278,7 @@ public class EncodingTests
         );
 
         Assert.Equal(1, result.Count);
-        var returnedBytes = result[0].Get<byte[]>("data");
+        var returnedBytes = result[0].GetValue("data").Get<byte[]>();
         Assert.NotNull(returnedBytes);
         Assert.Equal(bytes, returnedBytes);
     }
@@ -300,7 +300,7 @@ public class EncodingTests
         );
 
         Assert.Equal(1, result.Count);
-        Assert.Equal(uuid, result[0].Get<Guid>("id"));
+        Assert.Equal(uuid, result[0].GetValue("id").Get<Guid>());
     }
 
     #endregion
@@ -320,7 +320,7 @@ public class EncodingTests
         );
 
         Assert.Equal(1, result.Count);
-        var returnedJson = result[0].GetString("j");
+        var returnedJson = result[0].GetValue("j").GetString();
         Assert.Contains("\"name\"", returnedJson);
         Assert.Contains("\"test\"", returnedJson);
     }
@@ -338,7 +338,7 @@ public class EncodingTests
         );
 
         Assert.Equal(1, result.Count);
-        var returnedJsonb = result[0].GetString("jb");
+        var returnedJsonb = result[0].GetValue("jb").GetString();
         Assert.Contains("key", returnedJsonb);
         Assert.Contains("value", returnedJsonb);
     }
@@ -360,7 +360,7 @@ public class EncodingTests
         );
 
         Assert.Equal(1, result.Count);
-        var returnedPoint = result[0].Get<Data.Point>("p");
+        var returnedPoint = result[0].GetValue("p").Get<Data.Point>();
         Assert.Equal(1.5, returnedPoint.X, 0.01);
         Assert.Equal(2.5, returnedPoint.Y, 0.01);
     }
@@ -378,7 +378,7 @@ public class EncodingTests
         );
 
         Assert.Equal(1, result.Count);
-        var returnedLine = result[0].Get<Data.Line>("l");
+        var returnedLine = result[0].GetValue("l").Get<Data.Line>();
         Assert.NotNull(returnedLine);
         Assert.Equal(1, returnedLine.A, 0.01);
         Assert.Equal(2, returnedLine.B, 0.01);
@@ -398,7 +398,7 @@ public class EncodingTests
         );
 
         Assert.Equal(1, result.Count);
-        var returnedLseg = result[0].Get<Data.LineSegment>("ls");
+        var returnedLseg = result[0].GetValue("ls").Get<Data.LineSegment>();
         Assert.NotNull(returnedLseg);
         Assert.Equal(0, returnedLseg.P1.X, 0.01);
         Assert.Equal(0, returnedLseg.P1.Y, 0.01);
@@ -419,7 +419,7 @@ public class EncodingTests
         );
 
         Assert.Equal(1, result.Count);
-        var returnedBox = result[0].Get<Data.Box>("b");
+        var returnedBox = result[0].GetValue("b").Get<Data.Box>();
         Assert.NotNull(returnedBox);
     }
 
@@ -436,7 +436,7 @@ public class EncodingTests
         );
 
         Assert.Equal(1, result.Count);
-        var returnedCircle = result[0].Get<Data.Circle>("c");
+        var returnedCircle = result[0].GetValue("c").Get<Data.Circle>();
         Assert.NotNull(returnedCircle);
         Assert.Equal(1, returnedCircle.CenterPoint.X, 0.01);
         Assert.Equal(2, returnedCircle.CenterPoint.Y, 0.01);
@@ -462,7 +462,7 @@ public class EncodingTests
         );
 
         Assert.Equal(1, result.Count);
-        var returnedPolygon = result[0].Get<Data.Polygon>("p");
+        var returnedPolygon = result[0].GetValue("p").Get<Data.Polygon>();
         Assert.NotNull(returnedPolygon);
         Assert.Equal(4, returnedPolygon.Points.Count);
     }
@@ -485,7 +485,7 @@ public class EncodingTests
         );
 
         Assert.Equal(1, result.Count);
-        var returnedPath = result[0].Get<Data.Path>("p");
+        var returnedPath = result[0].GetValue("p").Get<Data.Path>();
         Assert.NotNull(returnedPath);
         Assert.Equal(3, returnedPath.Points.Count);
         Assert.True(returnedPath.IsOpen);
@@ -508,7 +508,7 @@ public class EncodingTests
         );
 
         Assert.Equal(1, result.Count);
-        var returnedInet = result[0].Get<Data.Inet>("ip");
+        var returnedInet = result[0].GetValue("ip").Get<Data.Inet>();
         Assert.NotNull(returnedInet);
         Assert.Equal(IPAddress.Parse("192.168.1.1"), returnedInet.Address);
     }
@@ -526,7 +526,7 @@ public class EncodingTests
         );
 
         Assert.Equal(1, result.Count);
-        var returnedCidr = result[0].Get<Data.Cidr>("net");
+        var returnedCidr = result[0].GetValue("net").Get<Data.Cidr>();
         Assert.NotNull(returnedCidr);
         Assert.Equal(IPAddress.Parse("192.168.1.0"), returnedCidr.Address);
         Assert.Equal(24, returnedCidr.Netmask);
@@ -548,7 +548,7 @@ public class EncodingTests
         );
 
         Assert.Equal(1, result.Count);
-        Assert.Null(result[0].GetString("n"));
+        Assert.Null(result[0].GetValue("n").GetString());
     }
 
     [Fact]
@@ -563,7 +563,7 @@ public class EncodingTests
         );
 
         Assert.Equal(1, result.Count);
-        Assert.Null(result[0].GetValue("n"));
+        Assert.True(result[0].GetValue("n").IsNull);
     }
 
     #endregion
@@ -582,10 +582,10 @@ public class EncodingTests
         );
 
         Assert.Equal(1, result.Count);
-        Assert.Equal(42, result[0].GetInteger("i"));
-        Assert.Equal("hello", result[0].GetString("t"));
-        Assert.True(result[0].GetBoolean("b"));
-        Assert.Equal(3.14, result[0].GetDouble("f"), 0.01);
+        Assert.Equal(42, result[0].GetValue("i").GetInteger());
+        Assert.Equal("hello", result[0].GetValue("t").GetString());
+        Assert.True(result[0].GetValue("b").GetBoolean());
+        Assert.Equal(3.14, result[0].GetValue("f").GetDouble(), 0.01);
     }
 
     [Fact]
@@ -604,9 +604,9 @@ public class EncodingTests
         );
 
         Assert.Equal(1, result.Count);
-        Assert.Equal(date, result[0].Get<DateOnly>("d"));
-        Assert.Equal(time, result[0].Get<TimeOnly>("t"));
-        Assert.Equal(timestamp, result[0].Get<DateTime>("ts"));
+        Assert.Equal(date, result[0].GetValue("d").Get<DateOnly>());
+        Assert.Equal(time, result[0].GetValue("t").Get<TimeOnly>());
+        Assert.Equal(timestamp, result[0].GetValue("ts").Get<DateTime>());
     }
 
     #endregion

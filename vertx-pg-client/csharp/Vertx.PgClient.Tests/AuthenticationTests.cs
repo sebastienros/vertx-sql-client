@@ -115,7 +115,7 @@ public class AuthenticationTests : IAsyncLifetime
         var result = await connection.QueryAsync("SELECT 1 as value");
 
         Assert.Equal(1, result.Count);
-        Assert.Equal(1, result[0].GetInteger(0));
+        Assert.Equal(1, result[0].GetValue(0).GetInteger());
     }
 
     [Fact]
@@ -140,7 +140,7 @@ public class AuthenticationTests : IAsyncLifetime
             Tuple.Create(10, 20));
 
         Assert.Equal(1, result.Count);
-        Assert.Equal(30, result[0].GetInteger(0));
+        Assert.Equal(30, result[0].GetValue(0).GetInteger());
     }
 
     #endregion
@@ -177,7 +177,7 @@ public class AuthenticationTests : IAsyncLifetime
         var result = await connection.QueryAsync("SELECT current_user");
 
         Assert.Equal(1, result.Count);
-        Assert.Equal("testuser", result[0].GetString(0));
+        Assert.Equal("testuser", result[0].GetValue(0).GetString());
     }
 
     [Fact]
@@ -191,7 +191,7 @@ public class AuthenticationTests : IAsyncLifetime
             Tuple.Create("Hello", "World"));
 
         Assert.Equal(1, result.Count);
-        Assert.Equal("Hello World", result[0].GetString(0));
+        Assert.Equal("Hello World", result[0].GetValue(0).GetString());
     }
 
     #endregion
@@ -217,7 +217,7 @@ public class AuthenticationTests : IAsyncLifetime
         var result = await connection.QueryAsync("SELECT 1 as value");
 
         Assert.Equal(1, result.Count);
-        Assert.Equal(1, result[0].GetInteger(0));
+        Assert.Equal(1, result[0].GetValue(0).GetInteger());
     }
 
     [Fact]
@@ -242,7 +242,7 @@ public class AuthenticationTests : IAsyncLifetime
             Tuple.Create(6, 7));
 
         Assert.Equal(1, result.Count);
-        Assert.Equal(42, result[0].GetInteger(0));
+        Assert.Equal(42, result[0].GetValue(0).GetInteger());
     }
 
     #endregion

@@ -24,8 +24,8 @@ public class SimpleQueryTests
         var result = await connection.QueryAsync("SELECT 1 as num, 'hello' as greeting");
 
         Assert.Equal(1, result.Count);
-        Assert.Equal(1, result[0].GetInteger(0));
-        Assert.Equal("hello", result[0].GetString(1));
+        Assert.Equal(1, result[0].GetValue(0).GetInteger());
+        Assert.Equal("hello", result[0].GetValue(1).GetString());
     }
 
     [Fact]
@@ -37,8 +37,8 @@ public class SimpleQueryTests
         var result = await connection.QueryAsync("SELECT 42 as answer, 'world' as target");
 
         Assert.Equal(1, result.Count);
-        Assert.Equal(42, result[0].GetInteger("answer"));
-        Assert.Equal("world", result[0].GetString("target"));
+        Assert.Equal(42, result[0].GetValue("answer").GetInteger());
+        Assert.Equal("world", result[0].GetValue("target").GetString());
     }
 
     [Fact]
@@ -52,7 +52,7 @@ public class SimpleQueryTests
         Assert.Equal(5, result.Count);
         for (int i = 0; i < 5; i++)
         {
-            Assert.Equal(i + 1, result[i].GetInteger(0));
+            Assert.Equal(i + 1, result[i].GetValue(0).GetInteger());
         }
     }
 
@@ -65,8 +65,8 @@ public class SimpleQueryTests
         var result = await connection.QueryAsync("SELECT NULL::text as empty");
 
         Assert.Equal(1, result.Count);
-        Assert.Null(result[0].GetValue(0));
-        Assert.Null(result[0].GetString("empty"));
+        Assert.True(result[0].GetValue(0).IsNull);
+        Assert.Null(result[0].GetValue("empty").GetString());
     }
 
     [Fact]
@@ -89,13 +89,13 @@ public class SimpleQueryTests
         Assert.Equal(1, result.Count);
         var row = result[0];
 
-        Assert.True(row.GetBoolean("bool_val"));
-        Assert.Equal(42, row.GetShort("int2_val"));
-        Assert.Equal(123456, row.GetInteger("int4_val"));
-        Assert.Equal(9876543210L, row.GetLong("int8_val"));
-        Assert.Equal(3.14f, row.GetFloat("float4_val"), 0.01f);
-        Assert.Equal(2.718281828, row.GetDouble("float8_val"), 0.0001);
-        Assert.Equal("hello world", row.GetString("text_val"));
+        Assert.True(row.GetValue("bool_val").GetBoolean());
+        Assert.Equal(42, row.GetValue("int2_val").GetShort());
+        Assert.Equal(123456, row.GetValue("int4_val").GetInteger());
+        Assert.Equal(9876543210L, row.GetValue("int8_val").GetLong());
+        Assert.Equal(3.14f, row.GetValue("float4_val").GetFloat(), 0.01f);
+        Assert.Equal(2.718281828, row.GetValue("float8_val").GetDouble(), 0.0001);
+        Assert.Equal("hello world", row.GetValue("text_val").GetString());
     }
 
     [Fact]
@@ -123,12 +123,12 @@ public class SimpleQueryTests
         var result = await connection.QueryAsync("SELECT name, age FROM test_users ORDER BY name");
 
         Assert.Equal(3, result.Count);
-        Assert.Equal("Alice", result[0].GetString("name"));
-        Assert.Equal(30, result[0].GetInteger("age"));
-        Assert.Equal("Bob", result[1].GetString("name"));
-        Assert.Equal(25, result[1].GetInteger("age"));
-        Assert.Equal("Charlie", result[2].GetString("name"));
-        Assert.Equal(35, result[2].GetInteger("age"));
+        Assert.Equal("Alice", result[0].GetValue("name").GetString());
+        Assert.Equal(30, result[0].GetValue("age").GetInteger());
+        Assert.Equal("Bob", result[1].GetValue("name").GetString());
+        Assert.Equal(25, result[1].GetValue("age").GetInteger());
+        Assert.Equal("Charlie", result[2].GetValue("name").GetString());
+        Assert.Equal(35, result[2].GetValue("age").GetInteger());
 
         // Cleanup
         await connection.QueryAsync("DROP TABLE test_users");

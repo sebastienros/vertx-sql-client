@@ -21,98 +21,98 @@ public static class DataTypeCodec
 
     #region Binary Decode
 
-    public static object? DecodeBinary(DataType dataType, ReadOnlySpan<byte> buffer)
-        => DecodeBinaryCore(dataType, buffer);
-    
-    public static object? DecodeBinary<T>(DataType dataType, ReadOnlySpan<byte> buffer)
-        => DecodeBinaryCore(dataType, buffer);
-
-    private static object? DecodeBinaryCore(DataType dataType, ReadOnlySpan<byte> buffer)
+    /// <summary>
+    /// Decodes a binary PostgreSQL value. Returns object, may box value types.
+    /// For no-boxing decoding, use PgValue.DecodeBinary instead.
+    /// </summary>
+    internal static object? DecodeBinary(DataType dataType, ReadOnlySpan<byte> buffer)
     {
         if (buffer.IsEmpty) return null;
 
         return dataType.Id switch
         {
-            DataTypeId.Bool => DecodeBool(buffer),
-            DataTypeId.Int2 => DecodeInt16(buffer),
-            DataTypeId.Int4 => DecodeInt32(buffer),
-            DataTypeId.Int8 => DecodeInt64(buffer),
-            DataTypeId.Float4 => DecodeFloat(buffer),
-            DataTypeId.Float8 => DecodeDouble(buffer),
-            DataTypeId.Char or DataTypeId.Varchar or DataTypeId.Bpchar or DataTypeId.Text or DataTypeId.Name => DecodeString(buffer),
-            DataTypeId.Date => DecodeDate(buffer),
-            DataTypeId.Time => DecodeTime(buffer),
-            DataTypeId.Timetz => DecodeTimeTz(buffer),
-            DataTypeId.Timestamp => DecodeTimestamp(buffer),
-            DataTypeId.Timestamptz => DecodeTimestampTz(buffer),
-            DataTypeId.Bytea => DecodeByteArray(buffer),
-            DataTypeId.Uuid => DecodeGuid(buffer),
-            DataTypeId.Json or DataTypeId.Jsonb => DecodeJson(buffer),
-            DataTypeId.Point => DecodePoint(buffer),
-            DataTypeId.Line => DecodeLine(buffer),
-            DataTypeId.Lseg => DecodeLineSegment(buffer),
-            DataTypeId.Box => DecodeBox(buffer),
-            DataTypeId.Circle => DecodeCircle(buffer),
-            DataTypeId.Path => DecodePath(buffer),
-            DataTypeId.Polygon => DecodePolygon(buffer),
-            DataTypeId.Interval => DecodeInterval(buffer),
-            DataTypeId.Inet => DecodeInet(buffer),
-            DataTypeId.Cidr => DecodeCidr(buffer),
-            DataTypeId.Money => DecodeMoney(buffer),
-            DataTypeId.Numeric => DecodeNumeric(buffer),
+            DataTypeId.Bool => DecodeBoolBinary(buffer),
+            DataTypeId.Int2 => DecodeInt16Binary(buffer),
+            DataTypeId.Int4 => DecodeInt32Binary(buffer),
+            DataTypeId.Int8 => DecodeInt64Binary(buffer),
+            DataTypeId.Float4 => DecodeFloatBinary(buffer),
+            DataTypeId.Float8 => DecodeDoubleBinary(buffer),
+            DataTypeId.Char or DataTypeId.Varchar or DataTypeId.Bpchar or DataTypeId.Text or DataTypeId.Name => DecodeStringBinary(buffer),
+            DataTypeId.Date => DecodeDateBinary(buffer),
+            DataTypeId.Time => DecodeTimeBinary(buffer),
+            DataTypeId.Timetz => DecodeTimeTzBinary(buffer),
+            DataTypeId.Timestamp => DecodeTimestampBinary(buffer),
+            DataTypeId.Timestamptz => DecodeTimestampTzBinary(buffer),
+            DataTypeId.Bytea => DecodeByteArrayBinary(buffer),
+            DataTypeId.Uuid => DecodeGuidBinary(buffer),
+            DataTypeId.Json or DataTypeId.Jsonb => DecodeJsonBinary(buffer),
+            DataTypeId.Point => DecodePointBinary(buffer),
+            DataTypeId.Line => DecodeLineBinary(buffer),
+            DataTypeId.Lseg => DecodeLineSegmentBinary(buffer),
+            DataTypeId.Box => DecodeBoxBinary(buffer),
+            DataTypeId.Circle => DecodeCircleBinary(buffer),
+            DataTypeId.Path => DecodePathBinary(buffer),
+            DataTypeId.Polygon => DecodePolygonBinary(buffer),
+            DataTypeId.Interval => DecodeIntervalBinary(buffer),
+            DataTypeId.Inet => DecodeInetBinary(buffer),
+            DataTypeId.Cidr => DecodeCidrBinary(buffer),
+            DataTypeId.Money => DecodeMoneyBinary(buffer),
+            DataTypeId.Numeric => DecodeNumericBinary(buffer),
             // Array types
-            DataTypeId.BoolArray => DecodeArrayBinary<bool>(buffer, DataType.Bool),
-            DataTypeId.Int2Array => DecodeArrayBinary<short>(buffer, DataType.Int2),
-            DataTypeId.Int4Array => DecodeArrayBinary<int>(buffer, DataType.Int4),
-            DataTypeId.Int8Array => DecodeArrayBinary<long>(buffer, DataType.Int8),
-            DataTypeId.Float4Array => DecodeArrayBinary<float>(buffer, DataType.Float4),
-            DataTypeId.Float8Array => DecodeArrayBinary<double>(buffer, DataType.Float8),
-            DataTypeId.NumericArray => DecodeArrayBinary<decimal>(buffer, DataType.Numeric),
-            DataTypeId.VarcharArray or DataTypeId.TextArray or DataTypeId.BpcharArray or DataTypeId.NameArray => DecodeArrayBinary<string>(buffer, DataType.Text),
-            DataTypeId.DateArray => DecodeArrayBinary<DateOnly>(buffer, DataType.Date),
-            DataTypeId.TimestampArray => DecodeArrayBinary<DateTime>(buffer, DataType.Timestamp),
-            DataTypeId.TimestamptzArray => DecodeArrayBinary<DateTimeOffset>(buffer, DataType.Timestamptz),
-            DataTypeId.UuidArray => DecodeArrayBinary<Guid>(buffer, DataType.Uuid),
-            DataTypeId.ByteaArray => DecodeArrayBinary<byte[]>(buffer, DataType.Bytea),
-            _ => DecodeString(buffer) // Unknown types decode as string
+            DataTypeId.BoolArray => DecodeBoolArrayBinary(buffer),
+            DataTypeId.Int2Array => DecodeInt16ArrayBinary(buffer),
+            DataTypeId.Int4Array => DecodeInt32ArrayBinary(buffer),
+            DataTypeId.Int8Array => DecodeInt64ArrayBinary(buffer),
+            DataTypeId.Float4Array => DecodeFloatArrayBinary(buffer),
+            DataTypeId.Float8Array => DecodeDoubleArrayBinary(buffer),
+            DataTypeId.NumericArray => DecodeDecimalArrayBinary(buffer),
+            DataTypeId.VarcharArray or DataTypeId.TextArray or DataTypeId.BpcharArray or DataTypeId.NameArray => DecodeStringArrayBinary(buffer),
+            DataTypeId.DateArray => DecodeDateArrayBinary(buffer),
+            DataTypeId.TimestampArray => DecodeDateTimeArrayBinary(buffer),
+            DataTypeId.TimestamptzArray => DecodeDateTimeOffsetArrayBinary(buffer),
+            DataTypeId.UuidArray => DecodeGuidArrayBinary(buffer),
+            DataTypeId.ByteaArray => DecodeByteArrayArrayBinary(buffer),
+            _ => DecodeStringBinary(buffer) // Unknown types decode as string
         };
     }
 
-    private static bool DecodeBool(ReadOnlySpan<byte> buffer) => buffer[0] != 0;
+    // Public typed decode methods for use by PgValue
 
-    private static short DecodeInt16(ReadOnlySpan<byte> buffer) => BinaryPrimitives.ReadInt16BigEndian(buffer);
+    public static bool DecodeBoolBinary(ReadOnlySpan<byte> buffer) => buffer[0] != 0;
 
-    private static int DecodeInt32(ReadOnlySpan<byte> buffer) => BinaryPrimitives.ReadInt32BigEndian(buffer);
+    public static short DecodeInt16Binary(ReadOnlySpan<byte> buffer) => BinaryPrimitives.ReadInt16BigEndian(buffer);
 
-    private static long DecodeInt64(ReadOnlySpan<byte> buffer) => BinaryPrimitives.ReadInt64BigEndian(buffer);
+    public static int DecodeInt32Binary(ReadOnlySpan<byte> buffer) => BinaryPrimitives.ReadInt32BigEndian(buffer);
 
-    private static float DecodeFloat(ReadOnlySpan<byte> buffer)
+    public static long DecodeInt64Binary(ReadOnlySpan<byte> buffer) => BinaryPrimitives.ReadInt64BigEndian(buffer);
+
+    public static float DecodeFloatBinary(ReadOnlySpan<byte> buffer)
     {
         int intBits = BinaryPrimitives.ReadInt32BigEndian(buffer);
         return BitConverter.Int32BitsToSingle(intBits);
     }
 
-    private static double DecodeDouble(ReadOnlySpan<byte> buffer)
+    public static double DecodeDoubleBinary(ReadOnlySpan<byte> buffer)
     {
         long longBits = BinaryPrimitives.ReadInt64BigEndian(buffer);
         return BitConverter.Int64BitsToDouble(longBits);
     }
 
-    private static string DecodeString(ReadOnlySpan<byte> buffer) => Utf8.GetString(buffer);
+    public static string DecodeStringBinary(ReadOnlySpan<byte> buffer) => Utf8.GetString(buffer);
 
-    private static DateOnly DecodeDate(ReadOnlySpan<byte> buffer)
+    public static DateOnly DecodeDateBinary(ReadOnlySpan<byte> buffer)
     {
         int days = BinaryPrimitives.ReadInt32BigEndian(buffer);
         return LocalDateEpoch.AddDays(days);
     }
 
-    private static TimeOnly DecodeTime(ReadOnlySpan<byte> buffer)
+    public static TimeOnly DecodeTimeBinary(ReadOnlySpan<byte> buffer)
     {
         long micros = BinaryPrimitives.ReadInt64BigEndian(buffer);
         return TimeOnly.FromTimeSpan(TimeSpan.FromTicks(micros * 10));
     }
 
-    private static DateTimeOffset DecodeTimeTz(ReadOnlySpan<byte> buffer)
+    public static DateTimeOffset DecodeTimeTzBinary(ReadOnlySpan<byte> buffer)
     {
         long micros = BinaryPrimitives.ReadInt64BigEndian(buffer);
         int offsetSeconds = BinaryPrimitives.ReadInt32BigEndian(buffer.Slice(8));
@@ -122,21 +122,21 @@ public static class DataTypeCodec
         return new DateTimeOffset(DateTime.Today.Add(time), offset);
     }
 
-    private static DateTime DecodeTimestamp(ReadOnlySpan<byte> buffer)
+    public static DateTime DecodeTimestampBinary(ReadOnlySpan<byte> buffer)
     {
         long micros = BinaryPrimitives.ReadInt64BigEndian(buffer);
         return LocalDateTimeEpoch.AddTicks(micros * 10);
     }
 
-    private static DateTimeOffset DecodeTimestampTz(ReadOnlySpan<byte> buffer)
+    public static DateTimeOffset DecodeTimestampTzBinary(ReadOnlySpan<byte> buffer)
     {
         long micros = BinaryPrimitives.ReadInt64BigEndian(buffer);
         return new DateTimeOffset(LocalDateTimeEpoch.AddTicks(micros * 10), TimeSpan.Zero);
     }
 
-    private static byte[] DecodeByteArray(ReadOnlySpan<byte> buffer) => buffer.ToArray();
+    public static byte[] DecodeByteArrayBinary(ReadOnlySpan<byte> buffer) => buffer.ToArray();
 
-    private static Guid DecodeGuid(ReadOnlySpan<byte> buffer)
+    public static Guid DecodeGuidBinary(ReadOnlySpan<byte> buffer)
     {
         // PostgreSQL sends UUID in network byte order (big-endian)
         // .NET Guid expects mixed-endian format
@@ -155,7 +155,7 @@ public static class DataTypeCodec
         return new Guid(bytes);
     }
 
-    private static string DecodeJson(ReadOnlySpan<byte> buffer)
+    public static string DecodeJsonBinary(ReadOnlySpan<byte> buffer)
     {
         // JSONB has a version byte prefix
         if (buffer.Length > 0 && buffer[0] == 1)
@@ -165,43 +165,43 @@ public static class DataTypeCodec
         return Utf8.GetString(buffer);
     }
 
-    private static Point DecodePoint(ReadOnlySpan<byte> buffer)
+    public static Point DecodePointBinary(ReadOnlySpan<byte> buffer)
     {
-        double x = DecodeDouble(buffer);
-        double y = DecodeDouble(buffer.Slice(8));
+        double x = DecodeDoubleBinary(buffer);
+        double y = DecodeDoubleBinary(buffer.Slice(8));
         return new Point(x, y);
     }
 
-    private static Line DecodeLine(ReadOnlySpan<byte> buffer)
+    public static Line DecodeLineBinary(ReadOnlySpan<byte> buffer)
     {
-        double a = DecodeDouble(buffer);
-        double b = DecodeDouble(buffer.Slice(8));
-        double c = DecodeDouble(buffer.Slice(16));
+        double a = DecodeDoubleBinary(buffer);
+        double b = DecodeDoubleBinary(buffer.Slice(8));
+        double c = DecodeDoubleBinary(buffer.Slice(16));
         return new Line(a, b, c);
     }
 
-    private static LineSegment DecodeLineSegment(ReadOnlySpan<byte> buffer)
+    public static LineSegment DecodeLineSegmentBinary(ReadOnlySpan<byte> buffer)
     {
-        var p1 = DecodePoint(buffer);
-        var p2 = DecodePoint(buffer.Slice(16));
+        var p1 = DecodePointBinary(buffer);
+        var p2 = DecodePointBinary(buffer.Slice(16));
         return new LineSegment(p1, p2);
     }
 
-    private static Box DecodeBox(ReadOnlySpan<byte> buffer)
+    public static Box DecodeBoxBinary(ReadOnlySpan<byte> buffer)
     {
-        var upperRight = DecodePoint(buffer);
-        var lowerLeft = DecodePoint(buffer.Slice(16));
+        var upperRight = DecodePointBinary(buffer);
+        var lowerLeft = DecodePointBinary(buffer.Slice(16));
         return new Box(upperRight, lowerLeft);
     }
 
-    private static Circle DecodeCircle(ReadOnlySpan<byte> buffer)
+    public static Circle DecodeCircleBinary(ReadOnlySpan<byte> buffer)
     {
-        var center = DecodePoint(buffer);
-        double radius = DecodeDouble(buffer.Slice(16));
+        var center = DecodePointBinary(buffer);
+        double radius = DecodeDoubleBinary(buffer.Slice(16));
         return new Circle(center, radius);
     }
 
-    private static Interval DecodeInterval(ReadOnlySpan<byte> buffer)
+    public static Interval DecodeIntervalBinary(ReadOnlySpan<byte> buffer)
     {
         long micros = BinaryPrimitives.ReadInt64BigEndian(buffer);
         int days = BinaryPrimitives.ReadInt32BigEndian(buffer.Slice(8));
@@ -220,7 +220,7 @@ public static class DataTypeCodec
         return new Interval(years, months, days, hours, minutes, seconds, microseconds);
     }
 
-    private static Inet DecodeInet(ReadOnlySpan<byte> buffer)
+    public static Inet DecodeInetBinary(ReadOnlySpan<byte> buffer)
     {
         // Format: family (1 byte), netmask (1 byte), is_cidr (1 byte), address length (1 byte), address
         byte family = buffer[0];
@@ -234,7 +234,7 @@ public static class DataTypeCodec
         return new Inet().SetAddress(address).SetNetmask(netmask);
     }
 
-    private static Cidr DecodeCidr(ReadOnlySpan<byte> buffer)
+    public static Cidr DecodeCidrBinary(ReadOnlySpan<byte> buffer)
     {
         // Format: family (1 byte), netmask (1 byte), is_cidr (1 byte), address length (1 byte), address
         byte family = buffer[0];
@@ -248,7 +248,7 @@ public static class DataTypeCodec
         return new Cidr().SetAddress(address).SetNetmask(netmask);
     }
 
-    private static Data.Path DecodePath(ReadOnlySpan<byte> buffer)
+    public static Data.Path DecodePathBinary(ReadOnlySpan<byte> buffer)
     {
         // Format: closed flag (1 byte), point count (4 bytes), points (16 bytes each)
         bool isOpen = buffer[0] == 0;
@@ -257,13 +257,13 @@ public static class DataTypeCodec
         int offset = 5;
         for (int i = 0; i < pointCount; i++)
         {
-            points.Add(DecodePoint(buffer.Slice(offset)));
+            points.Add(DecodePointBinary(buffer.Slice(offset)));
             offset += 16;
         }
         return new Data.Path(isOpen, points);
     }
 
-    private static Polygon DecodePolygon(ReadOnlySpan<byte> buffer)
+    public static Polygon DecodePolygonBinary(ReadOnlySpan<byte> buffer)
     {
         // Format: point count (4 bytes), points (16 bytes each)
         int pointCount = BinaryPrimitives.ReadInt32BigEndian(buffer);
@@ -271,19 +271,19 @@ public static class DataTypeCodec
         int offset = 4;
         for (int i = 0; i < pointCount; i++)
         {
-            points.Add(DecodePoint(buffer.Slice(offset)));
+            points.Add(DecodePointBinary(buffer.Slice(offset)));
             offset += 16;
         }
         return new Polygon(points);
     }
 
-    private static Money DecodeMoney(ReadOnlySpan<byte> buffer)
+    public static Money DecodeMoneyBinary(ReadOnlySpan<byte> buffer)
     {
         long cents = BinaryPrimitives.ReadInt64BigEndian(buffer);
         return new Money(cents / 100m);
     }
 
-    private static decimal DecodeNumeric(ReadOnlySpan<byte> buffer)
+    public static decimal DecodeNumericBinary(ReadOnlySpan<byte> buffer)
     {
         // PostgreSQL numeric format:
         // ndigits (2), weight (2), sign (2), dscale (2), digits (2 * ndigits)
@@ -344,21 +344,27 @@ public static class DataTypeCodec
     /// - For each dimension: dim (4 bytes), lbound (4 bytes)
     /// - For each element: length (4 bytes, -1 for NULL), data (length bytes)
     /// </summary>
-    private static T?[] DecodeArrayBinary<T>(ReadOnlySpan<byte> buffer, DataType elementType)
+    private static T?[] DecodeArrayBinaryGeneric<T>(ReadOnlySpan<byte> buffer, DataType elementType)
     {
         if (buffer.Length < 12)
+        {
             return Array.Empty<T?>();
+        }
 
         int ndim = BinaryPrimitives.ReadInt32BigEndian(buffer);
         int hasNull = BinaryPrimitives.ReadInt32BigEndian(buffer.Slice(4));
         int elemTypeOid = BinaryPrimitives.ReadInt32BigEndian(buffer.Slice(8));
         
         if (ndim == 0)
+        {
             return Array.Empty<T?>();
+        }
 
         // For now, only support 1-dimensional arrays
         if (ndim != 1)
+        {
             throw new NotSupportedException($"Multi-dimensional arrays (ndim={ndim}) are not yet supported");
+        }
 
         int offset = 12;
         
@@ -382,7 +388,7 @@ public static class DataTypeCodec
             else
             {
                 var elemData = buffer.Slice(offset, elemLen);
-                var decoded = DecodeBinaryCore(elementType, elemData);
+                var decoded = DecodeBinary(elementType, elemData);
                 result[i] = decoded is T typedValue ? typedValue : default;
                 offset += elemLen;
             }
@@ -391,11 +397,56 @@ public static class DataTypeCodec
         return result;
     }
 
+    // Public typed array decode methods
+
+    public static bool[]? DecodeBoolArrayBinary(ReadOnlySpan<byte> buffer)
+        => DecodeArrayBinaryGeneric<bool>(buffer, DataType.Bool)!;
+
+    public static short[]? DecodeInt16ArrayBinary(ReadOnlySpan<byte> buffer)
+        => DecodeArrayBinaryGeneric<short>(buffer, DataType.Int2)!;
+
+    public static int[]? DecodeInt32ArrayBinary(ReadOnlySpan<byte> buffer)
+        => DecodeArrayBinaryGeneric<int>(buffer, DataType.Int4)!;
+
+    public static long[]? DecodeInt64ArrayBinary(ReadOnlySpan<byte> buffer)
+        => DecodeArrayBinaryGeneric<long>(buffer, DataType.Int8)!;
+
+    public static float[]? DecodeFloatArrayBinary(ReadOnlySpan<byte> buffer)
+        => DecodeArrayBinaryGeneric<float>(buffer, DataType.Float4)!;
+
+    public static double[]? DecodeDoubleArrayBinary(ReadOnlySpan<byte> buffer)
+        => DecodeArrayBinaryGeneric<double>(buffer, DataType.Float8)!;
+
+    public static decimal[]? DecodeDecimalArrayBinary(ReadOnlySpan<byte> buffer)
+        => DecodeArrayBinaryGeneric<decimal>(buffer, DataType.Numeric)!;
+
+    public static string?[]? DecodeStringArrayBinary(ReadOnlySpan<byte> buffer)
+        => DecodeArrayBinaryGeneric<string>(buffer, DataType.Text);
+
+    public static DateOnly[]? DecodeDateArrayBinary(ReadOnlySpan<byte> buffer)
+        => DecodeArrayBinaryGeneric<DateOnly>(buffer, DataType.Date)!;
+
+    public static DateTime[]? DecodeDateTimeArrayBinary(ReadOnlySpan<byte> buffer)
+        => DecodeArrayBinaryGeneric<DateTime>(buffer, DataType.Timestamp)!;
+
+    public static DateTimeOffset[]? DecodeDateTimeOffsetArrayBinary(ReadOnlySpan<byte> buffer)
+        => DecodeArrayBinaryGeneric<DateTimeOffset>(buffer, DataType.Timestamptz)!;
+
+    public static Guid[]? DecodeGuidArrayBinary(ReadOnlySpan<byte> buffer)
+        => DecodeArrayBinaryGeneric<Guid>(buffer, DataType.Uuid)!;
+
+    public static byte[]?[]? DecodeByteArrayArrayBinary(ReadOnlySpan<byte> buffer)
+        => DecodeArrayBinaryGeneric<byte[]>(buffer, DataType.Bytea);
+
     #endregion
 
     #region Binary Encode
 
-    public static void EncodeBinary(DataType dataType, object? value, Span<byte> buffer, out int bytesWritten)
+    /// <summary>
+    /// Encodes a value to binary PostgreSQL format. May cause boxing.
+    /// For no-boxing encoding, use PgValue.EncodeBinary instead.
+    /// </summary>
+    internal static void EncodeBinary(DataType dataType, object? value, Span<byte> buffer, out int bytesWritten)
     {
         if (value is null)
         {
@@ -405,121 +456,123 @@ public static class DataTypeCodec
 
         bytesWritten = dataType.Id switch
         {
-            DataTypeId.Bool => EncodeBool((bool)value, buffer),
-            DataTypeId.Int2 => EncodeInt16(Convert.ToInt16(value), buffer),
-            DataTypeId.Int4 => EncodeInt32(Convert.ToInt32(value), buffer),
-            DataTypeId.Int8 => EncodeInt64(Convert.ToInt64(value), buffer),
-            DataTypeId.Float4 => EncodeFloat(Convert.ToSingle(value), buffer),
-            DataTypeId.Float8 => EncodeDouble(Convert.ToDouble(value), buffer),
-            DataTypeId.Numeric => EncodeNumeric(Convert.ToDecimal(value), buffer),
+            DataTypeId.Bool => EncodeBoolBinary((bool)value, buffer),
+            DataTypeId.Int2 => EncodeInt16Binary(Convert.ToInt16(value), buffer),
+            DataTypeId.Int4 => EncodeInt32Binary(Convert.ToInt32(value), buffer),
+            DataTypeId.Int8 => EncodeInt64Binary(Convert.ToInt64(value), buffer),
+            DataTypeId.Float4 => EncodeFloatBinary(Convert.ToSingle(value), buffer),
+            DataTypeId.Float8 => EncodeDoubleBinary(Convert.ToDouble(value), buffer),
+            DataTypeId.Numeric => EncodeNumericBinary(Convert.ToDecimal(value), buffer),
             DataTypeId.Char or DataTypeId.Varchar or DataTypeId.Bpchar or DataTypeId.Text or DataTypeId.Name => 
-                EncodeString((string)value, buffer),
-            DataTypeId.Date => EncodeDate((DateOnly)value, buffer),
-            DataTypeId.Time => EncodeTime((TimeOnly)value, buffer),
-            DataTypeId.Timestamp => EncodeTimestamp((DateTime)value, buffer),
-            DataTypeId.Timestamptz => EncodeTimestampTz((DateTimeOffset)value, buffer),
-            DataTypeId.Bytea => EncodeByteArray((byte[])value, buffer),
-            DataTypeId.Uuid => EncodeGuid((Guid)value, buffer),
-            DataTypeId.Json => EncodeString((string)value, buffer),
-            DataTypeId.Jsonb => EncodeJsonb((string)value, buffer),
-            DataTypeId.Point => EncodePoint((Point)value, buffer),
-            DataTypeId.Line => EncodeLine((Line)value, buffer),
-            DataTypeId.Lseg => EncodeLineSegment((LineSegment)value, buffer),
-            DataTypeId.Box => EncodeBox((Box)value, buffer),
-            DataTypeId.Circle => EncodeCircle((Circle)value, buffer),
-            DataTypeId.Path => EncodePath((Data.Path)value, buffer),
-            DataTypeId.Polygon => EncodePolygon((Polygon)value, buffer),
-            DataTypeId.Inet => EncodeInet((Inet)value, buffer),
-            DataTypeId.Cidr => EncodeCidr((Cidr)value, buffer),
-            DataTypeId.Interval => EncodeInterval((Interval)value, buffer),
+                EncodeStringBinary((string)value, buffer),
+            DataTypeId.Date => EncodeDateBinary((DateOnly)value, buffer),
+            DataTypeId.Time => EncodeTimeBinary((TimeOnly)value, buffer),
+            DataTypeId.Timestamp => EncodeTimestampBinary((DateTime)value, buffer),
+            DataTypeId.Timestamptz => EncodeTimestampTzBinary((DateTimeOffset)value, buffer),
+            DataTypeId.Bytea => EncodeByteArrayBinary((byte[])value, buffer),
+            DataTypeId.Uuid => EncodeGuidBinary((Guid)value, buffer),
+            DataTypeId.Json => EncodeStringBinary((string)value, buffer),
+            DataTypeId.Jsonb => EncodeJsonbBinary((string)value, buffer),
+            DataTypeId.Point => EncodePointBinary((Point)value, buffer),
+            DataTypeId.Line => EncodeLineBinary((Line)value, buffer),
+            DataTypeId.Lseg => EncodeLineSegmentBinary((LineSegment)value, buffer),
+            DataTypeId.Box => EncodeBoxBinary((Box)value, buffer),
+            DataTypeId.Circle => EncodeCircleBinary((Circle)value, buffer),
+            DataTypeId.Path => EncodePathBinary((Data.Path)value, buffer),
+            DataTypeId.Polygon => EncodePolygonBinary((Polygon)value, buffer),
+            DataTypeId.Inet => EncodeInetBinary((Inet)value, buffer),
+            DataTypeId.Cidr => EncodeCidrBinary((Cidr)value, buffer),
+            DataTypeId.Interval => EncodeIntervalBinary((Interval)value, buffer),
             // Array types
-            DataTypeId.BoolArray => EncodeArrayBinary((bool[])value, DataType.Bool, buffer),
-            DataTypeId.Int2Array => EncodeArrayBinary((short[])value, DataType.Int2, buffer),
-            DataTypeId.Int4Array => EncodeArrayBinary((int[])value, DataType.Int4, buffer),
-            DataTypeId.Int8Array => EncodeArrayBinary((long[])value, DataType.Int8, buffer),
-            DataTypeId.Float4Array => EncodeArrayBinary((float[])value, DataType.Float4, buffer),
-            DataTypeId.Float8Array => EncodeArrayBinary((double[])value, DataType.Float8, buffer),
-            DataTypeId.VarcharArray or DataTypeId.TextArray => EncodeArrayBinary((string[])value, DataType.Text, buffer),
-            DataTypeId.DateArray => EncodeArrayBinary((DateOnly[])value, DataType.Date, buffer),
-            DataTypeId.TimestampArray => EncodeArrayBinary((DateTime[])value, DataType.Timestamp, buffer),
-            DataTypeId.TimestamptzArray => EncodeArrayBinary((DateTimeOffset[])value, DataType.Timestamptz, buffer),
-            DataTypeId.UuidArray => EncodeArrayBinary((Guid[])value, DataType.Uuid, buffer),
-            _ => EncodeString(value.ToString() ?? "", buffer)
+            DataTypeId.BoolArray => EncodeBoolArrayBinary((bool[])value, buffer),
+            DataTypeId.Int2Array => EncodeInt16ArrayBinary((short[])value, buffer),
+            DataTypeId.Int4Array => EncodeInt32ArrayBinary((int[])value, buffer),
+            DataTypeId.Int8Array => EncodeInt64ArrayBinary((long[])value, buffer),
+            DataTypeId.Float4Array => EncodeFloatArrayBinary((float[])value, buffer),
+            DataTypeId.Float8Array => EncodeDoubleArrayBinary((double[])value, buffer),
+            DataTypeId.VarcharArray or DataTypeId.TextArray => EncodeStringArrayBinary((string[])value, buffer),
+            DataTypeId.DateArray => EncodeDateArrayBinary((DateOnly[])value, buffer),
+            DataTypeId.TimestampArray => EncodeDateTimeArrayBinary((DateTime[])value, buffer),
+            DataTypeId.TimestamptzArray => EncodeDateTimeOffsetArrayBinary((DateTimeOffset[])value, buffer),
+            DataTypeId.UuidArray => EncodeGuidArrayBinary((Guid[])value, buffer),
+            _ => EncodeStringBinary(value.ToString() ?? "", buffer)
         };
     }
 
-    private static int EncodeBool(bool value, Span<byte> buffer)
+    // Public typed encode methods for use by PgValue
+
+    public static int EncodeBoolBinary(bool value, Span<byte> buffer)
     {
         buffer[0] = value ? (byte)1 : (byte)0;
         return 1;
     }
 
-    private static int EncodeInt16(short value, Span<byte> buffer)
+    public static int EncodeInt16Binary(short value, Span<byte> buffer)
     {
         BinaryPrimitives.WriteInt16BigEndian(buffer, value);
         return 2;
     }
 
-    private static int EncodeInt32(int value, Span<byte> buffer)
+    public static int EncodeInt32Binary(int value, Span<byte> buffer)
     {
         BinaryPrimitives.WriteInt32BigEndian(buffer, value);
         return 4;
     }
 
-    private static int EncodeInt64(long value, Span<byte> buffer)
+    public static int EncodeInt64Binary(long value, Span<byte> buffer)
     {
         BinaryPrimitives.WriteInt64BigEndian(buffer, value);
         return 8;
     }
 
-    private static int EncodeFloat(float value, Span<byte> buffer)
+    public static int EncodeFloatBinary(float value, Span<byte> buffer)
     {
         int intBits = BitConverter.SingleToInt32Bits(value);
         BinaryPrimitives.WriteInt32BigEndian(buffer, intBits);
         return 4;
     }
 
-    private static int EncodeDouble(double value, Span<byte> buffer)
+    public static int EncodeDoubleBinary(double value, Span<byte> buffer)
     {
         long longBits = BitConverter.DoubleToInt64Bits(value);
         BinaryPrimitives.WriteInt64BigEndian(buffer, longBits);
         return 8;
     }
 
-    private static int EncodeString(string value, Span<byte> buffer)
+    public static int EncodeStringBinary(string value, Span<byte> buffer)
     {
         return Utf8.GetBytes(value, buffer);
     }
 
-    private static int EncodeJsonb(string value, Span<byte> buffer)
+    public static int EncodeJsonbBinary(string value, Span<byte> buffer)
     {
         // JSONB binary format requires a version byte prefix (always 1)
         buffer[0] = 1;
         return 1 + Utf8.GetBytes(value, buffer.Slice(1));
     }
 
-    private static int EncodeDate(DateOnly value, Span<byte> buffer)
+    public static int EncodeDateBinary(DateOnly value, Span<byte> buffer)
     {
         int days = value.DayNumber - LocalDateEpoch.DayNumber;
         BinaryPrimitives.WriteInt32BigEndian(buffer, days);
         return 4;
     }
 
-    private static int EncodeTime(TimeOnly value, Span<byte> buffer)
+    public static int EncodeTimeBinary(TimeOnly value, Span<byte> buffer)
     {
         long micros = value.Ticks / 10;
         BinaryPrimitives.WriteInt64BigEndian(buffer, micros);
         return 8;
     }
 
-    private static int EncodeTimestamp(DateTime value, Span<byte> buffer)
+    public static int EncodeTimestampBinary(DateTime value, Span<byte> buffer)
     {
         long micros = (value.Ticks - LocalDateTimeEpoch.Ticks) / 10;
         BinaryPrimitives.WriteInt64BigEndian(buffer, micros);
         return 8;
     }
 
-    private static int EncodeTimestampTz(DateTimeOffset value, Span<byte> buffer)
+    public static int EncodeTimestampTzBinary(DateTimeOffset value, Span<byte> buffer)
     {
         var utc = value.UtcDateTime;
         long micros = (utc.Ticks - LocalDateTimeEpoch.Ticks) / 10;
@@ -527,13 +580,13 @@ public static class DataTypeCodec
         return 8;
     }
 
-    private static int EncodeByteArray(byte[] value, Span<byte> buffer)
+    public static int EncodeByteArrayBinary(byte[] value, Span<byte> buffer)
     {
         value.CopyTo(buffer);
         return value.Length;
     }
 
-    private static int EncodeGuid(Guid value, Span<byte> buffer)
+    public static int EncodeGuidBinary(Guid value, Span<byte> buffer)
     {
         value.TryWriteBytes(buffer);
         
@@ -546,14 +599,14 @@ public static class DataTypeCodec
         return 16;
     }
 
-    private static int EncodePoint(Point value, Span<byte> buffer)
+    public static int EncodePointBinary(Point value, Span<byte> buffer)
     {
-        int written = EncodeDouble(value.X, buffer);
-        written += EncodeDouble(value.Y, buffer.Slice(8));
+        int written = EncodeDoubleBinary(value.X, buffer);
+        written += EncodeDoubleBinary(value.Y, buffer.Slice(8));
         return written;
     }
 
-    private static int EncodeInterval(Interval value, Span<byte> buffer)
+    public static int EncodeIntervalBinary(Interval value, Span<byte> buffer)
     {
         long micros = (long)value.Hours * 3600_000_000L +
                      (long)value.Minutes * 60_000_000L +
@@ -569,36 +622,36 @@ public static class DataTypeCodec
         return 16;
     }
 
-    private static int EncodeLine(Line value, Span<byte> buffer)
+    public static int EncodeLineBinary(Line value, Span<byte> buffer)
     {
-        int written = EncodeDouble(value.A, buffer);
-        written += EncodeDouble(value.B, buffer.Slice(8));
-        written += EncodeDouble(value.C, buffer.Slice(16));
+        int written = EncodeDoubleBinary(value.A, buffer);
+        written += EncodeDoubleBinary(value.B, buffer.Slice(8));
+        written += EncodeDoubleBinary(value.C, buffer.Slice(16));
         return written;
     }
 
-    private static int EncodeLineSegment(LineSegment value, Span<byte> buffer)
+    public static int EncodeLineSegmentBinary(LineSegment value, Span<byte> buffer)
     {
-        int written = EncodePoint(value.P1, buffer);
-        written += EncodePoint(value.P2, buffer.Slice(16));
+        int written = EncodePointBinary(value.P1, buffer);
+        written += EncodePointBinary(value.P2, buffer.Slice(16));
         return written;
     }
 
-    private static int EncodeBox(Box value, Span<byte> buffer)
+    public static int EncodeBoxBinary(Box value, Span<byte> buffer)
     {
-        int written = EncodePoint(value.UpperRightCorner, buffer);
-        written += EncodePoint(value.LowerLeftCorner, buffer.Slice(16));
+        int written = EncodePointBinary(value.UpperRightCorner, buffer);
+        written += EncodePointBinary(value.LowerLeftCorner, buffer.Slice(16));
         return written;
     }
 
-    private static int EncodeCircle(Circle value, Span<byte> buffer)
+    public static int EncodeCircleBinary(Circle value, Span<byte> buffer)
     {
-        int written = EncodePoint(value.CenterPoint, buffer);
-        written += EncodeDouble(value.Radius, buffer.Slice(16));
+        int written = EncodePointBinary(value.CenterPoint, buffer);
+        written += EncodeDoubleBinary(value.Radius, buffer.Slice(16));
         return written;
     }
 
-    private static int EncodePath(Data.Path value, Span<byte> buffer)
+    public static int EncodePathBinary(Data.Path value, Span<byte> buffer)
     {
         // Format: closed flag (1 byte), point count (4 bytes), points (16 bytes each)
         buffer[0] = value.IsOpen ? (byte)0 : (byte)1;
@@ -606,26 +659,26 @@ public static class DataTypeCodec
         int offset = 5;
         foreach (var point in value.Points)
         {
-            EncodePoint(point, buffer.Slice(offset));
+            EncodePointBinary(point, buffer.Slice(offset));
             offset += 16;
         }
         return offset;
     }
 
-    private static int EncodePolygon(Polygon value, Span<byte> buffer)
+    public static int EncodePolygonBinary(Polygon value, Span<byte> buffer)
     {
         // Format: point count (4 bytes), points (16 bytes each)
         BinaryPrimitives.WriteInt32BigEndian(buffer, value.Points.Count);
         int offset = 4;
         foreach (var point in value.Points)
         {
-            EncodePoint(point, buffer.Slice(offset));
+            EncodePointBinary(point, buffer.Slice(offset));
             offset += 16;
         }
         return offset;
     }
 
-    private static int EncodeInet(Inet value, Span<byte> buffer)
+    public static int EncodeInetBinary(Inet value, Span<byte> buffer)
     {
         // Format: family (1 byte), netmask (1 byte), is_cidr (1 byte), address length (1 byte), address
         var addressBytes = value.Address!.GetAddressBytes();
@@ -640,7 +693,7 @@ public static class DataTypeCodec
         return 4 + addressBytes.Length;
     }
 
-    private static int EncodeCidr(Cidr value, Span<byte> buffer)
+    public static int EncodeCidrBinary(Cidr value, Span<byte> buffer)
     {
         // Format: family (1 byte), netmask (1 byte), is_cidr (1 byte), address length (1 byte), address
         var addressBytes = value.Address!.GetAddressBytes();
@@ -655,13 +708,48 @@ public static class DataTypeCodec
         return 4 + addressBytes.Length;
     }
 
-    private static int EncodeNumeric(decimal value, Span<byte> buffer)
+    public static int EncodeNumericBinary(decimal value, Span<byte> buffer)
     {
         // For simplicity, use text encoding for numeric since binary format is complex
         // This converts to string and encodes as UTF-8
         var str = value.ToString(System.Globalization.CultureInfo.InvariantCulture);
         return Utf8.GetBytes(str, buffer);
     }
+
+    // Public typed array encode methods
+
+    public static int EncodeBoolArrayBinary(bool[] array, Span<byte> buffer)
+        => EncodeArrayBinaryGeneric(array.Cast<bool?>().ToArray(), DataType.Bool, buffer);
+
+    public static int EncodeInt16ArrayBinary(short[] array, Span<byte> buffer)
+        => EncodeArrayBinaryGeneric(array.Cast<short?>().ToArray(), DataType.Int2, buffer);
+
+    public static int EncodeInt32ArrayBinary(int[] array, Span<byte> buffer)
+        => EncodeArrayBinaryGeneric(array.Cast<int?>().ToArray(), DataType.Int4, buffer);
+
+    public static int EncodeInt64ArrayBinary(long[] array, Span<byte> buffer)
+        => EncodeArrayBinaryGeneric(array.Cast<long?>().ToArray(), DataType.Int8, buffer);
+
+    public static int EncodeFloatArrayBinary(float[] array, Span<byte> buffer)
+        => EncodeArrayBinaryGeneric(array.Cast<float?>().ToArray(), DataType.Float4, buffer);
+
+    public static int EncodeDoubleArrayBinary(double[] array, Span<byte> buffer)
+        => EncodeArrayBinaryGeneric(array.Cast<double?>().ToArray(), DataType.Float8, buffer);
+
+    public static int EncodeStringArrayBinary(string?[] array, Span<byte> buffer)
+        => EncodeArrayBinaryGeneric(array, DataType.Text, buffer);
+
+    public static int EncodeDateArrayBinary(DateOnly[] array, Span<byte> buffer)
+        => EncodeArrayBinaryGeneric(array.Cast<DateOnly?>().ToArray(), DataType.Date, buffer);
+
+    public static int EncodeDateTimeArrayBinary(DateTime[] array, Span<byte> buffer)
+        => EncodeArrayBinaryGeneric(array.Cast<DateTime?>().ToArray(), DataType.Timestamp, buffer);
+
+    public static int EncodeDateTimeOffsetArrayBinary(DateTimeOffset[] array, Span<byte> buffer)
+        => EncodeArrayBinaryGeneric(array.Cast<DateTimeOffset?>().ToArray(), DataType.Timestamptz, buffer);
+
+    public static int EncodeGuidArrayBinary(Guid[] array, Span<byte> buffer)
+        => EncodeArrayBinaryGeneric(array.Cast<Guid?>().ToArray(), DataType.Uuid, buffer);
 
     /// <summary>
     /// Encodes a .NET array as PostgreSQL binary array format.
@@ -673,7 +761,7 @@ public static class DataTypeCodec
     /// - lbound (4 bytes): lower bound (always 1)
     /// - For each element: length (4 bytes, -1 for NULL), data (length bytes)
     /// </summary>
-    private static int EncodeArrayBinary<T>(T?[] array, DataType elementType, Span<byte> buffer)
+    private static int EncodeArrayBinaryGeneric<T>(T?[] array, DataType elementType, Span<byte> buffer)
     {
         int offset = 0;
         
@@ -726,25 +814,32 @@ public static class DataTypeCodec
 
     #region Text Decode
 
-    public static object? DecodeText(DataType dataType, ReadOnlySpan<byte> buffer)
+    /// <summary>
+    /// Decodes a text PostgreSQL value. Returns object, may box value types.
+    /// For no-boxing decoding, use PgValue.DecodeText instead.
+    /// </summary>
+    internal static object? DecodeText(DataType dataType, ReadOnlySpan<byte> buffer)
     {
-        if (buffer.IsEmpty) return null;
+        if (buffer.IsEmpty)
+        {
+            return null;
+        }
 
         return dataType.Id switch
         {
             DataTypeId.Bool => buffer[0] == 't' || buffer[0] == '1',
-            DataTypeId.Int2 => ParseInt16Utf8(buffer),
-            DataTypeId.Int4 => ParseInt32Utf8(buffer),
-            DataTypeId.Int8 => ParseInt64Utf8(buffer),
-            DataTypeId.Float4 => ParseSingleUtf8(buffer),
-            DataTypeId.Float8 => ParseDoubleUtf8(buffer),
-            DataTypeId.Numeric => ParseDecimalUtf8(buffer),
+            DataTypeId.Int2 => DecodeInt16Text(buffer),
+            DataTypeId.Int4 => DecodeInt32Text(buffer),
+            DataTypeId.Int8 => DecodeInt64Text(buffer),
+            DataTypeId.Float4 => DecodeFloatText(buffer),
+            DataTypeId.Float8 => DecodeDoubleText(buffer),
+            DataTypeId.Numeric => DecodeDecimalText(buffer),
             DataTypeId.Char or DataTypeId.Varchar or DataTypeId.Bpchar or DataTypeId.Text or DataTypeId.Name => Utf8.GetString(buffer),
-            DataTypeId.Date => ParseDateOnlyFromUtf8(buffer),
-            DataTypeId.Time => ParseTimeOnlyFromUtf8(buffer),
-            DataTypeId.Timestamp => ParseDateTimeFromUtf8(buffer),
-            DataTypeId.Timestamptz => ParseDateTimeOffsetFromUtf8(buffer),
-            DataTypeId.Uuid => ParseGuidUtf8(buffer),
+            DataTypeId.Date => DecodeDateText(buffer),
+            DataTypeId.Time => DecodeTimeText(buffer),
+            DataTypeId.Timestamp => DecodeDateTimeText(buffer),
+            DataTypeId.Timestamptz => DecodeDateTimeOffsetText(buffer),
+            DataTypeId.Uuid => DecodeGuidText(buffer),
             DataTypeId.Json or DataTypeId.Jsonb => Utf8.GetString(buffer),
             DataTypeId.Bytea => DecodeByteaText(buffer),
             DataTypeId.Point => DecodePointText(buffer),
@@ -772,52 +867,68 @@ public static class DataTypeCodec
         };
     }
 
-    private static short ParseInt16Utf8(ReadOnlySpan<byte> buffer)
+    // Public typed text decode methods
+
+    public static short DecodeInt16Text(ReadOnlySpan<byte> buffer)
     {
         if (System.Buffers.Text.Utf8Parser.TryParse(buffer, out short value, out _))
+        {
             return value;
+        }
         throw new FormatException("Invalid Int16 format");
     }
 
-    private static int ParseInt32Utf8(ReadOnlySpan<byte> buffer)
+    public static int DecodeInt32Text(ReadOnlySpan<byte> buffer)
     {
         if (System.Buffers.Text.Utf8Parser.TryParse(buffer, out int value, out _))
+        {
             return value;
+        }
         throw new FormatException("Invalid Int32 format");
     }
 
-    private static long ParseInt64Utf8(ReadOnlySpan<byte> buffer)
+    public static long DecodeInt64Text(ReadOnlySpan<byte> buffer)
     {
         if (System.Buffers.Text.Utf8Parser.TryParse(buffer, out long value, out _))
+        {
             return value;
+        }
         throw new FormatException("Invalid Int64 format");
     }
 
-    private static float ParseSingleUtf8(ReadOnlySpan<byte> buffer)
+    public static float DecodeFloatText(ReadOnlySpan<byte> buffer)
     {
         if (System.Buffers.Text.Utf8Parser.TryParse(buffer, out float value, out _))
+        {
             return value;
+        }
         throw new FormatException("Invalid Single format");
     }
 
-    private static double ParseDoubleUtf8(ReadOnlySpan<byte> buffer)
+    public static double DecodeDoubleText(ReadOnlySpan<byte> buffer)
     {
         if (System.Buffers.Text.Utf8Parser.TryParse(buffer, out double value, out _))
+        {
             return value;
+        }
         throw new FormatException("Invalid Double format");
     }
 
-    private static decimal ParseDecimalUtf8(ReadOnlySpan<byte> buffer)
+    public static decimal DecodeDecimalText(ReadOnlySpan<byte> buffer)
     {
         if (System.Buffers.Text.Utf8Parser.TryParse(buffer, out decimal value, out _))
+        {
             return value;
+        }
         throw new FormatException("Invalid Decimal format");
     }
 
-    private static Guid ParseGuidUtf8(ReadOnlySpan<byte> buffer)
+    public static Guid DecodeGuidText(ReadOnlySpan<byte> buffer)
     {
         if (System.Buffers.Text.Utf8Parser.TryParse(buffer, out Guid value, out _))
+        {
             return value;
+        }
         throw new FormatException("Invalid Guid format");
     }
 
@@ -834,7 +945,7 @@ public static class DataTypeCodec
         return destination.Slice(0, buffer.Length);
     }
 
-    private static DateOnly ParseDateOnlyFromUtf8(ReadOnlySpan<byte> buffer)
+    public static DateOnly DecodeDateText(ReadOnlySpan<byte> buffer)
     {
         // PostgreSQL date format is ASCII (e.g., "2023-01-15")
         // Max length for date is ~10 chars, use 32 for safety
@@ -842,7 +953,7 @@ public static class DataTypeCodec
         return DateOnly.Parse(Utf8AsciiToChars(buffer, chars));
     }
 
-    private static TimeOnly ParseTimeOnlyFromUtf8(ReadOnlySpan<byte> buffer)
+    public static TimeOnly DecodeTimeText(ReadOnlySpan<byte> buffer)
     {
         // PostgreSQL time format is ASCII (e.g., "12:30:45.123456")
         // Max length for time is ~15 chars, use 32 for safety
@@ -850,7 +961,7 @@ public static class DataTypeCodec
         return TimeOnly.Parse(Utf8AsciiToChars(buffer, chars));
     }
 
-    private static DateTime ParseDateTimeFromUtf8(ReadOnlySpan<byte> buffer)
+    public static DateTime DecodeDateTimeText(ReadOnlySpan<byte> buffer)
     {
         // PostgreSQL timestamp format is ASCII (e.g., "2023-01-15 12:30:45.123456")
         // Max length is ~26 chars, use 64 for safety
@@ -858,7 +969,7 @@ public static class DataTypeCodec
         return DateTime.Parse(Utf8AsciiToChars(buffer, chars));
     }
 
-    private static DateTimeOffset ParseDateTimeOffsetFromUtf8(ReadOnlySpan<byte> buffer)
+    public static DateTimeOffset DecodeDateTimeOffsetText(ReadOnlySpan<byte> buffer)
     {
         // PostgreSQL timestamptz format is ASCII (e.g., "2023-01-15 12:30:45.123456+00")
         // Max length is ~32 chars, use 64 for safety
@@ -866,7 +977,7 @@ public static class DataTypeCodec
         return DateTimeOffset.Parse(Utf8AsciiToChars(buffer, chars));
     }
 
-    private static byte[] DecodeByteaText(ReadOnlySpan<byte> buffer)
+    public static byte[] DecodeByteaText(ReadOnlySpan<byte> buffer)
     {
         // PostgreSQL bytea text format is hex: \x48656c6c6f
         if (buffer.Length >= 2 && buffer[0] == '\\' && buffer[1] == 'x')
@@ -879,7 +990,7 @@ public static class DataTypeCodec
         return buffer.ToArray();
     }
 
-    private static Point DecodePointText(ReadOnlySpan<byte> buffer)
+    public static Point DecodePointText(ReadOnlySpan<byte> buffer)
     {
         // Format: (x,y)
         if (buffer.Length >= 5 && buffer[0] == '(' && buffer[^1] == ')')
@@ -898,7 +1009,7 @@ public static class DataTypeCodec
         throw new FormatException($"Invalid point format: {Utf8.GetString(buffer)}");
     }
 
-    private static Interval DecodeIntervalText(ReadOnlySpan<byte> buffer)
+    public static Interval DecodeIntervalText(ReadOnlySpan<byte> buffer)
     {
         // Format examples: "1 year 2 mons 3 days 04:05:06" or "00:00:00" or "1 year" etc.
         var interval = new Interval();
@@ -1003,20 +1114,44 @@ public static class DataTypeCodec
 
     private static bool StartsWithIgnoreCase(ReadOnlySpan<byte> span, ReadOnlySpan<byte> prefix)
     {
-        if (span.Length < prefix.Length) return false;
+        if (span.Length < prefix.Length)
+        {
+            return false;
+        }
         for (int i = 0; i < prefix.Length; i++)
         {
             byte a = span[i];
             byte b = prefix[i];
             // Convert to lowercase for comparison
-            if (a >= 'A' && a <= 'Z') a = (byte)(a + 32);
-            if (b >= 'A' && b <= 'Z') b = (byte)(b + 32);
-            if (a != b) return false;
+            if (a >= 'A' && a <= 'Z')
+            {
+                a = (byte)(a + 32);
+            }
+            if (b >= 'A' && b <= 'Z')
+            {
+                b = (byte)(b + 32);
+            }
+            if (a != b)
+            {
+                return false;
+            }
         }
         return true;
     }
 
-    private static int[] DecodeInt4ArrayText(ReadOnlySpan<byte> buffer)
+    // Public text array decode methods - aliases for consistent naming with PgValue
+
+    public static int[] DecodeInt32ArrayText(ReadOnlySpan<byte> buffer) => DecodeInt4ArrayText(buffer);
+    public static short[] DecodeInt16ArrayText(ReadOnlySpan<byte> buffer) => DecodeInt2ArrayText(buffer);
+    public static long[] DecodeInt64ArrayText(ReadOnlySpan<byte> buffer) => DecodeInt8ArrayText(buffer);
+    public static float[] DecodeFloatArrayText(ReadOnlySpan<byte> buffer) => DecodeFloat4ArrayText(buffer);
+    public static double[] DecodeDoubleArrayText(ReadOnlySpan<byte> buffer) => DecodeFloat8ArrayText(buffer);
+    public static string[] DecodeStringArrayText(ReadOnlySpan<byte> buffer) => DecodeTextArrayText(buffer);
+    public static DateTime[] DecodeDateTimeArrayText(ReadOnlySpan<byte> buffer) => DecodeTimestampArrayText(buffer);
+    public static DateTimeOffset[] DecodeDateTimeOffsetArrayText(ReadOnlySpan<byte> buffer) => DecodeTimestamptzArrayText(buffer);
+    public static Guid[] DecodeGuidArrayText(ReadOnlySpan<byte> buffer) => DecodeUuidArrayText(buffer);
+
+    public static int[] DecodeInt4ArrayText(ReadOnlySpan<byte> buffer)
     {
         // Format: {1,2,3,4,5}
         if (!TryGetArrayInner(buffer, out var inner))
@@ -1048,7 +1183,7 @@ public static class DataTypeCodec
         return result[..index];
     }
 
-    private static string[] DecodeTextArrayText(ReadOnlySpan<byte> buffer)
+    public static string[] DecodeTextArrayText(ReadOnlySpan<byte> buffer)
     {
         // Format: {a,b,c} or {"a","b","c"} for quoted strings
         if (buffer.Length < 2 || buffer[0] != '{' || buffer[^1] != '}')
@@ -1121,7 +1256,7 @@ public static class DataTypeCodec
         return result.ToArray();
     }
 
-    private static Line DecodeLineText(ReadOnlySpan<byte> buffer)
+    public static Line DecodeLineText(ReadOnlySpan<byte> buffer)
     {
         // Format: {A,B,C}
         if (buffer.Length >= 5 && buffer[0] == '{' && buffer[^1] == '}')
@@ -1140,7 +1275,7 @@ public static class DataTypeCodec
         throw new FormatException($"Invalid line format: {Utf8.GetString(buffer)}");
     }
 
-    private static LineSegment DecodeLsegText(ReadOnlySpan<byte> buffer)
+    public static LineSegment DecodeLsegText(ReadOnlySpan<byte> buffer)
     {
         // Format: [(x1,y1),(x2,y2)]
         var text = Utf8.GetString(buffer);
@@ -1152,7 +1287,7 @@ public static class DataTypeCodec
         throw new FormatException($"Invalid lseg format: {text}");
     }
 
-    private static Box DecodeBoxText(ReadOnlySpan<byte> buffer)
+    public static Box DecodeBoxText(ReadOnlySpan<byte> buffer)
     {
         // Format: (x1,y1),(x2,y2)
         var text = Utf8.GetString(buffer);
@@ -1164,7 +1299,7 @@ public static class DataTypeCodec
         throw new FormatException($"Invalid box format: {text}");
     }
 
-    private static Data.Path DecodePathText(ReadOnlySpan<byte> buffer)
+    public static Data.Path DecodePathText(ReadOnlySpan<byte> buffer)
     {
         // Format: [(x1,y1),(x2,y2),...] for open, ((x1,y1),(x2,y2),...) for closed
         ReadOnlySpan<char> text = Utf8.GetString(buffer).AsSpan();
@@ -1173,7 +1308,7 @@ public static class DataTypeCodec
         return new Data.Path(isOpen, points);
     }
 
-    private static Polygon DecodePolygonText(ReadOnlySpan<byte> buffer)
+    public static Polygon DecodePolygonText(ReadOnlySpan<byte> buffer)
     {
         // Format: ((x1,y1),(x2,y2),...)
         ReadOnlySpan<char> text = Utf8.GetString(buffer).AsSpan();
@@ -1181,7 +1316,7 @@ public static class DataTypeCodec
         return new Polygon(points);
     }
 
-    private static Circle DecodeCircleText(ReadOnlySpan<byte> buffer)
+    public static Circle DecodeCircleText(ReadOnlySpan<byte> buffer)
     {
         // Format: <(x,y),r>
         ReadOnlySpan<char> text = Utf8.GetString(buffer).AsSpan();
@@ -1206,7 +1341,7 @@ public static class DataTypeCodec
         throw new FormatException($"Invalid circle format: {text.ToString()}");
     }
 
-    private static Inet DecodeInetText(ReadOnlySpan<byte> buffer)
+    public static Inet DecodeInetText(ReadOnlySpan<byte> buffer)
     {
         // Format: 192.168.1.1 or 192.168.1.1/24 or ::1 etc.
         ReadOnlySpan<char> text = Utf8.GetString(buffer).AsSpan();
@@ -1225,7 +1360,7 @@ public static class DataTypeCodec
         }
     }
 
-    private static Cidr DecodeCidrText(ReadOnlySpan<byte> buffer)
+    public static Cidr DecodeCidrText(ReadOnlySpan<byte> buffer)
     {
         // Format: 192.168.1.0/24
         ReadOnlySpan<char> text = Utf8.GetString(buffer).AsSpan();
@@ -1244,7 +1379,7 @@ public static class DataTypeCodec
         }
     }
 
-    private static bool[] DecodeBoolArrayText(ReadOnlySpan<byte> buffer)
+    public static bool[] DecodeBoolArrayText(ReadOnlySpan<byte> buffer)
     {
         // Format: {t,f,t}
         if (!TryGetArrayInner(buffer, out var inner))
@@ -1268,7 +1403,7 @@ public static class DataTypeCodec
         return result;
     }
 
-    private static double[] DecodeFloat8ArrayText(ReadOnlySpan<byte> buffer)
+    public static double[] DecodeFloat8ArrayText(ReadOnlySpan<byte> buffer)
     {
         // Format: {1.1,2.2,3.3}
         if (!TryGetArrayInner(buffer, out var inner))
@@ -1288,7 +1423,7 @@ public static class DataTypeCodec
         return result[..index];
     }
 
-    private static short[] DecodeInt2ArrayText(ReadOnlySpan<byte> buffer)
+    public static short[] DecodeInt2ArrayText(ReadOnlySpan<byte> buffer)
     {
         if (!TryGetArrayInner(buffer, out var inner))
             return [];
@@ -1307,7 +1442,7 @@ public static class DataTypeCodec
         return result[..index];
     }
 
-    private static long[] DecodeInt8ArrayText(ReadOnlySpan<byte> buffer)
+    public static long[] DecodeInt8ArrayText(ReadOnlySpan<byte> buffer)
     {
         if (!TryGetArrayInner(buffer, out var inner))
             return [];
@@ -1326,7 +1461,7 @@ public static class DataTypeCodec
         return result[..index];
     }
 
-    private static float[] DecodeFloat4ArrayText(ReadOnlySpan<byte> buffer)
+    public static float[] DecodeFloat4ArrayText(ReadOnlySpan<byte> buffer)
     {
         if (!TryGetArrayInner(buffer, out var inner))
             return [];
@@ -1345,7 +1480,7 @@ public static class DataTypeCodec
         return result[..index];
     }
 
-    private static DateOnly[] DecodeDateArrayText(ReadOnlySpan<byte> buffer)
+    public static DateOnly[] DecodeDateArrayText(ReadOnlySpan<byte> buffer)
     {
         if (!TryGetArrayInner(buffer, out var inner))
             return [];
@@ -1365,7 +1500,7 @@ public static class DataTypeCodec
         return result[..index];
     }
 
-    private static DateTime[] DecodeTimestampArrayText(ReadOnlySpan<byte> buffer)
+    public static DateTime[] DecodeTimestampArrayText(ReadOnlySpan<byte> buffer)
     {
         if (!TryGetArrayInner(buffer, out var inner))
             return [];
@@ -1384,7 +1519,7 @@ public static class DataTypeCodec
         return [.. result];
     }
 
-    private static DateTimeOffset[] DecodeTimestamptzArrayText(ReadOnlySpan<byte> buffer)
+    public static DateTimeOffset[] DecodeTimestamptzArrayText(ReadOnlySpan<byte> buffer)
     {
         if (!TryGetArrayInner(buffer, out var inner))
             return [];
@@ -1402,7 +1537,7 @@ public static class DataTypeCodec
         return [.. result];
     }
 
-    private static Guid[] DecodeUuidArrayText(ReadOnlySpan<byte> buffer)
+    public static Guid[] DecodeUuidArrayText(ReadOnlySpan<byte> buffer)
     {
         if (!TryGetArrayInner(buffer, out var inner))
             return [];

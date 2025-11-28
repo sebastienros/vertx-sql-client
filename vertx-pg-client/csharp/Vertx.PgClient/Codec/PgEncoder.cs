@@ -149,7 +149,7 @@ internal sealed class PgEncoder
         for (int i = 0; i < paramCount; i++)
         {
             var value = parameters!.GetValue(i);
-            if (value is null)
+            if (value.IsNull)
             {
                 WriteInt32(-1); // NULL
             }
@@ -157,7 +157,7 @@ internal sealed class PgEncoder
             {
                 var dataType = parameterTypes is not null && i < parameterTypes.Length
                     ? parameterTypes[i].DataType
-                    : DataType.Lookup(value.GetType());
+                    : value.DataType;
 
                 // Write value with length prefix
                 var valueStart = _position;
@@ -165,7 +165,7 @@ internal sealed class PgEncoder
                 
                 EnsureCapacity(1024);
                 var span = _buffer.AsSpan(_position, 1024);
-                DataTypeCodec.EncodeBinary(dataType, value, span, out int bytesWritten);
+                int bytesWritten = value.EncodeBinary(span, dataType);
                 _position += bytesWritten;
                 
                 SetInt32(valueStart, bytesWritten);

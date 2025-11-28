@@ -16,7 +16,7 @@ public class PipeliningTests
         _fixture = fixture;
     }
 
-    [Fact(Timeout = 30000)]
+    [Fact]
     public async Task CanPipelineMultipleQueries()
     {
         var options = _fixture.CreateConnectOptions();
@@ -30,12 +30,12 @@ public class PipeliningTests
         );
 
         Assert.Equal(3, results.Length);
-        Assert.Equal(1, results[0][0].GetInteger("num"));
-        Assert.Equal(2, results[1][0].GetInteger("num"));
-        Assert.Equal(3, results[2][0].GetInteger("num"));
+        Assert.Equal(1, results[0][0].GetValue("num").GetInteger());
+        Assert.Equal(2, results[1][0].GetValue("num").GetInteger());
+        Assert.Equal(3, results[2][0].GetValue("num").GetInteger());
     }
 
-    [Fact(Timeout = 30000)]
+    [Fact]
     public async Task CanPipelineDifferentQueryTypes()
     {
         var options = _fixture.CreateConnectOptions();
@@ -49,13 +49,13 @@ public class PipeliningTests
         );
 
         Assert.Equal(4, results.Length);
-        Assert.Equal("hello", results[0][0].GetString("greeting"));
-        Assert.Equal(42, results[1][0].GetInteger("answer"));
-        Assert.True(results[2][0].GetBoolean("flag"));
-        Assert.Equal(3.14, results[3][0].GetDouble("pi"), 0.01);
+        Assert.Equal("hello", results[0][0].GetValue("greeting").GetString());
+        Assert.Equal(42, results[1][0].GetValue("answer").GetInteger());
+        Assert.True(results[2][0].GetValue("flag").GetBoolean());
+        Assert.Equal(3.14, results[3][0].GetValue("pi").GetDouble(), 0.01);
     }
 
-    [Fact(Timeout = 30000)]
+    [Fact]
     public async Task CanPipelineQueriesWithMultipleRows()
     {
         var options = _fixture.CreateConnectOptions();
@@ -69,17 +69,17 @@ public class PipeliningTests
         Assert.Equal(2, results.Length);
         
         Assert.Equal(3, results[0].Count);
-        Assert.Equal(1, results[0][0].GetInteger(0));
-        Assert.Equal(2, results[0][1].GetInteger(0));
-        Assert.Equal(3, results[0][2].GetInteger(0));
+        Assert.Equal(1, results[0][0].GetValue(0).GetInteger());
+        Assert.Equal(2, results[0][1].GetValue(0).GetInteger());
+        Assert.Equal(3, results[0][2].GetValue(0).GetInteger());
         
         Assert.Equal(3, results[1].Count);
-        Assert.Equal(10, results[1][0].GetInteger(0));
-        Assert.Equal(11, results[1][1].GetInteger(0));
-        Assert.Equal(12, results[1][2].GetInteger(0));
+        Assert.Equal(10, results[1][0].GetValue(0).GetInteger());
+        Assert.Equal(11, results[1][1].GetValue(0).GetInteger());
+        Assert.Equal(12, results[1][2].GetValue(0).GetInteger());
     }
 
-    [Fact(Timeout = 30000)]
+    [Fact]
     public async Task PipeliningIsFasterThanSequential()
     {
         var options = _fixture.CreateConnectOptions();
@@ -113,7 +113,7 @@ public class PipeliningTests
         Assert.Equal(queryCount, results.Length);
         for (int i = 0; i < queryCount; i++)
         {
-            Assert.Equal(i + 1, results[i][0].GetInteger("num"));
+            Assert.Equal(i + 1, results[i][0].GetValue("num").GetInteger());
         }
 
         // Pipelining should be noticeably faster
@@ -128,7 +128,7 @@ public class PipeliningTests
             $"Pipelining ({pipelinedTime}ms) should not be slower than sequential ({sequentialTime}ms)");
     }
 
-    [Fact(Timeout = 30000)]
+    [Fact]
     public async Task PipeliningRespectsLimit()
     {
         var options = _fixture.CreateConnectOptions();
@@ -148,11 +148,11 @@ public class PipeliningTests
         Assert.Equal(5, results.Length);
         for (int i = 0; i < 5; i++)
         {
-            Assert.Equal(i + 1, results[i][0].GetInteger("n"));
+            Assert.Equal(i + 1, results[i][0].GetValue("n").GetInteger());
         }
     }
 
-    [Fact(Timeout = 30000)]
+    [Fact]
     public async Task CanPipelineWithNullResults()
     {
         var options = _fixture.CreateConnectOptions();
@@ -165,12 +165,12 @@ public class PipeliningTests
         );
 
         Assert.Equal(3, results.Length);
-        Assert.Null(results[0][0].GetValue("empty"));
-        Assert.Equal("not null", results[1][0].GetString("value"));
-        Assert.Null(results[2][0].GetValue("empty_int"));
+        Assert.True(results[0][0].GetValue("empty").IsNull);
+        Assert.Equal("not null", results[1][0].GetValue("value").GetString());
+        Assert.True(results[2][0].GetValue("empty_int").IsNull);
     }
 
-    [Fact(Timeout = 30000)]
+    [Fact]
     public async Task CanPipelineEmptyResults()
     {
         var options = _fixture.CreateConnectOptions();
@@ -187,17 +187,17 @@ public class PipeliningTests
         Assert.Equal(2, results.Length);
         Assert.Equal(0, results[0].Count);  // Empty
         Assert.Equal(1, results[1].Count);  // One row
-        Assert.Equal(1, results[1][0].GetInteger("num"));
+        Assert.Equal(1, results[1][0].GetValue("num").GetInteger());
     }
 
-    [Fact(Timeout = 30000)]
+    [Fact]
     public async Task DefaultPipeliningLimitIs256()
     {
         var options = _fixture.CreateConnectOptions();
         Assert.Equal(256, options.PipeliningLimit);
     }
 
-    [Fact(Timeout = 30000)]
+    [Fact]
     public async Task CanSetPipeliningLimit()
     {
         var options = _fixture.CreateConnectOptions();

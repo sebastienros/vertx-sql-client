@@ -92,7 +92,7 @@ public class PoolTests
         var result = await pool.QueryAsync("SELECT 1 as value");
         
         Assert.Single(result);
-        Assert.Equal(1, result[0].GetInteger(0));
+        Assert.Equal(1, result[0].GetValue(0).GetInteger());
     }
 
     [Fact]
@@ -131,7 +131,7 @@ public class PoolTests
             Tuple.Of(10, 20));
         
         Assert.Single(result);
-        Assert.Equal(30, result[0].GetInteger(0));
+        Assert.Equal(30, result[0].GetValue(0).GetInteger());
     }
 
     [Fact]
@@ -145,9 +145,9 @@ public class PoolTests
             "SELECT 3 as c");
         
         Assert.Equal(3, results.Length);
-        Assert.Equal(1, results[0][0].GetInteger(0));
-        Assert.Equal(2, results[1][0].GetInteger(0));
-        Assert.Equal(3, results[2][0].GetInteger(0));
+        Assert.Equal(1, results[0][0].GetValue(0).GetInteger());
+        Assert.Equal(2, results[1][0].GetValue(0).GetInteger());
+        Assert.Equal(3, results[2][0].GetValue(0).GetInteger());
     }
 
     [Fact]
@@ -205,7 +205,7 @@ public class PoolTests
         Assert.True(conn.IsValid);
         
         var result = await conn.QueryAsync("SELECT 42 as answer");
-        Assert.Equal(42, result[0].GetInteger(0));
+        Assert.Equal(42, result[0].GetValue(0).GetInteger());
     }
 
     [Fact]
@@ -272,9 +272,9 @@ public class PoolTests
         var result2 = await pool.ScheduleAsync("SELECT 2 as value");
         var result3 = await pool.ScheduleAsync("SELECT 3 as value");
         
-        Assert.Equal(1, result1[0].GetInteger(0));
-        Assert.Equal(2, result2[0].GetInteger(0));
-        Assert.Equal(3, result3[0].GetInteger(0));
+        Assert.Equal(1, result1[0].GetValue(0).GetInteger());
+        Assert.Equal(2, result2[0].GetValue(0).GetInteger());
+        Assert.Equal(3, result3[0].GetValue(0).GetInteger());
     }
 
     [Fact]
@@ -294,7 +294,7 @@ public class PoolTests
         Assert.Equal(10, results.Length);
         
         // Results may come back in any order due to multiplexing
-        var values = results.Select(r => r[0].GetInteger(0)).OrderBy(x => x).ToList();
+        var values = results.Select(r => r[0].GetValue(0).GetInteger()).OrderBy(x => x).ToList();
         Assert.Equal(Enumerable.Range(0, 10), values);
     }
 
@@ -336,7 +336,7 @@ public class PoolTests
         var serialTime = stopwatch.Elapsed;
         
         // Verify all results are correct
-        var values = results.Select(r => r[0].GetInteger(0)).OrderBy(x => x).ToList();
+        var values = results.Select(r => r[0].GetValue(0).GetInteger()).OrderBy(x => x).ToList();
         Assert.Equal(Enumerable.Range(0, queryCount), values);
         
         // Log the times for debugging
@@ -385,7 +385,7 @@ public class PoolTests
         Assert.Equal(taskCount, results.Length);
         
         // Verify results
-        var values = results.Select(r => r[0].GetInteger(0)).OrderBy(x => x).ToList();
+        var values = results.Select(r => r[0].GetValue(0).GetInteger()).OrderBy(x => x).ToList();
         Assert.Equal(Enumerable.Range(0, taskCount), values);
     }
 
@@ -453,9 +453,9 @@ public class PoolTests
         );
         
         Assert.Equal(3, results.Length);
-        Assert.Equal("first", results[0][0].GetString(0));
-        Assert.Equal("second", results[1][0].GetString(0));
-        Assert.Equal("third", results[2][0].GetString(0));
+        Assert.Equal("first", results[0][0].GetValue(0).GetString());
+        Assert.Equal("second", results[1][0].GetValue(0).GetString());
+        Assert.Equal("third", results[2][0].GetValue(0).GetString());
     }
 
     [Fact]
@@ -573,7 +573,7 @@ public class PoolTests
 
             // Verify database state is coherent
             var countResult = await pool.QueryAsync($"SELECT COUNT(*) FROM {tableName}");
-            Assert.Equal(totalQueries, countResult[0].GetLong(0));
+            Assert.Equal(totalQueries, countResult[0].GetValue(0).GetLong());
 
             // Verify each producer has exactly queriesPerProducer rows
             var perProducerResult = await pool.QueryAsync(
@@ -582,7 +582,7 @@ public class PoolTests
             Assert.Equal(producerCount, perProducerResult.Count);
             foreach (var row in perProducerResult)
             {
-                Assert.Equal(queriesPerProducer, row.GetLong(1));
+                Assert.Equal(queriesPerProducer, row.GetValue(1).GetLong());
             }
 
             // Verify all sequence numbers are present (no duplicates, no missing)
@@ -595,9 +595,9 @@ public class PoolTests
             );
             foreach (var row in distinctSeqResult)
             {
-                Assert.Equal(queriesPerProducer, row.GetLong(1)); // All seqs are distinct
-                Assert.Equal(0, row.GetInteger(2));                // Min seq is 0
-                Assert.Equal(queriesPerProducer - 1, row.GetInteger(3)); // Max seq is queriesPerProducer-1
+                Assert.Equal(queriesPerProducer, row.GetValue(1).GetLong()); // All seqs are distinct
+                Assert.Equal(0, row.GetValue(2).GetInteger());                // Min seq is 0
+                Assert.Equal(queriesPerProducer - 1, row.GetValue(3).GetInteger()); // Max seq is queriesPerProducer-1
             }
         }
         finally
@@ -644,7 +644,7 @@ public class PoolTests
         Assert.Equal(totalQueries, results.Length);
         
         // Verify results
-        var values = results.Select(r => r[0].GetInteger(0)).OrderBy(x => x).ToList();
+        var values = results.Select(r => r[0].GetValue(0).GetInteger()).OrderBy(x => x).ToList();
         Assert.Equal(Enumerable.Range(0, totalQueries), values);
         
         // Check that connections were created

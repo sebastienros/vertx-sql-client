@@ -29,7 +29,7 @@ public class SslTests : IClassFixture<PostgresFixture>
         Assert.True(connection.IsOpen);
         
         var result = await connection.QueryAsync("SELECT 1");
-        Assert.Equal(1, result[0].GetInteger(0));
+        Assert.Equal(1, result[0].GetValue(0).GetInteger());
     }
 
     [Fact]
@@ -44,7 +44,7 @@ public class SslTests : IClassFixture<PostgresFixture>
         Assert.True(connection.IsOpen);
         
         var result = await connection.QueryAsync("SELECT 1");
-        Assert.Equal(1, result[0].GetInteger(0));
+        Assert.Equal(1, result[0].GetValue(0).GetInteger());
     }
 
     [Fact]
@@ -129,7 +129,7 @@ public class SslTests : IClassFixture<PostgresFixture>
         
         // Verify SSL is being used
         var result = await connection.QueryAsync("SHOW ssl");
-        Assert.Equal("on", result[0].GetString(0));
+        Assert.Equal("on", result[0].GetValue(0).GetString());
     }
 
     [Fact(Skip = "Requires PostgreSQL with SSL enabled")]

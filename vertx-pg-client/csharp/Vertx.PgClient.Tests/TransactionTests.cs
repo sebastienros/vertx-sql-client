@@ -43,7 +43,7 @@ public class TransactionTests : IClassFixture<PostgresFixture>
 
             // Verify data persisted
             var result = await connection.QueryAsync($"SELECT COUNT(*) FROM {tableName}");
-            Assert.Equal(2L, result[0].GetLong(0));
+            Assert.Equal(2L, result[0].GetValue(0).GetLong());
         }
         finally
         {
@@ -75,7 +75,7 @@ public class TransactionTests : IClassFixture<PostgresFixture>
 
             // Verify data was not persisted
             var result = await connection.QueryAsync($"SELECT COUNT(*) FROM {tableName}");
-            Assert.Equal(0L, result[0].GetLong(0));
+            Assert.Equal(0L, result[0].GetValue(0).GetLong());
         }
         finally
         {
@@ -105,7 +105,7 @@ public class TransactionTests : IClassFixture<PostgresFixture>
 
             // Verify data was rolled back
             var result = await connection.QueryAsync($"SELECT COUNT(*) FROM {tableName}");
-            Assert.Equal(0L, result[0].GetLong(0));
+            Assert.Equal(0L, result[0].GetValue(0).GetLong());
         }
         finally
         {
@@ -146,8 +146,8 @@ public class TransactionTests : IClassFixture<PostgresFixture>
             // Verify: Alice and Charlie, but not Bob
             var result = await connection.QueryAsync($"SELECT name FROM {tableName} ORDER BY id");
             Assert.Equal(2, result.Count);
-            Assert.Equal("Alice", result[0].GetString(0));
-            Assert.Equal("Charlie", result[1].GetString(0));
+            Assert.Equal("Alice", result[0].GetValue(0).GetString());
+            Assert.Equal("Charlie", result[1].GetValue(0).GetString());
         }
         finally
         {
@@ -178,7 +178,7 @@ public class TransactionTests : IClassFixture<PostgresFixture>
 
             // Verify both rows persisted
             var result = await connection.QueryAsync($"SELECT COUNT(*) FROM {tableName}");
-            Assert.Equal(2L, result[0].GetLong(0));
+            Assert.Equal(2L, result[0].GetValue(0).GetLong());
         }
         finally
         {
@@ -201,7 +201,7 @@ public class TransactionTests : IClassFixture<PostgresFixture>
 
         // Verify isolation level
         var result = await tx.QueryAsync("SHOW transaction_isolation");
-        Assert.Equal("serializable", result[0].GetString(0));
+        Assert.Equal("serializable", result[0].GetValue(0).GetString());
 
         await tx.RollbackAsync();
     }
@@ -219,7 +219,7 @@ public class TransactionTests : IClassFixture<PostgresFixture>
         await using var tx = await connection.BeginTransactionAsync(options);
 
         var result = await tx.QueryAsync("SHOW transaction_isolation");
-        Assert.Equal("repeatable read", result[0].GetString(0));
+        Assert.Equal("repeatable read", result[0].GetValue(0).GetString());
 
         await tx.RollbackAsync();
     }
@@ -282,7 +282,7 @@ public class TransactionTests : IClassFixture<PostgresFixture>
 
             // Verify
             var result = await connection.QueryAsync($"SELECT SUM(value) FROM {tableName}");
-            Assert.Equal(450L, result[0].GetLong(0)); // 0+10+20+...+90 = 450
+            Assert.Equal(450L, result[0].GetValue(0).GetLong()); // 0+10+20+...+90 = 450
         }
         finally
         {
@@ -352,7 +352,7 @@ public class TransactionTests : IClassFixture<PostgresFixture>
             await tx.CommitAsync();
 
             var result = await pool.QueryAsync($"SELECT COUNT(*) FROM {tableName}");
-            Assert.Equal(1L, result[0].GetLong(0));
+            Assert.Equal(1L, result[0].GetValue(0).GetLong());
         }
         finally
         {
@@ -380,7 +380,7 @@ public class TransactionTests : IClassFixture<PostgresFixture>
 
             // Should be able to get another connection immediately
             var result = await pool.QueryAsync($"SELECT COUNT(*) FROM {tableName}");
-            Assert.Equal(1L, result[0].GetLong(0));
+            Assert.Equal(1L, result[0].GetValue(0).GetLong());
         }
         finally
         {
@@ -408,7 +408,7 @@ public class TransactionTests : IClassFixture<PostgresFixture>
             Assert.Equal(2, count);
 
             var result = await pool.QueryAsync($"SELECT COUNT(*) FROM {tableName}");
-            Assert.Equal(2L, result[0].GetLong(0));
+            Assert.Equal(2L, result[0].GetValue(0).GetLong());
         }
         finally
         {
@@ -437,7 +437,7 @@ public class TransactionTests : IClassFixture<PostgresFixture>
 
             // Data should have been rolled back
             var result = await pool.QueryAsync($"SELECT COUNT(*) FROM {tableName}");
-            Assert.Equal(0L, result[0].GetLong(0));
+            Assert.Equal(0L, result[0].GetValue(0).GetLong());
         }
         finally
         {
@@ -458,7 +458,7 @@ public class TransactionTests : IClassFixture<PostgresFixture>
         var isolation = await pool.WithTransactionAsync(async tx =>
         {
             var result = await tx.QueryAsync("SHOW transaction_isolation");
-            return result[0].GetString(0);
+            return result[0].GetValue(0).GetString();
         }, options);
 
         Assert.Equal("serializable", isolation);
@@ -485,12 +485,12 @@ public class TransactionTests : IClassFixture<PostgresFixture>
 
             var result = await pool.QueryAsync($"SELECT name FROM {tableName} ORDER BY id");
             Assert.Equal(2, result.Count);
-            Assert.Equal("Alice", result[0].GetString(0));
-            Assert.Equal("Charlie", result[1].GetString(0));
+            Assert.Equal("Alice", result[0].GetValue(0).GetString());
+            Assert.Equal("Charlie", result[1].GetValue(0).GetString());
         }
         finally
         {
-            await pool.QueryAsync($"DROP TABLE {tableName}");
+            await pool.QueryAsync($"DROP TABLE IF EXISTS {tableName}");
         }
     }
 }

@@ -57,7 +57,7 @@ public class ScramAuthenticationTests : IAsyncLifetime
         // Execute a query to verify the connection works
         var result = await connection.QueryAsync("SELECT 1 as test");
         Assert.Equal(1, result.Count);
-        Assert.Equal(1, result[0].GetInteger(0));
+        Assert.Equal(1, result[0].GetValue(0).GetInteger());
     }
 
     [Fact]
@@ -106,8 +106,8 @@ public class ScramAuthenticationTests : IAsyncLifetime
         // Query data
         var result = await connection.QueryAsync("SELECT * FROM scram_test ORDER BY id");
         Assert.Equal(2, result.Count);
-        Assert.Equal("test1", result[0].GetString("name"));
-        Assert.Equal("test2", result[1].GetString("name"));
+        Assert.Equal("test1", result[0].GetValue("name").GetString());
+        Assert.Equal("test2", result[1].GetValue("name").GetString());
 
         // Cleanup
         await connection.QueryAsync("DROP TABLE scram_test");
@@ -151,7 +151,7 @@ public class ScramAuthenticationTests : IAsyncLifetime
             );
 
             Assert.Equal(1, result.Count);
-            Assert.Equal("hello", result[0].GetString("value"));
+            Assert.Equal("hello", result[0].GetValue("value").GetString());
         }
         finally
         {

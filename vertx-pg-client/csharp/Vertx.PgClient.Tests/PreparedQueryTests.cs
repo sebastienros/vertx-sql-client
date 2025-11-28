@@ -27,7 +27,7 @@ public class PreparedQueryTests
         );
 
         Assert.Equal(1, result.Count);
-        Assert.Equal(42, result[0].GetInteger("value"));
+        Assert.Equal(42, result[0].GetValue("value").GetInteger());
     }
 
     [Fact]
@@ -42,7 +42,7 @@ public class PreparedQueryTests
         );
 
         Assert.Equal(1, result.Count);
-        Assert.Equal("Hello, World!", result[0].GetString("greeting"));
+        Assert.Equal("Hello, World!", result[0].GetValue("greeting").GetString());
     }
 
     [Fact]
@@ -57,8 +57,8 @@ public class PreparedQueryTests
         );
 
         Assert.Equal(1, result.Count);
-        Assert.Equal(30, result[0].GetInteger("sum"));
-        Assert.Equal("result", result[0].GetString("label"));
+        Assert.Equal(30, result[0].GetValue("sum").GetInteger());
+        Assert.Equal("result", result[0].GetValue("label").GetString());
     }
 
     [Fact]
@@ -73,7 +73,7 @@ public class PreparedQueryTests
         );
 
         Assert.Equal(1, result.Count);
-        Assert.Null(result[0].GetString("maybe_null"));
+        Assert.Null(result[0].GetValue("maybe_null").GetString());
     }
 
     [Fact]
@@ -88,7 +88,7 @@ public class PreparedQueryTests
         );
 
         Assert.Equal(1, result.Count);
-        Assert.True(result[0].GetBoolean("flag"));
+        Assert.True(result[0].GetValue("flag").GetBoolean());
     }
 
     [Fact]
@@ -126,8 +126,8 @@ public class PreparedQueryTests
         );
 
         Assert.Equal(1, result.Count);
-        Assert.Equal("Gadget", result[0].GetString("name"));
-        Assert.Equal(29.99, result[0].GetDouble("price"), 0.01);
+        Assert.Equal("Gadget", result[0].GetValue("name").GetString());
+        Assert.Equal(29.99, result[0].GetValue("price").GetDouble(), 0.01);
 
         // Cleanup
         await connection.QueryAsync("DROP TABLE test_products");
