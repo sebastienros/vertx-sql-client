@@ -1,0 +1,346 @@
+# SELECT Statement Allocation Analysis
+
+This document analyzes the memory allocations that occur when executing a SELECT statement returning an integer and string value using the Vertx.PgClient C# library.
+
+## Example Query
+
+```csharp
+// Simple Query (text protocol)
+var result = await connection.QueryAsync("SELECT 42 as id, 'hello world' as message");
+
+// Or Prepared Query (binary protocol)
+var result = await connection.PreparedQueryAsync(
+    "SELECT id, message FROM users WHERE id = $1",
+    Tuple.Create(1));
+```
+
+## Execution Flow Overview
+
+```
+User Code
+    └── PgConnection.QueryAsync() / PreparedQueryAsync()
+        └── PgSocketConnection.QueryAsync() / PreparedQueryAsync()
+            ├── PgEncoder (Write query to buffer)
+            │   └── SendAsync (Write to network stream)
+            ├── ReceiveAsync (Read from network stream)
+            │   └── PgDecoder.TryParse (Parse response messages)
+            └── ReceiveQueryResultAsync / ReceiveExtendedQueryResultAsync
+                └── DecodeRow (Decode data row values)
+                    └── PgValue.DecodeBinary/DecodeText
+                        └── DataTypeCodec (Decode individual values)
+```
+
+---
+
+## Detailed Call Stack Analysis
+
+### 1. Query Execution Entry Point
+
+#### For Simple Query (`QueryAsync`)
+
+```
+PgConnection.QueryAsync(sql)                          [No allocation]
+  └── PgSocketConnection.QueryAsync(sql)              [No allocation]
+      ├── _encoder.Reset()                            [No allocation]
+      ├── _encoder.WriteQuery(sql)                    [No allocation - uses pre-allocated buffer]
+      │   └── WriteCStringUtf8(sql)                   [Allocates: UTF-8 encoding if > buffer capacity]
+      ├── SendAsync()                                 [No allocation - uses existing buffer]
+      └── ReceiveQueryResultAsync()                   [See Section 4]
+```
+
+#### For Prepared Query (`PreparedQueryAsync`)
+
+```
+PgConnection.PreparedQueryAsync(sql, parameters)      [No allocation]
+  └── PgSocketConnection.PreparedQueryAsync(...)      [No allocation]
+      ├── _encoder.GenerateStatementName()            [Allocates: string + byte[] for statement name]
+      ├── _encoder.WriteParse(sql, name)              [No allocation - uses pre-allocated buffer]
+      ├── _encoder.WriteDescribe('S', name)           [No allocation]
+      ├── _encoder.WriteSync()                        [No allocation]
+      ├── SendAsync()                                 [No allocation]
+      ├── [Loop: Parse Description Responses]         [See Section 2]
+      ├── _encoder.WriteBind(...)                     [See Section 3]
+      ├── _encoder.WriteExecute()                     [No allocation]
+      ├── _encoder.WriteClose()                       [No allocation (if not caching)]
+      ├── _encoder.WriteSync()                        [No allocation]
+      ├── SendAsync()                                 [No allocation]
+      └── ReceiveExtendedQueryResultAsync()           [See Section 4]
+```
+
+---
+
+### 2. Response Parsing (PgDecoder)
+
+```
+ReceiveAsync()                                        [No allocation]
+  └── _decoder.TryParse(buffer)                       [No allocation]
+      └── ParseMessage(messageType, payload)          [See allocations per message type]
+```
+
+#### Message-specific Allocations:
+
+| Message Type | Method | Allocations |
+|-------------|--------|-------------|
+| `ParseCompleteResponse` | `new ParseCompleteResponse()` | 1x object (record struct) |
+| `ParameterDescriptionResponse` | `ParseParameterDescription()` | 1x `int[]` for type OIDs |
+| `RowDescriptionResponse` | `ParseRowDescription()` | 1x `PgColumnDesc[]` + N×`PgColumnDesc` objects + N×strings (column names) |
+| `DataRowResponse` | `ParseDataRow()` | 1x `byte[][]` + N×`byte[]` per column value |
+| `BindCompleteResponse` | `new BindCompleteResponse()` | 1x object (record struct) |
+| `CommandCompleteResponse` | `ParseCommandComplete()` | 1x string (command tag) |
+| `ReadyForQueryResponse` | `new ReadyForQueryResponse(status)` | 1x object (record struct) |
+
+---
+
+### 3. Parameter Encoding (WriteBind)
+
+For a query with parameters (e.g., `SELECT ... WHERE id = $1` with int parameter):
+
+```
+_encoder.WriteBind(statementName, portal, parameters, paramTypes)
+  └── [For each parameter]
+      └── value.EncodeBinary(buffer, dataType)        [No allocation for int/primitives]
+          └── DataTypeCodec.EncodeInt32Binary(...)    [No allocation - writes to buffer]
+```
+
+#### Per-Type Encoding Allocations:
+
+| Type | EncodeBinary Method | Allocations |
+|------|-------------------|-------------|
+| `bool` | `EncodeBoolBinary` | None |
+| `short` | `EncodeInt16Binary` | None |
+| `int` | `EncodeInt32Binary` | None |
+| `long` | `EncodeInt64Binary` | None |
+| `float` | `EncodeFloatBinary` | None |
+| `double` | `EncodeDoubleBinary` | None |
+| `string` | `EncodeStringBinary` | None (writes directly to buffer) |
+| `DateTime` | `EncodeTimestampBinary` | None |
+| `Guid` | `EncodeGuidBinary` | None |
+| `byte[]` | `EncodeByteArrayBinary` | None |
+| `decimal` | `EncodeNumericBinary` | 1x string (via ToString) |
+| `int[]`, `string[]`, etc. | `Encode*ArrayBinary` | Intermediate `Cast<T?>().ToArray()` |
+
+---
+
+### 4. Result Set Construction
+
+#### ReceiveQueryResultAsync (Simple Query - Text Protocol)
+
+```
+ReceiveQueryResultAsync()
+  ├── new List<Row>()                                 [Allocates: 1x List<Row>]
+  ├── [Loop: Process each message]
+  │   ├── RowDescriptionResponse:
+  │   │   └── columnDesc = rd.Columns                 [Already allocated in ParseRowDescription]
+  │   │
+  │   ├── DataRowResponse:
+  │   │   └── DecodeRow(dataRow.Values, columnDesc)   [See Section 5]
+  │   │       └── rows.Add(row)                       [List may resize]
+  │   │
+  │   └── CommandCompleteResponse:
+  │       └── ParseRowsAffected(cmd.Tag)              [No allocation - uses Span]
+  │
+  └── new RowSet(rows, columnNames, rowsAffected)
+      ├── columnDesc.Select(c => c.Name).ToArray()    [Allocates: 1x string[]]
+      └── new PgRowDescriptor(columns)                [Allocates: 1x PgRowDescriptor]
+```
+
+#### ReceiveExtendedQueryResultAsync (Prepared Query - Binary Protocol)
+
+Similar to above but uses pre-existing `rowDesc` from Describe phase.
+
+---
+
+### 5. Row Decoding (Critical Allocation Path)
+
+```
+DecodeRow(byte[][] values, PgColumnDesc[] columnDesc)
+  ├── new PgValue[values.Length]                      [Allocates: 1x PgValue[]]
+  │
+  ├── [For each column value]
+  │   ├── If NULL:
+  │   │   └── PgValue.CreateNull(dataType)            [No allocation - struct]
+  │   │
+  │   └── If Binary format:
+  │       └── PgValue.DecodeBinary(dataType, buffer)  [See Section 6]
+  │
+  ├── columnDesc.Select(c => c.Name).ToArray()        [Allocates: 1x string[] per row!]
+  │
+  └── new Row(decodedValues, columnNames)             [Allocates: 1x Row object]
+```
+
+**🔴 IMPROVEMENT OPPORTUNITY #1**: The `columnDesc.Select(c => c.Name).ToArray()` in `DecodeRow` creates a new string array for **every row**. This should be cached/shared across rows.
+
+---
+
+### 6. Value Decoding (PgValue.DecodeBinary)
+
+```
+PgValue.DecodeBinary(DataType dataType, ReadOnlySpan<byte> buffer)
+  └── [Switch on dataType.Id]
+```
+
+#### Per-Type Decoding Allocations:
+
+| Type | Decode Method | Allocations |
+|------|--------------|-------------|
+| `Bool` | `DecodeBoolBinary` | None (stored in primitive) |
+| `Int2` | `DecodeInt16Binary` | None (stored in primitive) |
+| `Int4` | `DecodeInt32Binary` | None (stored in primitive) |
+| `Int8` | `DecodeInt64Binary` | None (stored in primitive) |
+| `Float4` | `DecodeFloatBinary` | None (stored in primitive) |
+| `Float8` | `DecodeDoubleBinary` | None (stored in primitive) |
+| `Text/Varchar` | `DecodeStringBinary` | **1x string** |
+| `Date` | `DecodeDateBinary` | None (stored in primitive) |
+| `Time` | `DecodeTimeBinary` | None (stored in primitive) |
+| `Timestamp` | `DecodeTimestampBinary` | None (stored in primitive) |
+| `Timestamptz` | `DecodeTimestampTzBinary` | **1x DateTimeOffset (boxed)** |
+| `Bytea` | `DecodeByteArrayBinary` | **1x byte[] (ToArray())** |
+| `Uuid` | `DecodeGuidBinary` | **1x Guid (boxed)** |
+| `Json/Jsonb` | `DecodeJsonBinary` | **1x string** |
+| `Numeric` | `DecodeNumericBinary` | **1x decimal (boxed)** |
+| `Point` | `DecodePointBinary` | **1x Point object** |
+| `Interval` | `DecodeIntervalBinary` | **1x Interval object** |
+| `Inet` | `DecodeInetBinary` | **1x Inet + 1x byte[] + 1x IPAddress** |
+| Array types | `Decode*ArrayBinary` | **1x T[]** |
+
+---
+
+## Allocation Summary for `SELECT id (int), message (text)` with 1 Row
+
+### Simple Query Path (Text Protocol)
+
+| Stage | Object Type | Count | Size (Est.) |
+|-------|-------------|-------|-------------|
+| Encoder buffer | byte[] | 0 (reused) | - |
+| Receive buffer | byte[] | 0 (rented from pool) | - |
+| ParseRowDescription | PgColumnDesc[] | 1 | 24 bytes + refs |
+| ParseRowDescription | PgColumnDesc | 2 | 2×72 bytes |
+| ParseRowDescription | string (col names) | 2 | ~40 bytes each |
+| ParseDataRow | byte[][] | 1 | 24 bytes + refs |
+| ParseDataRow | byte[] | 2 | 4 + N bytes each |
+| DecodeRow | PgValue[] | 1 | 24 bytes + 2×24 bytes |
+| DecodeRow | string[] (col names) | 1 ⚠️ | ~40 bytes |
+| PgValue (int) | - | 0 | Stored in struct |
+| PgValue (string) | string | 1 | N + ~26 bytes |
+| Row | Row object | 1 | 32 bytes |
+| RowSet | List<Row> | 1 | 32 bytes |
+| RowSet | RowSet | 1 | 40 bytes |
+| RowSet | string[] | 1 | 24 bytes + refs |
+| RowSet | PgRowDescriptor | 1 | 24 bytes |
+| CommandComplete | string | 1 | ~40 bytes |
+
+**Approximate Total for 1 row: ~15-20 allocations, ~500-800 bytes**
+
+### For N Rows
+
+Per additional row:
+- 1× byte[][] + N×byte[] (in ParseDataRow)
+- 1× PgValue[]
+- 1× string[] (column names) ⚠️ **Redundant**
+- 1× string (message value)
+- 1× Row object
+
+---
+
+## Identified Improvement Opportunities
+
+### 🔴 High Priority
+
+#### 1. Column Name Array Per Row (DecodeRow)
+**Location**: `PgSocketConnection.cs:635`
+```csharp
+return new Row(decodedValues, columnDesc.Select(c => c.Name).ToArray());
+```
+**Issue**: Creates a new `string[]` for every row decoded.
+**Recommendation**: Cache the column names array at the result set level and pass the same reference to all rows.
+
+#### 2. DataRow byte[] Per Column (ParseDataRow)
+**Location**: `PgDecoder.cs:144`
+```csharp
+values[i] = payload.Slice(pos, length).ToArray();
+```
+**Issue**: Creates a new `byte[]` for every column in every row.
+**Recommendation**: Consider using pooled buffers or decode directly from the receive buffer without intermediate copy.
+
+### 🟡 Medium Priority
+
+#### 3. Large Value Type Boxing
+**Location**: `PgValue.cs:143-195`
+**Issue**: `decimal`, `Guid`, `DateTimeOffset` are boxed because they exceed 8 bytes.
+**Recommendation**: Consider using separate fields or a union struct approach for these types.
+
+#### 4. Array Encoding Intermediate Allocations
+**Location**: `DataTypeCodec.cs:722-752`
+```csharp
+=> EncodeArrayBinaryGeneric(array.Cast<bool?>().ToArray(), ...)
+```
+**Issue**: Creates intermediate nullable array for encoding.
+**Recommendation**: Use direct iteration or Span-based encoding.
+
+### 🟢 Low Priority
+
+#### 5. Statement Name Generation
+**Location**: `PgEncoder.cs:34-38`
+```csharp
+var name = $"S_{_statementCounter++:X}";
+return Encoding.ASCII.GetBytes(name);
+```
+**Issue**: Allocates string and byte[] for each new statement.
+**Recommendation**: Use stackalloc and pre-compute common names.
+
+#### 6. List Resizing in ReceiveQueryResultAsync
+**Location**: `PgSocketConnection.cs:515`
+```csharp
+var rows = new List<Row>();
+```
+**Recommendation**: If row count is known (from command tag), pre-allocate list capacity.
+
+---
+
+## Potential Buffer Pooling Strategies
+
+### 1. Receive Buffer (Already Implemented ✅)
+```csharp
+_receiveBuffer = ArrayPool<byte>.Shared.Rent(65536);
+```
+
+### 2. DataRow Value Buffers (Not Implemented)
+Instead of allocating `byte[]` per column:
+- Decode values directly from the receive buffer span
+- Or use `ArrayPool<byte>.Shared` for value buffers
+
+### 3. Row Object Pooling (Not Implemented)
+For high-throughput scenarios:
+- Pool `Row` objects with `PgValue[]` arrays
+- Pool `RowSet` objects with `List<Row>`
+
+---
+
+## Benchmark Validation
+
+The existing benchmarks in `Vertx.PgClient.Benchmarks` can validate allocations:
+
+```bash
+cd vertx-pg-client/csharp
+dotnet run -c Release --project Vertx.PgClient.Benchmarks -- --filter "*Fortune*" --memory
+```
+
+The `[MemoryDiagnoser]` attribute on benchmark classes reports:
+- Total allocated bytes
+- Allocation count
+- Gen0/Gen1/Gen2 collections
+
+---
+
+## Summary
+
+For a simple `SELECT id, message FROM table` returning 1 row with an int and string:
+
+| Category | Allocations | Notes |
+|----------|-------------|-------|
+| Protocol structures | ~6-8 | Records, arrays for messages |
+| Per-row overhead | 4-6 | PgValue[], string[], Row, byte[][] |
+| Value storage | 1-2 | String value, boxed types if any |
+| Result set | 3-4 | RowSet, List, descriptor |
+
+**Key Optimization Target**: The per-row column name array creation (`columnDesc.Select(c => c.Name).ToArray()`) is the most impactful improvement opportunity as it affects every row in every query result.
