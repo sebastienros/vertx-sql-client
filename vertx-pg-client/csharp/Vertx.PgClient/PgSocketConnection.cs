@@ -377,6 +377,162 @@ internal sealed class PgSocketConnection : IAsyncDisposable
         return await ReceiveQueryResultAsync(cancellationToken);
     }
 
+    /// <summary>
+    /// Executes a simple query and returns a streaming reader for the results.
+    /// </summary>
+    public async ValueTask<PgDataReader> ExecuteReaderAsync(string sql, CancellationToken cancellationToken = default)
+    {
+        _encoder.Reset();
+        _encoder.WriteQuery(sql);
+        await SendAsync(cancellationToken);
+
+        return CreateDataReader();
+    }
+
+    /// <summary>
+    /// Executes a prepared query with parameters and returns a streaming reader for the results.
+    /// </summary>
+    public async ValueTask<PgDataReader> ExecuteReaderAsync(string sql, ITuple? parameters, CancellationToken cancellationToken = default)
+    {
+        // Check if we have a cached statement
+        if (_preparedStatementCache is not null && _preparedStatementCache.TryGet(sql, out var cached))
+        {
+            _logger.LogTrace("Using cached prepared statement for ExecuteReader: {Sql}", sql);
+            return await ExecuteReaderCachedStatementAsync(cached!, parameters, cancellationToken);
+        }
+
+        var statementName = _encoder.GenerateStatementName();
+        var shouldCache = _preparedStatementCache?.ShouldCache(sql) ?? false;
+        
+        _encoder.Reset();
+        _encoder.WriteParse(sql, statementName);
+        _encoder.WriteDescribe('S', statementName);
+        _encoder.WriteSync();
+        await SendAsync(cancellationToken);
+
+        // Wait for ParseComplete and ParameterDescription/RowDescription
+        PgColumnDesc[]? paramTypes = null;
+        PgColumnDesc[]? rowDesc = null;
+
+        while (true)
+        {
+            var response = await ReceiveAsync(cancellationToken);
+
+            switch (response)
+            {
+                case ParseCompleteResponse:
+                    break;
+
+                case ParameterDescriptionResponse paramDesc:
+                    paramTypes = paramDesc.TypeOids.Select(oid => 
+                        new PgColumnDesc("", 0, 0, DataType.LookupByOid(oid), oid, 0, 0, DataFormat.Binary)
+                    ).ToArray();
+                    break;
+
+                case RowDescriptionResponse rd:
+                    rowDesc = rd.Columns;
+                    break;
+
+                case NoDataResponse:
+                    break;
+
+                case ReadyForQueryResponse ready:
+                    TransactionStatus = ready.Status;
+                    goto afterDescribe;
+
+                case ErrorResponse error:
+                    await ConsumeUntilReadyAsync(cancellationToken);
+                    throw new PgException(error.Message, error.Code, error.Severity);
+
+                case NoticeResponse notice:
+                    NoticeReceived?.Invoke(notice);
+                    break;
+
+                case NotificationResponse notif:
+                    NotificationReceived?.Invoke(new PgNotification(notif.Channel, notif.ProcessId, notif.Payload));
+                    break;
+            }
+        }
+
+        afterDescribe:
+        
+        // Cache the statement if appropriate
+        if (shouldCache && _preparedStatementCache is not null)
+        {
+            // Convert to binary format since we request binary results in Bind
+            var binaryRowDesc = rowDesc?.Select(c => c.ToBinaryDataFormat()).ToArray();
+            var entry = new CachedPreparedStatement
+            {
+                StatementName = statementName,
+                ParameterTypes = paramTypes,
+                RowDescription = binaryRowDesc
+            };
+            _preparedStatementCache.Add(sql, entry);
+            rowDesc = binaryRowDesc;
+        }
+        else if (rowDesc is not null)
+        {
+            // Convert to binary format since we request binary results in Bind
+            rowDesc = rowDesc.Select(c => c.ToBinaryDataFormat()).ToArray();
+        }
+
+        // Send Bind, Execute, and Sync
+        _encoder.Reset();
+        _encoder.WriteBind(statementName, "", parameters, paramTypes);
+        _encoder.WriteExecute();
+        
+        if (!shouldCache)
+        {
+            _encoder.WriteClose('S', statementName);
+        }
+        
+        // Close any evicted statements from the cache
+        if (_preparedStatementCache is not null)
+        {
+            foreach (var stmtToClose in _preparedStatementCache.GetStatementsToClose())
+            {
+                _encoder.WriteClose('S', stmtToClose);
+            }
+        }
+        
+        _encoder.WriteSync();
+        await SendAsync(cancellationToken);
+
+        return CreateDataReader(rowDesc);
+    }
+
+    private async ValueTask<PgDataReader> ExecuteReaderCachedStatementAsync(
+        CachedPreparedStatement cached,
+        ITuple? parameters,
+        CancellationToken cancellationToken)
+    {
+        _encoder.Reset();
+        _encoder.WriteBind(cached.StatementName, "", parameters, cached.ParameterTypes);
+        _encoder.WriteExecute();
+        
+        // Close any evicted statements from the cache
+        foreach (var stmtToClose in _preparedStatementCache!.GetStatementsToClose())
+        {
+            _encoder.WriteClose('S', stmtToClose);
+        }
+        
+        _encoder.WriteSync();
+        await SendAsync(cancellationToken);
+
+        return CreateDataReader(cached.RowDescription);
+    }
+
+    private PgDataReader CreateDataReader(PgColumnDesc[]? rowDesc = null)
+    {
+        return new PgDataReader(
+            (columnDesc, ct) => ReceiveAsync(columnDesc ?? rowDesc, ct),
+            status => TransactionStatus = status,
+            NoticeReceived,
+            notif => NotificationReceived?.Invoke(new PgNotification(notif.Channel, notif.ProcessId, notif.Payload)),
+            ConsumeUntilReadyAsync
+        );
+    }
+
     public async ValueTask<RowSet> PreparedQueryAsync(string sql, ITuple? parameters, CancellationToken cancellationToken = default)
     {
         // Check if we have a cached statement

@@ -63,6 +63,42 @@ public class FortuneBenchmarks
     }
 
     /// <summary>
+    /// Simple query using streaming reader - no buffering.
+    /// </summary>
+    [Benchmark(Description = "SELECT all fortunes (reader, simple)")]
+    public async Task<int> SelectAllFortunes_Reader()
+    {
+        await using var reader = await _connection.ExecuteReaderAsync("SELECT id, message FROM fortune");
+        int count = 0;
+        while (await reader.ReadAsync())
+        {
+            // Access the values to ensure they're decoded
+            _ = reader.GetInt32(0);
+            _ = reader.GetString(1);
+            count++;
+        }
+        return count;
+    }
+
+    /// <summary>
+    /// Prepared query using streaming reader - no buffering.
+    /// </summary>
+    [Benchmark(Description = "SELECT all fortunes (reader, prepared)")]
+    public async Task<int> SelectAllFortunes_ReaderPrepared()
+    {
+        await using var reader = await _connection.ExecuteReaderAsync("SELECT id, message FROM fortune", null);
+        int count = 0;
+        while (await reader.ReadAsync())
+        {
+            // Access the values to ensure they're decoded
+            _ = reader.GetInt32(0);
+            _ = reader.GetString(1);
+            count++;
+        }
+        return count;
+    }
+
+    /// <summary>
     /// Fetch a single fortune by ID using prepared query - common pattern.
     /// </summary>
     [Benchmark(Description = "SELECT fortune by ID (prepared query)")]
@@ -72,6 +108,22 @@ public class FortuneBenchmarks
             "SELECT id, message FROM fortune WHERE id = $1",
             Tuple.Create(1));
         return result.Count > 0 ? result[0].GetValue(1).GetString() : null;
+    }
+
+    /// <summary>
+    /// Fetch a single fortune by ID using streaming reader.
+    /// </summary>
+    [Benchmark(Description = "SELECT fortune by ID (reader)")]
+    public async Task<string?> SelectFortuneById_Reader()
+    {
+        await using var reader = await _connection.ExecuteReaderAsync(
+            "SELECT id, message FROM fortune WHERE id = $1",
+            Tuple.Create(1));
+        if (await reader.ReadAsync())
+        {
+            return reader.GetString(1);
+        }
+        return null;
     }
 
     /// <summary>
