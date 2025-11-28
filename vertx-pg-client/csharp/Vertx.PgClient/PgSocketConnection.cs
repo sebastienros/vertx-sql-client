@@ -675,7 +675,6 @@ internal sealed class PgSocketConnection : IAsyncDisposable
         // Initial capacity of 16 to reduce list resizing for typical queries
         var rows = new List<Row>(16);
         PgColumnDesc[]? columnDesc = null;
-        string[]? columnNames = null;
         int rowsAffected = 0;
 
         while (true)
@@ -687,23 +686,21 @@ internal sealed class PgSocketConnection : IAsyncDisposable
             {
                 case RowDescriptionResponse rd:
                     columnDesc = rd.Columns;
-                    // Cache column names array once for all rows
-                    columnNames = ExtractColumnNames(rd.Columns);
                     break;
 
                 case DecodedDataRowResponse decodedRow:
                     // Direct decoding path - no intermediate byte[] allocations
-                    if (columnNames is not null)
+                    if (columnDesc is not null)
                     {
-                        rows.Add(new Row(decodedRow.Values, columnNames));
+                        rows.Add(new Row(decodedRow.Values, columnDesc));
                     }
                     break;
 
                 case DataRowResponse dataRow:
                     // Fallback path for when column descriptors weren't available
-                    if (columnDesc is not null && columnNames is not null)
+                    if (columnDesc is not null)
                     {
-                        var row = DecodeRow(dataRow.Values, columnDesc, columnNames);
+                        var row = DecodeRow(dataRow.Values, columnDesc);
                         rows.Add(row);
                     }
                     break;
@@ -717,7 +714,7 @@ internal sealed class PgSocketConnection : IAsyncDisposable
 
                 case ReadyForQueryResponse ready:
                     TransactionStatus = ready.Status;
-                    return new RowSet(rows, columnNames ?? Array.Empty<string>(), rowsAffected);
+                    return new RowSet(rows, columnDesc ?? [], rowsAffected);
 
                 case ErrorResponse error:
                     await ConsumeUntilReadyAsync(cancellationToken);
@@ -739,9 +736,6 @@ internal sealed class PgSocketConnection : IAsyncDisposable
         // Initial capacity of 16 to reduce list resizing for typical queries
         var rows = new List<Row>(16);
         int rowsAffected = 0;
-        
-        // Cache column names array once for all rows
-        string[]? columnNames = rowDesc is not null ? ExtractColumnNames(rowDesc) : null;
 
         while (true)
         {
@@ -755,17 +749,17 @@ internal sealed class PgSocketConnection : IAsyncDisposable
 
                 case DecodedDataRowResponse decodedRow:
                     // Direct decoding path - no intermediate byte[] allocations
-                    if (columnNames is not null)
+                    if (rowDesc is not null)
                     {
-                        rows.Add(new Row(decodedRow.Values, columnNames));
+                        rows.Add(new Row(decodedRow.Values, rowDesc));
                     }
                     break;
 
                 case DataRowResponse dataRow:
                     // Fallback path for when row descriptors weren't available
-                    if (rowDesc is not null && columnNames is not null)
+                    if (rowDesc is not null)
                     {
-                        var row = DecodeRow(dataRow.Values, rowDesc, columnNames);
+                        var row = DecodeRow(dataRow.Values, rowDesc);
                         rows.Add(row);
                     }
                     break;
@@ -782,7 +776,7 @@ internal sealed class PgSocketConnection : IAsyncDisposable
 
                 case ReadyForQueryResponse ready:
                     TransactionStatus = ready.Status;
-                    return new RowSet(rows, columnNames ?? Array.Empty<string>(), rowsAffected);
+                    return new RowSet(rows, rowDesc ?? [], rowsAffected);
 
                 case ErrorResponse error:
                     await ConsumeUntilReadyAsync(cancellationToken);
@@ -799,7 +793,7 @@ internal sealed class PgSocketConnection : IAsyncDisposable
         }
     }
 
-    private Row DecodeRow(byte[][] values, PgColumnDesc[] columnDesc, string[] columnNames)
+    private static Row DecodeRow(byte[][] values, PgColumnDesc[] columnDesc)
     {
         var decodedValues = new PgValue[values.Length];
         
@@ -818,15 +812,7 @@ internal sealed class PgSocketConnection : IAsyncDisposable
             }
         }
 
-        return new Row(decodedValues, columnNames);
-    }
-
-    /// <summary>
-    /// Extracts column names from column descriptors as a reusable array.
-    /// </summary>
-    private static string[] ExtractColumnNames(PgColumnDesc[] columns)
-    {
-        return Array.ConvertAll(columns, c => c.Name);
+        return new Row(decodedValues, columnDesc);
     }
 
     private static int ParseRowsAffected(string tag)
@@ -987,17 +973,6 @@ internal sealed class PgSocketConnection : IAsyncDisposable
                 // Check if we can send more commands
                 await CheckPendingCoreAsync(cancellationToken);
             }
-
-            // Handle extended query commands that need to send bind/execute after parse
-            if (current is ExtendedQueryCommand extCmd && extCmd.NeedsSendBindExecute)
-            {
-                var buffer = extCmd.GetBindExecuteBuffer();
-                if (_stream is not null)
-                {
-                    await _stream.WriteAsync(buffer, cancellationToken);
-                    await _stream.FlushAsync(cancellationToken);
-                }
-            }
         }
     }
 
@@ -1063,27 +1038,12 @@ internal sealed class PgSocketConnection : IAsyncDisposable
                     break;
                 }
             }
-
-            // Handle extended query commands that need to send bind/execute after parse
-            if (current is ExtendedQueryCommand extCmd && extCmd.NeedsSendBindExecute)
-            {
-                var buffer = extCmd.GetBindExecuteBuffer();
-                if (_stream is not null)
-                {
-                    await _stream.WriteAsync(buffer, cancellationToken);
-                    await _stream.FlushAsync(cancellationToken);
-                }
-            }
         }
 
         // Get the result from the command
         if (command is SimpleQueryCommand simpleCmd)
         {
             return await simpleCmd.Task;
-        }
-        else if (command is ExtendedQueryCommand extendedCmd)
-        {
-            return await extendedCmd.Task;
         }
         
         throw new InvalidOperationException("Unknown command type");

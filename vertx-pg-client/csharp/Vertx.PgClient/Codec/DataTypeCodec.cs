@@ -228,7 +228,7 @@ public static class DataTypeCodec
         // byte isCidr = buffer[2];
         byte addrLen = buffer[3];
         
-        var addressBytes = buffer.Slice(4, addrLen).ToArray();
+        var addressBytes = buffer.Slice(4, addrLen);
         var address = new IPAddress(addressBytes);
         
         return new Inet().SetAddress(address).SetNetmask(netmask);
@@ -242,7 +242,7 @@ public static class DataTypeCodec
         // byte isCidr = buffer[2];
         byte addrLen = buffer[3];
         
-        var addressBytes = buffer.Slice(4, addrLen).ToArray();
+        var addressBytes = buffer.Slice(4, addrLen);
         var address = new IPAddress(addressBytes);
         
         return new Cidr().SetAddress(address).SetNetmask(netmask);

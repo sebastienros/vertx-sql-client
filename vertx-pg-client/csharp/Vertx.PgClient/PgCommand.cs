@@ -105,13 +105,12 @@ internal sealed class SimpleQueryCommand : PgCommand
         }
         else
         {
-            var columnNames = _columnDesc?.Select(c => c.Name).ToArray() ?? Array.Empty<string>();
-            _tcs.TrySetResult(new RowSet(_rows, columnNames, _rowsAffected));
+            _tcs.TrySetResult(new RowSet(_rows, _columnDesc ?? [], _rowsAffected));
         }
     }
 
     private static Row DecodeRow(byte[][] values, PgColumnDesc[] columnDesc)
-    {
+    {        
         var decodedValues = new PgValue[values.Length];
         
         for (int i = 0; i < values.Length; i++)
@@ -129,188 +128,7 @@ internal sealed class SimpleQueryCommand : PgCommand
             }
         }
 
-        return new Row(decodedValues, columnDesc.Select(c => c.Name).ToArray());
-    }
-
-    private static int ParseRowsAffected(string tag)
-    {
-        // Tag format: "INSERT 0 5", "UPDATE 5", "DELETE 5", "SELECT 5"
-        // Find the last space and parse the number after it
-        ReadOnlySpan<char> span = tag.AsSpan();
-        int lastSpace = span.LastIndexOf(' ');
-        if (lastSpace >= 0 && int.TryParse(span[(lastSpace + 1)..], out int count))
-        {
-            return count;
-        }
-        return 0;
-    }
-}
-
-/// <summary>
-/// An extended query command using the extended query protocol (parse/bind/execute).
-/// </summary>
-internal sealed class ExtendedQueryCommand : PgCommand
-{
-    private readonly string _sql;
-    private readonly ITuple? _parameters;
-    private readonly TaskCompletionSource<RowSet> _tcs;
-    private readonly List<Row> _rows = new();
-    private readonly PgEncoder _encoder;
-    private readonly byte[] _statementName = new byte[10];
-    private int _statementNameLength;
-    private PgColumnDesc[]? _paramTypes;
-    private PgColumnDesc[]? _rowDesc;
-    private int _rowsAffected;
-    private PgException? _error;
-    private ExtendedQueryPhase _phase = ExtendedQueryPhase.Parse;
-
-    private enum ExtendedQueryPhase
-    {
-        Parse,
-        Bind,
-        Execute
-    }
-
-    public ExtendedQueryCommand(string sql, ITuple? parameters, PgEncoder encoder)
-    {
-        _sql = sql;
-        _parameters = parameters;
-        _encoder = encoder;
-        _tcs = new TaskCompletionSource<RowSet>(TaskCreationOptions.RunContinuationsAsynchronously);
-    }
-
-    public Task<RowSet> Task => _tcs.Task;
-
-    public override void Encode(PgEncoder encoder)
-    {
-        _statementNameLength = encoder.GenerateStatementName(_statementName);
-        var statementNameSpan = GetStatementNameSpan();
-        
-        // Phase 1: Parse and describe
-        encoder.WriteParse(_sql, statementNameSpan);
-        encoder.WriteDescribe('S', statementNameSpan);
-        encoder.WriteSync();
-    }
-
-    public override bool HandleResponse(Response response)
-    {
-        switch (response)
-        {
-            case ParseCompleteResponse:
-                return false;
-
-            case ParameterDescriptionResponse paramDesc:
-                _paramTypes = paramDesc.TypeOids.Select(oid => 
-                    new PgColumnDesc("", 0, 0, DataType.LookupByOid(oid), oid, 0, 0, DataFormat.Binary)
-                ).ToArray();
-                return false;
-
-            case RowDescriptionResponse rd:
-                _rowDesc = rd.Columns;
-                // Update to binary format
-                for (int i = 0; i < _rowDesc.Length; i++)
-                {
-                    _rowDesc[i] = _rowDesc[i].ToBinaryDataFormat();
-                }
-                return false;
-
-            case NoDataResponse:
-                return false;
-
-            case ReadyForQueryResponse when _phase == ExtendedQueryPhase.Parse:
-                // Parse phase complete, now bind and execute
-                _phase = ExtendedQueryPhase.Bind;
-                _encoder.Reset();
-                var statementNameSpan = GetStatementNameSpan();
-                _encoder.WriteBind(statementNameSpan, "", _parameters, _paramTypes);
-                _encoder.WriteExecute();
-                _encoder.WriteClose('S', statementNameSpan);
-                _encoder.WriteSync();
-                return false; // Not complete yet, need to send bind/execute
-
-            case BindCompleteResponse:
-                _phase = ExtendedQueryPhase.Execute;
-                return false;
-
-            case DataRowResponse dataRow:
-                if (_rowDesc is not null)
-                {
-                    var row = DecodeRow(dataRow.Values, _rowDesc);
-                    _rows.Add(row);
-                }
-                return false;
-
-            case CommandCompleteResponse cmd:
-                _rowsAffected = ParseRowsAffected(cmd.Tag);
-                return false;
-
-            case CloseCompleteResponse:
-                return false;
-
-            case PortalSuspendedResponse:
-                return false;
-
-            case ErrorResponse error:
-                _error = new PgException(error.Message, error.Code, error.Severity);
-                return false;
-
-            case ReadyForQueryResponse:
-                return true; // Command complete
-
-            default:
-                return false;
-        }
-    }
-
-    /// <summary>
-    /// Gets whether this command needs to send more data (bind/execute phase).
-    /// </summary>
-    public bool NeedsSendBindExecute => _phase == ExtendedQueryPhase.Bind;
-
-    /// <summary>
-    /// Gets the encoder buffer for sending bind/execute.
-    /// </summary>
-    public ReadOnlyMemory<byte> GetBindExecuteBuffer() => _encoder.Buffer;
-
-    private ReadOnlySpan<byte> GetStatementNameSpan() => _statementName.AsSpan(0, _statementNameLength);
-
-    public override void Complete(Exception? error = null)
-    {
-        if (error is not null)
-        {
-            _tcs.TrySetException(error);
-        }
-        else if (_error is not null)
-        {
-            _tcs.TrySetException(_error);
-        }
-        else
-        {
-            var columnNames = _rowDesc?.Select(c => c.Name).ToArray() ?? Array.Empty<string>();
-            _tcs.TrySetResult(new RowSet(_rows, columnNames, _rowsAffected));
-        }
-    }
-
-    private static Row DecodeRow(byte[][] values, PgColumnDesc[] columnDesc)
-    {
-        var decodedValues = new PgValue[values.Length];
-        
-        for (int i = 0; i < values.Length; i++)
-        {
-            var column = columnDesc[i];
-            if (values[i] is null)
-            {
-                decodedValues[i] = PgValue.CreateNull(column.DataType);
-            }
-            else
-            {
-                decodedValues[i] = column.DataFormat == DataFormat.Binary
-                    ? PgValue.DecodeBinary(column.DataType, values[i])
-                    : PgValue.DecodeText(column.DataType, values[i]);
-            }
-        }
-
-        return new Row(decodedValues, columnDesc.Select(c => c.Name).ToArray());
+        return new Row(decodedValues, columnDesc);
     }
 
     private static int ParseRowsAffected(string tag)

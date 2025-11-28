@@ -151,13 +151,15 @@ internal sealed class MultiplexedConnection : IAsyncDisposable
                     // Remove from inflight and complete with error
                     lock (_inflight)
                     {
-                        // Remove if it's still there (might be at the end)
-                        var list = _inflight.ToList();
-                        if (list.Remove(command))
+                        // Rebuild queue excluding the failed command
+                        int count = _inflight.Count;
+                        for (int i = 0; i < count; i++)
                         {
-                            _inflight.Clear();
-                            foreach (var c in list)
+                            var c = _inflight.Dequeue();
+                            if (c != command)
+                            {
                                 _inflight.Enqueue(c);
+                            }
                         }
                     }
                     command.Complete(ex);
@@ -234,20 +236,6 @@ internal sealed class MultiplexedConnection : IAsyncDisposable
                             _inflight.Dequeue();
                         }
                         current.Complete();
-                    }
-
-                    // Handle extended query commands that need to send bind/execute after parse
-                    if (current is ExtendedQueryCommand extCmd && extCmd.NeedsSendBindExecute)
-                    {
-                        await _sendLock.WaitAsync(_disposeCts.Token);
-                        try
-                        {
-                            await _socket.SendBufferAsync(extCmd.GetBindExecuteBuffer(), _disposeCts.Token);
-                        }
-                        finally
-                        {
-                            _sendLock.Release();
-                        }
                     }
                 }
                 catch (OperationCanceledException) when (_disposeCts.Token.IsCancellationRequested)

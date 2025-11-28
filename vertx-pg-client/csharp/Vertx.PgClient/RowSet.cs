@@ -58,12 +58,10 @@ public sealed class RowSet : IRowSet
         RowDescriptor = descriptor;
     }
 
-    public RowSet(IReadOnlyList<Row> rows, string[] columnNames, int rowCount)
+    public RowSet(IReadOnlyList<Row> rows, PgColumnDesc[] columns, int rowCount)
     {
         _rows = rows;
-        RowDescriptor = new PgRowDescriptor(
-            columnNames.Select(n => PgColumnDesc.ForName(n)).ToArray()
-        );
+        RowDescriptor = new PgRowDescriptor(columns);
         RowCount = rowCount;
     }
 
@@ -87,12 +85,12 @@ public sealed class RowSet : IRowSet
 public sealed class Row : IRow, ITuple
 {
     private readonly PgValue[] _values;
-    private readonly string[] _columnNames;
+    private readonly PgColumnDesc[] _columns;
 
-    public Row(PgValue[] values, string[] columnNames)
+    public Row(PgValue[] values, PgColumnDesc[] columns)
     {
         _values = values;
-        _columnNames = columnNames;
+        _columns = columns;
     }
 
     public int Size => _values.Length;
@@ -102,15 +100,15 @@ public sealed class Row : IRow, ITuple
     /// </summary>
     public PgValue GetValue(int position) => _values[position];
 
-    public string GetColumnName(int position) => position >= 0 && position < _columnNames.Length 
-        ? _columnNames[position] 
+    public string GetColumnName(int position) => position >= 0 && position < _columns.Length 
+        ? _columns[position].Name 
         : throw new ArgumentOutOfRangeException(nameof(position));
 
     public int GetColumnIndex(string name)
     {
-        for (int i = 0; i < _columnNames.Length; i++)
+        for (int i = 0; i < _columns.Length; i++)
         {
-            if (string.Equals(_columnNames[i], name, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(_columns[i].Name, name, StringComparison.OrdinalIgnoreCase))
             {
                 return i;
             }
