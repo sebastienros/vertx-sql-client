@@ -56,6 +56,20 @@ public interface IPgConnection : IAsyncDisposable
     ValueTask<RowSet> PreparedQueryAsync(string sql, ITuple? parameters = null, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Executes a simple query and returns a streaming reader for the results.
+    /// Unlike QueryAsync, this does not buffer all rows in memory.
+    /// Similar to ADO.NET's ExecuteReaderAsync.
+    /// </summary>
+    ValueTask<PgDataReader> ExecuteReaderAsync(string sql, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Executes a prepared query with parameters and returns a streaming reader for the results.
+    /// Unlike PreparedQueryAsync, this does not buffer all rows in memory.
+    /// Similar to ADO.NET's ExecuteReaderAsync.
+    /// </summary>
+    ValueTask<PgDataReader> ExecuteReaderAsync(string sql, ITuple? parameters, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Executes multiple queries in a pipelined fashion.
     /// All queries are sent before waiting for any responses, improving throughput.
     /// </summary>
@@ -280,6 +294,24 @@ public sealed class PgConnection : IPgConnection
             throw new InvalidOperationException("Connection is not open");
 
         return await _socket.PreparedQueryAsync(sql, parameters, cancellationToken);
+    }
+
+    /// <inheritdoc/>
+    public async ValueTask<PgDataReader> ExecuteReaderAsync(string sql, CancellationToken cancellationToken = default)
+    {
+        if (_socket is null || !IsOpen)
+            throw new InvalidOperationException("Connection is not open");
+
+        return await _socket.ExecuteReaderAsync(sql, cancellationToken);
+    }
+
+    /// <inheritdoc/>
+    public async ValueTask<PgDataReader> ExecuteReaderAsync(string sql, ITuple? parameters, CancellationToken cancellationToken = default)
+    {
+        if (_socket is null || !IsOpen)
+            throw new InvalidOperationException("Connection is not open");
+
+        return await _socket.ExecuteReaderAsync(sql, parameters, cancellationToken);
     }
 
     /// <inheritdoc/>
