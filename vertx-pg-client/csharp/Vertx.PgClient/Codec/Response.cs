@@ -55,7 +55,7 @@ internal sealed record NoticeResponse(
 // Protocol response records
 internal sealed record BindCompleteResponse : Response;
 internal sealed record CloseCompleteResponse : Response;
-internal sealed record CommandCompleteResponse(string Tag) : Response;
+internal sealed record CommandCompleteResponse(int RowsAffected) : Response;
 internal sealed record CopyDataResponse(byte[] Data) : Response;
 internal sealed record CopyDoneResponse : Response;
 internal sealed record CopyResponse(bool IsBinary, short[] Formats, bool IsCopyIn) : Response;

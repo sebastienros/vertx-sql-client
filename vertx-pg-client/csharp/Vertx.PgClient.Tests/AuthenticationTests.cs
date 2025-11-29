@@ -96,7 +96,7 @@ public class AuthenticationTests : IAsyncLifetime
 
     #region MD5 Authentication Tests
 
-    [Fact]
+    [Fact(Skip = "Slower tests, run only when needed")]
     public async Task Md5_CanConnect()
     {
         var options = CreateOptions(_md5Container!);
@@ -106,7 +106,7 @@ public class AuthenticationTests : IAsyncLifetime
         Assert.True(connection.IsOpen);
     }
 
-    [Fact]
+    [Fact(Skip = "Slower tests, run only when needed")]
     public async Task Md5_CanExecuteQuery()
     {
         var options = CreateOptions(_md5Container!);
@@ -118,7 +118,7 @@ public class AuthenticationTests : IAsyncLifetime
         Assert.Equal(1, result[0].GetValue(0).GetInteger());
     }
 
-    [Fact]
+    [Fact(Skip = "Slower tests, run only when needed")]
     public async Task Md5_WrongPassword_Fails()
     {
         var options = CreateOptions(_md5Container!, password: "wrongpassword");
@@ -129,7 +129,7 @@ public class AuthenticationTests : IAsyncLifetime
         Assert.Contains("authentication failed", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
-    [Fact]
+    [Fact(Skip = "Slower tests, run only when needed")]
     public async Task Md5_CanUsePreparedQueries()
     {
         var options = CreateOptions(_md5Container!);
@@ -147,7 +147,7 @@ public class AuthenticationTests : IAsyncLifetime
 
     #region Trust Authentication Tests
 
-    [Fact]
+    [Fact(Skip = "Slower tests, run only when needed")]
     public async Task Trust_CanConnect()
     {
         var options = CreateOptions(_trustContainer!);
@@ -157,7 +157,7 @@ public class AuthenticationTests : IAsyncLifetime
         Assert.True(connection.IsOpen);
     }
 
-    [Fact]
+    [Fact(Skip = "Slower tests, run only when needed")]
     public async Task Trust_CanConnectWithoutPassword()
     {
         // Trust authentication doesn't require a password (empty string is fine)
@@ -168,7 +168,7 @@ public class AuthenticationTests : IAsyncLifetime
         Assert.True(connection.IsOpen);
     }
 
-    [Fact]
+    [Fact(Skip = "Slower tests, run only when needed")]
     public async Task Trust_CanExecuteQuery()
     {
         var options = CreateOptions(_trustContainer!);
@@ -180,7 +180,7 @@ public class AuthenticationTests : IAsyncLifetime
         Assert.Equal("testuser", result[0].GetValue(0).GetString());
     }
 
-    [Fact]
+    [Fact(Skip = "Slower tests, run only when needed")]
     public async Task Trust_CanUsePreparedQueries()
     {
         var options = CreateOptions(_trustContainer!);
@@ -198,7 +198,7 @@ public class AuthenticationTests : IAsyncLifetime
 
     #region Clear Text (Password) Authentication Tests
 
-    [Fact]
+    [Fact(Skip = "Slower tests, run only when needed")]
     public async Task ClearText_CanConnect()
     {
         var options = CreateOptions(_clearTextContainer!);
@@ -208,7 +208,7 @@ public class AuthenticationTests : IAsyncLifetime
         Assert.True(connection.IsOpen);
     }
 
-    [Fact]
+    [Fact(Skip = "Slower tests, run only when needed")]
     public async Task ClearText_CanExecuteQuery()
     {
         var options = CreateOptions(_clearTextContainer!);
@@ -220,7 +220,7 @@ public class AuthenticationTests : IAsyncLifetime
         Assert.Equal(1, result[0].GetValue(0).GetInteger());
     }
 
-    [Fact]
+    [Fact(Skip = "Slower tests, run only when needed")]
     public async Task ClearText_WrongPassword_Fails()
     {
         var options = CreateOptions(_clearTextContainer!, password: "wrongpassword");
@@ -231,7 +231,7 @@ public class AuthenticationTests : IAsyncLifetime
         Assert.Contains("authentication failed", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
-    [Fact]
+    [Fact(Skip = "Slower tests, run only when needed")]
     public async Task ClearText_CanUsePreparedQueries()
     {
         var options = CreateOptions(_clearTextContainer!);

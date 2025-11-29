@@ -75,7 +75,7 @@ internal sealed class SimpleQueryCommand : PgCommand
                 return false;
 
             case CommandCompleteResponse cmd:
-                _rowsAffected = ParseRowsAffected(cmd.Tag);
+                _rowsAffected = cmd.RowsAffected;
                 return false;
 
             case EmptyQueryResponse:
@@ -129,19 +129,6 @@ internal sealed class SimpleQueryCommand : PgCommand
         }
 
         return new Row(decodedValues, columnDesc);
-    }
-
-    private static int ParseRowsAffected(string tag)
-    {
-        // Tag format: "INSERT 0 5", "UPDATE 5", "DELETE 5", "SELECT 5"
-        // Find the last space and parse the number after it
-        ReadOnlySpan<char> span = tag.AsSpan();
-        int lastSpace = span.LastIndexOf(' ');
-        if (lastSpace >= 0 && int.TryParse(span[(lastSpace + 1)..], out int count))
-        {
-            return count;
-        }
-        return 0;
     }
 }
 
@@ -317,7 +304,7 @@ internal sealed class PreparedQueryCommand : PgCommand
                 return false;
 
             case CommandCompleteResponse cmd:
-                _rowsAffected = ParseRowsAffected(cmd.Tag);
+                _rowsAffected = cmd.RowsAffected;
                 return false;
 
             case CloseCompleteResponse:
@@ -381,16 +368,5 @@ internal sealed class PreparedQueryCommand : PgCommand
         }
 
         return new Row(decodedValues, columnDesc);
-    }
-
-    private static int ParseRowsAffected(string tag)
-    {
-        ReadOnlySpan<char> span = tag.AsSpan();
-        int lastSpace = span.LastIndexOf(' ');
-        if (lastSpace >= 0 && int.TryParse(span[(lastSpace + 1)..], out int count))
-        {
-            return count;
-        }
-        return 0;
     }
 }

@@ -9,8 +9,22 @@ namespace Vertx.PgClient.Codec;
 /// <summary>
 /// Decodes PostgreSQL backend messages.
 /// </summary>
+/// <remarks>
+/// The members of this class are thread-safe since it is only owned by a single connection.
+/// </remarks>
 internal sealed class PgDecoder
 {
+    private static readonly CommandCompleteResponse[] _commandCompleteResponses = new CommandCompleteResponse[256];
+
+    static PgDecoder()
+    {
+        // Preallocate common CommandCompleteResponses for performance
+        for (int i = 0; i < _commandCompleteResponses.Length; i++)
+        {
+            _commandCompleteResponses[i] = new CommandCompleteResponse(i);
+        }
+    }
+
     /// <summary>
     /// Attempts to parse a message from the buffer.
     /// Returns true if a complete message was parsed.
@@ -119,8 +133,23 @@ internal sealed class PgDecoder
 
     private CommandCompleteResponse ParseCommandComplete(ReadOnlySpan<byte> payload)
     {
-        var tag = BufferUtils.ReadCString(payload, out _);
-        return new CommandCompleteResponse(tag);
+        // Parse rows affected directly from the payload without allocating a string.
+        // Tag format: "INSERT 0 5", "UPDATE 5", "DELETE 5", "SELECT 5", "COPY 5"
+        // Find the last space and parse the number after it.
+        int lastSpace = payload.LastIndexOf((byte)' ');
+        int rowsAffected = 0;
+        if (lastSpace >= 0)
+        {
+            int endOfString = payload.LastIndexOf((byte)'\0');
+            int.TryParse(payload.Slice(lastSpace + 1, (endOfString >= 0 ? endOfString : payload.Length) - (lastSpace + 1)), out rowsAffected);   
+        }
+
+        if (rowsAffected >= 0 && rowsAffected < _commandCompleteResponses.Length)
+        {
+            return _commandCompleteResponses[rowsAffected];
+        }
+
+        return new CommandCompleteResponse(rowsAffected);
     }
 
     private CopyResponse ParseCopyResponse(ReadOnlySpan<byte> payload, bool isCopyIn)

@@ -113,7 +113,7 @@ public sealed class PgDataReader : IAsyncDisposable
                     break;
 
                 case CommandCompleteResponse cmd:
-                    _rowsAffected = ParseRowsAffected(cmd.Tag);
+                    _rowsAffected = cmd.RowsAffected;
                     break;
 
                 case EmptyQueryResponse:
@@ -286,18 +286,6 @@ public sealed class PgDataReader : IAsyncDisposable
         }
 
         return decodedValues;
-    }
-
-    private static int ParseRowsAffected(string tag)
-    {
-        // Tag format: "INSERT 0 5", "UPDATE 5", "DELETE 5", "SELECT 5"
-        ReadOnlySpan<char> span = tag.AsSpan();
-        int lastSpace = span.LastIndexOf(' ');
-        if (lastSpace >= 0 && int.TryParse(span[(lastSpace + 1)..], out int count))
-        {
-            return count;
-        }
-        return 0;
     }
 
     /// <summary>

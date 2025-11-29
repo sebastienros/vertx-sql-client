@@ -252,7 +252,7 @@ public class DataTypeTests
         var result = await connection.QueryAsync("SELECT '\\x48656c6c6f'::bytea as data");
 
         Assert.Equal(1, result.Count);
-        var bytes = result[0].GetValue("data").Get<byte[]>();
+        var bytes = result[0].GetValue("data").GetBytes();
         Assert.NotNull(bytes);
         Assert.Equal("Hello", System.Text.Encoding.ASCII.GetString(bytes));
     }
