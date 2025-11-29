@@ -15,18 +15,18 @@ internal abstract class PgCommand
     /// Encodes the command to the encoder buffer.
     /// </summary>
     public abstract void Encode(PgEncoder encoder);
-    
+
     /// <summary>
     /// Handles a response message from the server.
     /// </summary>
     /// <returns>True if the command is complete and should be removed from the inflight queue.</returns>
     public abstract bool HandleResponse(Response response);
-    
+
     /// <summary>
     /// Called when the command completes successfully or with an error.
     /// </summary>
     public abstract void Complete(Exception? error = null);
-    
+
     /// <summary>
     /// Gets whether this command expects a ReadyForQuery message to complete.
     /// </summary>
@@ -105,14 +105,14 @@ internal sealed class SimpleQueryCommand : PgCommand
         }
         else
         {
-            _tcs.TrySetResult(new RowSet(_rows, _columnDesc ?? [], _rowsAffected));
+            _tcs.TrySetResult(new RowSet(_rows, _columnDesc ?? PgColumnDesc.EmptyColumns, _rowsAffected));
         }
     }
 
     private static Row DecodeRow(byte[][] values, PgColumnDesc[] columnDesc)
-    {        
+    {
         var decodedValues = new PgValue[values.Length];
-        
+
         for (int i = 0; i < values.Length; i++)
         {
             var column = columnDesc[i];
@@ -143,7 +143,7 @@ internal sealed class PreparedQueryCommand : PgCommand
     private readonly PreparedStatementCache? _cache;
     private readonly TaskCompletionSource<RowSet> _tcs;
     private readonly List<Row> _rows = new();
-    
+
     private byte[] _statementName = null!;
     private DataType[]? _paramTypes;
     private PgColumnDesc[]? _rowDesc;
@@ -165,7 +165,7 @@ internal sealed class PreparedQueryCommand : PgCommand
         _parameters = parameters;
         _cache = cache;
         _tcs = new TaskCompletionSource<RowSet>(TaskCreationOptions.RunContinuationsAsynchronously);
-        
+
         // Check cache first
         if (_cache is not null && _cache.TryGet(sql, out _cachedStatement))
         {
@@ -188,7 +188,7 @@ internal sealed class PreparedQueryCommand : PgCommand
             // Use cached statement - just bind and execute
             encoder.WriteBind(_cachedStatement.StatementName, "", _parameters, _cachedStatement.ParameterTypes);
             encoder.WriteExecute();
-            
+
             // Close any evicted statements
             if (_cache is not null)
             {
@@ -197,7 +197,7 @@ internal sealed class PreparedQueryCommand : PgCommand
                     encoder.WriteClose('S', stmtToClose);
                 }
             }
-            
+
             encoder.WriteSync();
         }
         else
@@ -206,7 +206,7 @@ internal sealed class PreparedQueryCommand : PgCommand
             Span<byte> nameBuffer = stackalloc byte[10];
             var nameLength = encoder.GenerateStatementName(nameBuffer);
             _statementName = nameBuffer[..nameLength].ToArray();
-            
+
             // Parse and describe
             encoder.WriteParse(_sql, _statementName);
             encoder.WriteDescribe('S', _statementName);
@@ -242,13 +242,13 @@ internal sealed class PreparedQueryCommand : PgCommand
 
         encoder.WriteBind(_statementName, "", _parameters, _paramTypes);
         encoder.WriteExecute();
-        
+
         // Close statement if not caching
         if (!_shouldCache)
         {
             encoder.WriteClose('S', _statementName);
         }
-        
+
         // Close any evicted statements
         if (_cache is not null)
         {
@@ -257,7 +257,7 @@ internal sealed class PreparedQueryCommand : PgCommand
                 encoder.WriteClose('S', stmtToClose);
             }
         }
-        
+
         encoder.WriteSync();
         _phase = Phase.BindExecute;
     }
@@ -342,14 +342,14 @@ internal sealed class PreparedQueryCommand : PgCommand
         }
         else
         {
-            _tcs.TrySetResult(new RowSet(_rows, _rowDesc ?? [], _rowsAffected));
+            _tcs.TrySetResult(new RowSet(_rows, _rowDesc ?? PgColumnDesc.EmptyColumns, _rowsAffected));
         }
     }
 
     private static Row DecodeRow(byte[][] values, PgColumnDesc[] columnDesc)
-    {        
+    {
         var decodedValues = new PgValue[values.Length];
-        
+
         for (int i = 0; i < values.Length; i++)
         {
             var column = columnDesc[i];

@@ -92,7 +92,10 @@ public sealed class PgPool : IAsyncDisposable
             }
             finally
             {
-                _multiplexedAvailable.Release();
+                if (!_disposed)
+                {
+                    _multiplexedAvailable.Release();
+                }
             }
         }
 
@@ -123,7 +126,10 @@ public sealed class PgPool : IAsyncDisposable
             }
             finally
             {
-                _multiplexedAvailable.Release();
+                if (!_disposed)
+                {
+                    _multiplexedAvailable.Release();
+                }
             }
         }
 

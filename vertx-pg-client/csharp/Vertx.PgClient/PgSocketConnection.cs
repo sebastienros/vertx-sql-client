@@ -750,7 +750,7 @@ internal sealed class PgSocketConnection : IAsyncDisposable
                     TransactionStatus = ready.Status;
                     // Create right-sized array from buffer
                     var rows = _rowBuffer.Count > 0 ? _rowBuffer.ToArray() : [];
-                    return new RowSet(rows, columnDesc ?? [], rowsAffected);
+                    return new RowSet(rows, columnDesc ?? PgColumnDesc.EmptyColumns, rowsAffected);
 
                 case ErrorResponse error:
                     await ConsumeUntilReadyAsync(cancellationToken);

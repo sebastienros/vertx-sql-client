@@ -301,7 +301,7 @@ internal sealed class PgDecoder
     private ReadyForQueryResponse ParseReadyForQuery(ReadOnlySpan<byte> payload)
     {
         char status = (char)payload[0];
-        return new ReadyForQueryResponse(status);
+        return ReadyForQueryResponse.Get(status);
     }
 
     private RowDescriptionResponse ParseRowDescription(ReadOnlySpan<byte> payload)

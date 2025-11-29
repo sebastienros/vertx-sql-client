@@ -85,5 +85,21 @@ internal sealed record BackendKeyDataResponse(int ProcessId, int SecretKey) : Re
 internal sealed record NotificationResponse(int ProcessId, string Channel, string Payload) : Response;
 internal sealed record ParameterDescriptionResponse(int[] TypeOids) : Response;
 internal sealed record ParameterStatusResponse(string Name, string Value) : Response;
-internal sealed record ReadyForQueryResponse(char Status) : Response;
+
+internal sealed record ReadyForQueryResponse(char Status) : Response
+{
+    // Singleton instances for the 3 possible transaction states
+    public static readonly ReadyForQueryResponse Idle = new('I');           // Not in a transaction
+    public static readonly ReadyForQueryResponse InTransaction = new('T');  // In a transaction block
+    public static readonly ReadyForQueryResponse Error = new('E');          // In a failed transaction block
+
+    public static ReadyForQueryResponse Get(char status) => status switch
+    {
+        'I' => Idle,
+        'T' => InTransaction,
+        'E' => Error,
+        _ => new ReadyForQueryResponse(status) // Fallback for unknown status
+    };
+}
+
 internal sealed record RowDescriptionResponse(PgColumnDesc[] Columns) : Response;
