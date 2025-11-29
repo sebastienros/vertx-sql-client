@@ -14,7 +14,7 @@ public interface IRowSet : IEnumerable<IRow>
     /// <summary>
     /// Gets the row descriptor for this result set.
     /// </summary>
-    PgRowDescriptor RowDescriptor { get; }
+    PgColumnDesc[] RowDescriptor { get; }
 
     /// <summary>
     /// Gets the number of rows affected by the query.
@@ -44,15 +44,15 @@ public sealed class RowSet : IRowSet
 {
     private readonly IReadOnlyList<IRow> _rows;
 
-    public PgRowDescriptor RowDescriptor { get; }
+    public PgColumnDesc[] RowDescriptor { get; }
     public int RowCount { get; private set; }
-    public int ColumnCount => RowDescriptor.ColumnCount;
+    public int ColumnCount => RowDescriptor.Length;
     public IRowSet? Next { get; internal set; }
 
     private string[]? _columnNames;
-    public IReadOnlyList<string> ColumnNames => _columnNames ??= RowDescriptor.Columns.Select(c => c.Name).ToArray();
+    public IReadOnlyList<string> ColumnNames => _columnNames ??= RowDescriptor.Select(c => c.Name).ToArray();
 
-    public RowSet(PgRowDescriptor descriptor)
+    public RowSet(PgColumnDesc[] descriptor)
     {
         _rows = new List<IRow>();
         RowDescriptor = descriptor;
@@ -61,7 +61,7 @@ public sealed class RowSet : IRowSet
     public RowSet(IReadOnlyList<Row> rows, PgColumnDesc[] columns, int rowCount)
     {
         _rows = rows;
-        RowDescriptor = new PgRowDescriptor(columns);
+        RowDescriptor = columns;
         RowCount = rowCount;
     }
 

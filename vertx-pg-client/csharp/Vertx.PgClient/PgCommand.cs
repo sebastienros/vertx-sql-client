@@ -145,7 +145,7 @@ internal sealed class PreparedQueryCommand : PgCommand
     private readonly List<Row> _rows = new();
     
     private byte[] _statementName = null!;
-    private PgColumnDesc[]? _paramTypes;
+    private DataType[]? _paramTypes;
     private PgColumnDesc[]? _rowDesc;
     private int _rowsAffected;
     private PgException? _error;
@@ -280,9 +280,7 @@ internal sealed class PreparedQueryCommand : PgCommand
                 return false;
 
             case ParameterDescriptionResponse paramDesc:
-                _paramTypes = paramDesc.TypeOids.Select(oid => 
-                    new PgColumnDesc("", 0, 0, DataType.LookupByOid(oid), oid, 0, 0, DataFormat.Binary)
-                ).ToArray();
+                _paramTypes = paramDesc.TypeOids.Select(DataType.LookupByOid).ToArray();
                 return false;
 
             case RowDescriptionResponse rd:

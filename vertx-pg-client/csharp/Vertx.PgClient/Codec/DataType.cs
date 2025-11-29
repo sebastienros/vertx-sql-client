@@ -95,6 +95,9 @@ public enum DataTypeId
 /// <summary>
 /// Data type information for PostgreSQL columns.
 /// </summary>
+/// <remarks>
+/// This class is deeply immutable so it can be cached safely.
+/// </remarks>
 public sealed class DataType
 {
     private static readonly Dictionary<int, DataType> OidToDataType = new();
@@ -104,14 +107,15 @@ public sealed class DataType
     public bool SupportsBinary { get; }
     public Type ClrType { get; }
     public bool IsArray { get; }
-    public DataType? ElementType { get; private set; }
+    public DataType? ElementType { get; }
 
-    private DataType(DataTypeId id, bool supportsBinary, Type clrType, bool isArray = false)
+    private DataType(DataTypeId id, bool supportsBinary, Type clrType, bool isArray = false, DataType? elementType = null)
     {
         Id = id;
         SupportsBinary = supportsBinary;
         ClrType = clrType;
         IsArray = isArray;
+        ElementType = elementType;
     }
 
     public static DataType ValueOf(int oid)
@@ -178,20 +182,20 @@ public sealed class DataType
     public static readonly DataType Void = new(DataTypeId.Void, true, typeof(object));
 
     // Array types
-    public static readonly DataType BoolArray = new(DataTypeId.BoolArray, true, typeof(bool[]), true);
-    public static readonly DataType Int2Array = new(DataTypeId.Int2Array, true, typeof(short[]), true);
-    public static readonly DataType Int4Array = new(DataTypeId.Int4Array, true, typeof(int[]), true);
-    public static readonly DataType Int8Array = new(DataTypeId.Int8Array, true, typeof(long[]), true);
-    public static readonly DataType Float4Array = new(DataTypeId.Float4Array, true, typeof(float[]), true);
-    public static readonly DataType Float8Array = new(DataTypeId.Float8Array, true, typeof(double[]), true);
-    public static readonly DataType NumericArray = new(DataTypeId.NumericArray, false, typeof(decimal[]), true);
-    public static readonly DataType VarcharArray = new(DataTypeId.VarcharArray, true, typeof(string[]), true);
-    public static readonly DataType TextArray = new(DataTypeId.TextArray, true, typeof(string[]), true);
-    public static readonly DataType DateArray = new(DataTypeId.DateArray, true, typeof(DateOnly[]), true);
-    public static readonly DataType TimestampArray = new(DataTypeId.TimestampArray, true, typeof(DateTime[]), true);
-    public static readonly DataType TimestamptzArray = new(DataTypeId.TimestamptzArray, true, typeof(DateTimeOffset[]), true);
-    public static readonly DataType ByteaArray = new(DataTypeId.ByteaArray, true, typeof(byte[][]), true);
-    public static readonly DataType UuidArray = new(DataTypeId.UuidArray, true, typeof(Guid[]), true);
+    public static readonly DataType BoolArray = new(DataTypeId.BoolArray, true, typeof(bool[]), true, Bool);
+    public static readonly DataType Int2Array = new(DataTypeId.Int2Array, true, typeof(short[]), true, Int2);
+    public static readonly DataType Int4Array = new(DataTypeId.Int4Array, true, typeof(int[]), true, Int4);
+    public static readonly DataType Int8Array = new(DataTypeId.Int8Array, true, typeof(long[]), true, Int8);
+    public static readonly DataType Float4Array = new(DataTypeId.Float4Array, true, typeof(float[]), true, Float4);
+    public static readonly DataType Float8Array = new(DataTypeId.Float8Array, true, typeof(double[]), true, Float8);
+    public static readonly DataType NumericArray = new(DataTypeId.NumericArray, false, typeof(decimal[]), true, Numeric);
+    public static readonly DataType VarcharArray = new(DataTypeId.VarcharArray, true, typeof(string[]), true, Varchar);
+    public static readonly DataType TextArray = new(DataTypeId.TextArray, true, typeof(string[]), true, Text);
+    public static readonly DataType DateArray = new(DataTypeId.DateArray, true, typeof(DateOnly[]), true, Date);
+    public static readonly DataType TimestampArray = new(DataTypeId.TimestampArray, true, typeof(DateTime[]), true, Timestamp);
+    public static readonly DataType TimestamptzArray = new(DataTypeId.TimestamptzArray, true, typeof(DateTimeOffset[]), true, Timestamptz);
+    public static readonly DataType ByteaArray = new(DataTypeId.ByteaArray, true, typeof(byte[][]), true, Bytea);
+    public static readonly DataType UuidArray = new(DataTypeId.UuidArray, true, typeof(Guid[]), true, Uuid);
 
     static DataType()
     {
@@ -287,22 +291,6 @@ public sealed class DataType
         ClrTypeToDataType[typeof(DateTime[])] = TimestampArray;
         ClrTypeToDataType[typeof(DateTimeOffset[])] = TimestamptzArray;
         ClrTypeToDataType[typeof(Guid[])] = UuidArray;
-        
-        // Set element types for array types
-        BoolArray.ElementType = Bool;
-        Int2Array.ElementType = Int2;
-        Int4Array.ElementType = Int4;
-        Int8Array.ElementType = Int8;
-        Float4Array.ElementType = Float4;
-        Float8Array.ElementType = Float8;
-        NumericArray.ElementType = Numeric;
-        VarcharArray.ElementType = Varchar;
-        TextArray.ElementType = Text;
-        DateArray.ElementType = Date;
-        TimestampArray.ElementType = Timestamp;
-        TimestamptzArray.ElementType = Timestamptz;
-        ByteaArray.ElementType = Bytea;
-        UuidArray.ElementType = Uuid;
     }
 
     private static void RegisterType(DataType type)

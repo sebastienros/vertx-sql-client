@@ -5,6 +5,7 @@ using System.Buffers;
 using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
+using System.Runtime.CompilerServices;
 using System.Security.Authentication;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
@@ -26,9 +27,20 @@ internal sealed class PgSocketConnection : IAsyncDisposable
     private readonly PgEncoder _encoder;
     private readonly PgDecoder _decoder;
     private readonly Dictionary<string, string> _serverParameters = new();
-    private readonly byte[] _receiveBuffer;
+    private byte[] _receiveBuffer;
     private int _receiveBufferOffset;
     private int _receiveBufferLength;
+    
+    // Buffer sizing strategy:
+    // - Initial size is 64KB, under the 85KB LOH (Large Object Heap) threshold
+    // - Buffer grows by doubling when a message doesn't fit
+    // - For very large messages (>85KB), buffers will be allocated on LOH which is acceptable
+    //   since large PostgreSQL messages (huge TEXT/BYTEA/JSON) are rare
+    // - Alternative: Use System.IO.Pipelines with ReadOnlySequence<byte> to chain small buffers,
+    //   but this would require significant refactoring of PgDecoder to work with non-contiguous memory
+    private const int InitialReceiveBufferSize = 65536; // 64KB - under LOH threshold
+    private const int LargeObjectHeapThreshold = 85000; // .NET LOH threshold
+    private const int MaxReceiveBufferSize = 1024 * 1024 * 1024; // 1GB sanity limit
 
     // Pipelining state
     private readonly Queue<PgCommand> _pending = new();
@@ -41,6 +53,10 @@ internal sealed class PgSocketConnection : IAsyncDisposable
 
     // Prepared statement cache
     private readonly PreparedStatementCache? _preparedStatementCache;
+
+    // Reusable row buffer for query results - since connection is single-threaded for receives,
+    // we can safely reuse this list to avoid allocations. Cleared and reused for each query.
+    private readonly List<Row> _rowBuffer = new();
 
     private Socket? _socket;
     private Stream? _stream;
@@ -70,7 +86,7 @@ internal sealed class PgSocketConnection : IAsyncDisposable
         _logger = logger ?? NullLogger.Instance;
         _encoder = new PgEncoder();
         _decoder = new PgDecoder();
-        _receiveBuffer = ArrayPool<byte>.Shared.Rent(65536);
+        _receiveBuffer = ArrayPool<byte>.Shared.Rent(InitialReceiveBufferSize);
         
         if (options.CachePreparedStatements)
         {
@@ -424,7 +440,7 @@ internal sealed class PgSocketConnection : IAsyncDisposable
             _logger.LogTrace("Using cached prepared statement for ExecuteReader: {Sql}", sql);
             return await ExecuteReaderCachedStatementAsync(cached!, parameters, cancellationToken);
         }
-
+        
         Span<byte> statementNameBuffer = stackalloc byte[10];
         var statementNameLength = _encoder.GenerateStatementName(statementNameBuffer);
         var statementName = statementNameBuffer[..statementNameLength].ToArray();
@@ -437,7 +453,7 @@ internal sealed class PgSocketConnection : IAsyncDisposable
         await SendAsync(cancellationToken);
 
         // Wait for ParseComplete and ParameterDescription/RowDescription
-        PgColumnDesc[]? paramTypes = null;
+        DataType[]? paramTypes = null;
         PgColumnDesc[]? rowDesc = null;
 
         while (true)
@@ -450,12 +466,8 @@ internal sealed class PgSocketConnection : IAsyncDisposable
                     break;
 
                 case ParameterDescriptionResponse paramDesc:
-                    paramTypes = paramDesc.TypeOids.Select(oid => 
-                        new PgColumnDesc("", 0, 0, DataType.LookupByOid(oid), oid, 0, 0, DataFormat.Binary)
-                    ).ToArray();
-                    break;
-
-                case RowDescriptionResponse rd:
+                    paramTypes = paramDesc.TypeOids.Select(DataType.LookupByOid).ToArray();
+                    break;                case RowDescriptionResponse rd:
                     rowDesc = rd.Columns;
                     break;
 
@@ -580,7 +592,7 @@ internal sealed class PgSocketConnection : IAsyncDisposable
         await SendAsync(cancellationToken);
 
         // Wait for ParseComplete and ParameterDescription/RowDescription
-        PgColumnDesc[]? paramTypes = null;
+        DataType[]? paramTypes = null;
         PgColumnDesc[]? rowDesc = null;
 
         while (true)
@@ -593,9 +605,7 @@ internal sealed class PgSocketConnection : IAsyncDisposable
                     break;
 
                 case ParameterDescriptionResponse paramDesc:
-                    paramTypes = paramDesc.TypeOids.Select(oid => 
-                        new PgColumnDesc("", 0, 0, DataType.LookupByOid(oid), oid, 0, 0, DataFormat.Binary)
-                    ).ToArray();
+                    paramTypes = paramDesc.TypeOids.Select(DataType.LookupByOid).ToArray();
                     break;
 
                 case RowDescriptionResponse rd:
@@ -696,8 +706,8 @@ internal sealed class PgSocketConnection : IAsyncDisposable
 
     private async ValueTask<RowSet> ReceiveQueryResultAsync(CancellationToken cancellationToken)
     {
-        // Initial capacity of 16 to reduce list resizing for typical queries
-        var rows = new List<Row>(16);
+        // Reuse the row buffer - cleared at start, rows copied to array at end
+        _rowBuffer.Clear();
         PgColumnDesc[]? columnDesc = null;
         int rowsAffected = 0;
 
@@ -716,7 +726,7 @@ internal sealed class PgSocketConnection : IAsyncDisposable
                     // Direct decoding path - no intermediate byte[] allocations
                     if (columnDesc is not null)
                     {
-                        rows.Add(new Row(decodedRow.Values, columnDesc));
+                        _rowBuffer.Add(new Row(decodedRow.Values, columnDesc));
                     }
                     break;
 
@@ -725,7 +735,7 @@ internal sealed class PgSocketConnection : IAsyncDisposable
                     if (columnDesc is not null)
                     {
                         var row = DecodeRow(dataRow.Values, columnDesc);
-                        rows.Add(row);
+                        _rowBuffer.Add(row);
                     }
                     break;
 
@@ -738,6 +748,8 @@ internal sealed class PgSocketConnection : IAsyncDisposable
 
                 case ReadyForQueryResponse ready:
                     TransactionStatus = ready.Status;
+                    // Create right-sized array from buffer
+                    var rows = _rowBuffer.Count > 0 ? _rowBuffer.ToArray() : [];
                     return new RowSet(rows, columnDesc ?? [], rowsAffected);
 
                 case ErrorResponse error:
@@ -757,8 +769,8 @@ internal sealed class PgSocketConnection : IAsyncDisposable
 
     private async ValueTask<RowSet> ReceiveExtendedQueryResultAsync(PgColumnDesc[]? rowDesc, CancellationToken cancellationToken)
     {
-        // Initial capacity of 16 to reduce list resizing for typical queries
-        var rows = new List<Row>(16);
+        // Reuse the row buffer - cleared at start, rows copied to array at end
+        _rowBuffer.Clear();
         int rowsAffected = 0;
 
         while (true)
@@ -775,7 +787,7 @@ internal sealed class PgSocketConnection : IAsyncDisposable
                     // Direct decoding path - no intermediate byte[] allocations
                     if (rowDesc is not null)
                     {
-                        rows.Add(new Row(decodedRow.Values, rowDesc));
+                        _rowBuffer.Add(new Row(decodedRow.Values, rowDesc));
                     }
                     break;
 
@@ -784,7 +796,7 @@ internal sealed class PgSocketConnection : IAsyncDisposable
                     if (rowDesc is not null)
                     {
                         var row = DecodeRow(dataRow.Values, rowDesc);
-                        rows.Add(row);
+                        _rowBuffer.Add(row);
                     }
                     break;
 
@@ -800,6 +812,8 @@ internal sealed class PgSocketConnection : IAsyncDisposable
 
                 case ReadyForQueryResponse ready:
                     TransactionStatus = ready.Status;
+                    // Create right-sized array from buffer
+                    var rows = _rowBuffer.Count > 0 ? _rowBuffer.ToArray() : [];
                     return new RowSet(rows, rowDesc ?? [], rowsAffected);
 
                 case ErrorResponse error:
@@ -1184,9 +1198,10 @@ internal sealed class PgSocketConnection : IAsyncDisposable
         await _stream.FlushAsync(cancellationToken);
     }
 
-    private async ValueTask<Response> ReceiveAsync(CancellationToken cancellationToken)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private ValueTask<Response> ReceiveAsync(CancellationToken cancellationToken)
     {
-        return await ReceiveAsync(null, cancellationToken);
+        return ReceiveAsync(null, cancellationToken);
     }
 
     private async ValueTask<Response> ReceiveAsync(PgColumnDesc[]? columnDesc, CancellationToken cancellationToken)
@@ -1205,19 +1220,50 @@ internal sealed class PgSocketConnection : IAsyncDisposable
                 return response!;
             }
 
-            // Need more data - compact buffer if needed
-            if (_receiveBufferOffset > 0)
+            // Need more data - check if we have space to read into
+            int availableSpace = _receiveBuffer.Length - (_receiveBufferOffset + _receiveBufferLength);
+            
+            if (availableSpace == 0)
             {
-                if (_receiveBufferLength > 0)
+                // No space at the end of the buffer
+                if (_receiveBufferOffset > 0)
                 {
+                    // Compact: move unconsumed data to the beginning to free up space
                     Array.Copy(_receiveBuffer, _receiveBufferOffset, _receiveBuffer, 0, _receiveBufferLength);
+                    _receiveBufferOffset = 0;
+                    availableSpace = _receiveBuffer.Length - _receiveBufferLength;
                 }
-                _receiveBufferOffset = 0;
+                else
+                {
+                    // Buffer is truly full (no offset to reclaim), need to grow it
+                    int newSize = _receiveBuffer.Length * 2;
+                    if (newSize > MaxReceiveBufferSize)
+                    {
+                        throw new InvalidOperationException($"Message too large: buffer would exceed {MaxReceiveBufferSize} bytes");
+                    }
+
+                    // Log when we cross the LOH threshold - useful for telemetry to identify
+                    // queries returning unexpectedly large data
+                    if (newSize >= LargeObjectHeapThreshold && _receiveBuffer.Length < LargeObjectHeapThreshold)
+                    {
+                        _logger.LogWarning(
+                            "Receive buffer growing to {NewSize} bytes, exceeding LOH threshold. " +
+                            "Consider reviewing queries that return very large values.",
+                            newSize);
+                    }
+
+                    // Return old buffer to pool and rent a larger one
+                    var oldBuffer = _receiveBuffer;
+                    _receiveBuffer = ArrayPool<byte>.Shared.Rent(newSize);
+                    Array.Copy(oldBuffer, 0, _receiveBuffer, 0, _receiveBufferLength);
+                    ArrayPool<byte>.Shared.Return(oldBuffer);
+                    availableSpace = _receiveBuffer.Length - _receiveBufferLength;
+                }
             }
 
-            // Read more data
+            // Read more data at the end of the buffer (after offset + length)
             int bytesRead = await _stream.ReadAsync(
-                _receiveBuffer.AsMemory(_receiveBufferLength),
+                _receiveBuffer.AsMemory(_receiveBufferOffset + _receiveBufferLength, availableSpace),
                 cancellationToken
             );
 

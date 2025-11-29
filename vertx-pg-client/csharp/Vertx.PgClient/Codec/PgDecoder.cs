@@ -328,7 +328,6 @@ internal sealed class PgDecoder
                 tableOid,
                 columnIndex,
                 DataType.LookupByOid(typeOid),
-                typeOid,
                 typeSize,
                 typeModifier,
                 (DataFormat)formatCode

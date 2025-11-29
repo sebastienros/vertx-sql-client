@@ -11,7 +11,7 @@ namespace Vertx.PgClient;
 internal sealed class CachedPreparedStatement
 {
     public required byte[] StatementName { get; init; }
-    public required PgColumnDesc[]? ParameterTypes { get; init; }
+    public required DataType[]? ParameterTypes { get; init; }
     public required PgColumnDesc[]? RowDescription { get; init; }
 }
 

@@ -53,12 +53,12 @@ public interface IRow
 public sealed class PgRow : IRow, ITuple
 {
     private readonly PgValue[] _values;
-    private readonly PgRowDescriptor _descriptor;
+    private readonly PgColumnDesc[] _descriptor;
 
-    internal PgRow(PgRowDescriptor descriptor)
+    internal PgRow(PgColumnDesc[] descriptor)
     {
         _descriptor = descriptor;
-        _values = new PgValue[descriptor.Columns.Length];
+        _values = new PgValue[descriptor.Length];
     }
 
     public int Size => _values.Length;
@@ -70,13 +70,13 @@ public sealed class PgRow : IRow, ITuple
 
     internal void SetValue(int position, PgValue value) => _values[position] = value;
 
-    public string GetColumnName(int position) => _descriptor.Columns[position].Name;
+    public string GetColumnName(int position) => _descriptor[position].Name;
 
     public int GetColumnIndex(string name)
     {
-        for (int i = 0; i < _descriptor.Columns.Length; i++)
+        for (int i = 0; i < _descriptor.Length; i++)
         {
-            if (string.Equals(_descriptor.Columns[i].Name, name, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(_descriptor[i].Name, name, StringComparison.OrdinalIgnoreCase))
             {
                 return i;
             }
@@ -107,23 +107,4 @@ public sealed class PgRow : IRow, ITuple
     }
 
     public bool Has(string name) => GetColumnIndex(name) >= 0;
-}
-
-/// <summary>
-/// Row descriptor containing column information.
-/// </summary>
-public sealed class PgRowDescriptor
-{
-    public static readonly PgRowDescriptor Empty = new(PgColumnDesc.EmptyColumns);
-
-    public PgColumnDesc[] Columns { get; }
-
-    public PgRowDescriptor(PgColumnDesc[] columns)
-    {
-        Columns = columns;
-    }
-
-    public int ColumnCount => Columns.Length;
-
-    public string? GetColumnName(int index) => index >= 0 && index < Columns.Length ? Columns[index].Name : null;
 }

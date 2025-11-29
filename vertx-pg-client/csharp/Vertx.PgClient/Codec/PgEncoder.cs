@@ -156,7 +156,7 @@ internal sealed class PgEncoder
         SetInt32(lengthPos, _position - lengthPos);
     }
 
-    public void WriteBind(ReadOnlySpan<byte> statementName, string portal, ITuple? parameters, PgColumnDesc[]? parameterTypes)
+    public void WriteBind(ReadOnlySpan<byte> statementName, string portal, ITuple? parameters, DataType[]? parameterTypes)
     {
         WriteByte(PgProtocolConstants.Bind);
         var lengthPos = _position;
@@ -189,7 +189,7 @@ internal sealed class PgEncoder
             else
             {
                 var dataType = parameterTypes is not null && i < parameterTypes.Length
-                    ? parameterTypes[i].DataType
+                    ? parameterTypes[i]
                     : value.DataType;
 
                 // Write value with length prefix
