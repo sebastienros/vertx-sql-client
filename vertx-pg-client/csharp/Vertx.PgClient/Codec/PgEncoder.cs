@@ -156,7 +156,7 @@ internal sealed class PgEncoder
         SetInt32(lengthPos, _position - lengthPos);
     }
 
-    public void WriteBind(ReadOnlySpan<byte> statementName, string portal, ITuple? parameters, DataType[]? parameterTypes)
+    public void WriteBind(ReadOnlySpan<byte> statementName, string portal, Tuple? parameters, DataType[]? parameterTypes)
     {
         WriteByte(PgProtocolConstants.Bind);
         var lengthPos = _position;
@@ -181,7 +181,7 @@ internal sealed class PgEncoder
         WriteInt16((short)paramCount);
         for (int i = 0; i < paramCount; i++)
         {
-            var value = parameters!.GetValue(i);
+            var value = parameters![i];
             if (value.IsNull)
             {
                 WriteInt32(-1); // NULL

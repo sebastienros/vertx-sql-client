@@ -115,7 +115,7 @@ public sealed class PgPool : IAsyncDisposable
     /// When pipelining is enabled, uses multiplexed connections for better throughput.
     /// The connection is automatically returned to the pool after the query completes.
     /// </summary>
-    public async Task<RowSet> PreparedQueryAsync(string sql, ITuple? parameters = null, CancellationToken cancellationToken = default)
+    public async Task<RowSet> PreparedQueryAsync(string sql, Tuple? parameters = null, CancellationToken cancellationToken = default)
     {
         if (_poolOptions.Pipelined)
         {
@@ -642,7 +642,7 @@ public interface IPooledConnection : IAsyncDisposable
     /// <summary>
     /// Executes a prepared query with parameters.
     /// </summary>
-    ValueTask<RowSet> PreparedQueryAsync(string sql, ITuple? parameters = null, CancellationToken cancellationToken = default);
+    ValueTask<RowSet> PreparedQueryAsync(string sql, Tuple? parameters = null, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Executes multiple queries in a pipelined fashion.
@@ -712,7 +712,7 @@ internal sealed class PooledConnection : IPooledConnection
         }
     }
 
-    public async ValueTask<RowSet> PreparedQueryAsync(string sql, ITuple? parameters = null, CancellationToken cancellationToken = default)
+    public async ValueTask<RowSet> PreparedQueryAsync(string sql, Tuple? parameters = null, CancellationToken cancellationToken = default)
     {
         await _commandLock.WaitAsync(cancellationToken);
         try

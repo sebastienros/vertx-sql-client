@@ -53,7 +53,7 @@ public interface IPgConnection : IAsyncDisposable
     /// <summary>
     /// Executes a prepared query with parameters.
     /// </summary>
-    ValueTask<RowSet> PreparedQueryAsync(string sql, ITuple? parameters = null, CancellationToken cancellationToken = default);
+    ValueTask<RowSet> PreparedQueryAsync(string sql, Tuple? parameters = null, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Executes a simple query and returns a streaming reader for the results.
@@ -67,7 +67,7 @@ public interface IPgConnection : IAsyncDisposable
     /// Unlike PreparedQueryAsync, this does not buffer all rows in memory.
     /// Similar to ADO.NET's ExecuteReaderAsync.
     /// </summary>
-    ValueTask<PgDataReader> ExecuteReaderAsync(string sql, ITuple? parameters, CancellationToken cancellationToken = default);
+    ValueTask<PgDataReader> ExecuteReaderAsync(string sql, Tuple? parameters, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Executes multiple queries in a pipelined fashion.
@@ -288,7 +288,7 @@ public sealed class PgConnection : IPgConnection
     }
 
     /// <inheritdoc/>
-    public async ValueTask<RowSet> PreparedQueryAsync(string sql, ITuple? parameters = null, CancellationToken cancellationToken = default)
+    public async ValueTask<RowSet> PreparedQueryAsync(string sql, Tuple? parameters = null, CancellationToken cancellationToken = default)
     {
         if (_socket is null || !IsOpen)
             throw new InvalidOperationException("Connection is not open");
@@ -306,7 +306,7 @@ public sealed class PgConnection : IPgConnection
     }
 
     /// <inheritdoc/>
-    public async ValueTask<PgDataReader> ExecuteReaderAsync(string sql, ITuple? parameters, CancellationToken cancellationToken = default)
+    public async ValueTask<PgDataReader> ExecuteReaderAsync(string sql, Tuple? parameters, CancellationToken cancellationToken = default)
     {
         if (_socket is null || !IsOpen)
             throw new InvalidOperationException("Connection is not open");

@@ -128,7 +128,7 @@ public class PoolTests
         
         var result = await pool.PreparedQueryAsync(
             "SELECT $1::int + $2::int as sum", 
-            Tuple.Of(10, 20));
+            Tuple.Create(10, 20));
         
         Assert.Single(result);
         Assert.Equal(30, result[0].GetValue(0).GetInteger());

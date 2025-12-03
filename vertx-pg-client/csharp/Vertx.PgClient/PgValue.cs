@@ -597,7 +597,7 @@ public readonly struct PgValue
     public DateTimeOffset[]? GetDateTimeOffsetArray() => _objectValue as DateTimeOffset[];
     public DateOnly[]? GetDateOnlyArray() => _objectValue as DateOnly[];
 
-    // ITuple-compatible aliases for array getters
+    // Tuple-compatible aliases for array getters
     public int[]? GetIntegerArray() => GetInt32Array();
     public long[]? GetLongArray() => GetInt64Array();
     public short[]? GetShortArray() => GetInt16Array();
@@ -605,30 +605,30 @@ public readonly struct PgValue
 
     #endregion
 
-    #region ITuple-compatible Aliases
+    #region Tuple-compatible Aliases
 
     /// <summary>
-    /// Alias for GetInt16() to match ITuple interface.
+    /// Alias for GetInt16() to match Tuple interface.
     /// </summary>
     public short GetShort() => GetInt16();
 
     /// <summary>
-    /// Alias for GetInt32() to match ITuple interface.
+    /// Alias for GetInt32() to match Tuple interface.
     /// </summary>
     public int GetInteger() => GetInt32();
 
     /// <summary>
-    /// Alias for GetInt64() to match ITuple interface.
+    /// Alias for GetInt64() to match Tuple interface.
     /// </summary>
     public long GetLong() => GetInt64();
 
     /// <summary>
-    /// Alias for GetDateOnly() to match ITuple interface.
+    /// Alias for GetDateOnly() to match Tuple interface.
     /// </summary>
     public DateOnly GetDate() => GetDateOnly();
 
     /// <summary>
-    /// Alias for GetTimeOnly() to match ITuple interface.
+    /// Alias for GetTimeOnly() to match Tuple interface.
     /// </summary>
     public TimeOnly GetTime() => GetTimeOnly();
 

@@ -121,7 +121,7 @@ internal sealed class MultiplexedConnection : IAsyncDisposable
     /// Uses the extended query protocol with automatic statement caching.
     /// The returned task completes when the query result is available.
     /// </summary>
-    public async Task<RowSet> PreparedQueryAsync(string sql, ITuple? parameters = null, CancellationToken cancellationToken = default)
+    public async Task<RowSet> PreparedQueryAsync(string sql, Tuple? parameters = null, CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 

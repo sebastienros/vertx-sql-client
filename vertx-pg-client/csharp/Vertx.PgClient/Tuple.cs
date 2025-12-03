@@ -4,34 +4,9 @@
 namespace Vertx.PgClient;
 
 /// <summary>
-/// A general purpose tuple containing values.
-/// </summary>
-public interface ITuple
-{
-    /// <summary>
-    /// Gets the value at the specified position.
-    /// </summary>
-    PgValue GetValue(int position);
-
-    /// <summary>
-    /// Gets the number of values in this tuple.
-    /// </summary>
-    int Size { get; }
-}
-
-/// <summary>
-/// Base implementation of ITuple.
-/// </summary>
-public abstract class TupleBase : ITuple
-{
-    public abstract PgValue GetValue(int position);
-    public abstract int Size { get; }
-}
-
-/// <summary>
 /// A mutable tuple for building parameter values.
 /// </summary>
-public sealed class Tuple : TupleBase
+public sealed class Tuple
 {
     private Tuple()
     {
@@ -45,9 +20,7 @@ public sealed class Tuple : TupleBase
 
     private readonly List<PgValue> _values;
 
-    public override int Size => _values.Count;
-
-    public override PgValue GetValue(int position) => _values[position];
+    public int Size => _values.Count;
 
     public Tuple AddValue<T>(T? value)
     {
@@ -61,27 +34,41 @@ public sealed class Tuple : TupleBase
         return this;
     }
 
-    public Tuple SetValue<T>(int position, T? value)
+    public PgValue this[int position] 
     {
-        while (_values.Count <= position)
+        get
         {
-            _values.Add(PgValue.Null);
+            ArgumentOutOfRangeException.ThrowIfNegative(position, nameof(position));
+            
+            if (position >= _values.Count)
+            {
+                return PgValue.Null;
+            }
+
+            return _values[position];
         }
-        _values[position] = PgValue.From(value);
-        return this;
+
+        set
+        {
+            ArgumentOutOfRangeException.ThrowIfNegative(position, nameof(position));
+
+            if (position >= _values.Count)
+            {
+                while (_values.Count <= position)
+                {
+                    _values.Add(PgValue.Null);
+                }
+            }
+            _values[position] = value;
+        }
     }
 
-    public Tuple SetValue(int position, PgValue value)
+    public static Tuple Create(params IEnumerable<PgValue> values)
     {
-        while (_values.Count <= position)
-        {
-            _values.Add(PgValue.Null);
-        }
-        _values[position] = value;
-        return this;
+        return new Tuple([.. values]);
     }
 
-    public static Tuple Of(params object?[] values)
+    public static Tuple Create(params IEnumerable<object?> values)
     {
         var tuple = new Tuple();
         foreach (var value in values)
@@ -91,35 +78,8 @@ public sealed class Tuple : TupleBase
         return tuple;
     }
 
-    public static Tuple Create() => new();
-
-    public static Tuple Create<T>(T? value1)
+    public static Tuple Create<T>(T? value)
     {
-        return new Tuple([PgValue.From(value1)]);
-    }
-
-    public static Tuple Create(object? value1, object? value2)
-    {
-        return new Tuple([PgValue.From(value1), PgValue.From(value2)]);
-    }
-
-    public static Tuple Create(object? value1, object? value2, object? value3)
-    {
-        return new Tuple([PgValue.From(value1), PgValue.From(value2), PgValue.From(value3)]);
-    }
-
-    public static Tuple Create(object? value1, object? value2, object? value3, object? value4)
-    {
-        return new Tuple([PgValue.From(value1), PgValue.From(value2), PgValue.From(value3), PgValue.From(value4)]);
-    }
-
-    public static Tuple Create(object? value1, object? value2, object? value3, object? value4, object? value5)
-    {
-        return new Tuple([PgValue.From(value1), PgValue.From(value2), PgValue.From(value3), PgValue.From(value4), PgValue.From(value5)]);
-    }
-
-    public static Tuple Create(object? value1, object? value2, object? value3, object? value4, object? value5, object? value6)
-    {
-        return new Tuple([PgValue.From(value1), PgValue.From(value2), PgValue.From(value3), PgValue.From(value4), PgValue.From(value5), PgValue.From(value6)]);
+        return new Tuple([PgValue.From(value)]);
     }
 }

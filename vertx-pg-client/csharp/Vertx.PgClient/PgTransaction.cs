@@ -51,7 +51,7 @@ public interface IPgTransaction : IAsyncDisposable
     /// <summary>
     /// Executes a prepared query with parameters within this transaction.
     /// </summary>
-    ValueTask<RowSet> PreparedQueryAsync(string sql, ITuple? parameters = null, CancellationToken cancellationToken = default);
+    ValueTask<RowSet> PreparedQueryAsync(string sql, Tuple? parameters = null, CancellationToken cancellationToken = default);
 }
 
 /// <summary>
@@ -223,7 +223,7 @@ internal sealed class PgTransaction : IPgTransaction
     }
 
     /// <inheritdoc/>
-    public ValueTask<RowSet> PreparedQueryAsync(string sql, ITuple? parameters = null, CancellationToken cancellationToken = default)
+    public ValueTask<RowSet> PreparedQueryAsync(string sql, Tuple? parameters = null, CancellationToken cancellationToken = default)
     {
         ThrowIfNotActive();
         return _connection.PreparedQueryAsync(sql, parameters, cancellationToken);
@@ -342,7 +342,7 @@ internal sealed class PooledConnectionTransaction : IPgTransaction
     }
 
     /// <inheritdoc/>
-    public ValueTask<RowSet> PreparedQueryAsync(string sql, ITuple? parameters = null, CancellationToken cancellationToken = default)
+    public ValueTask<RowSet> PreparedQueryAsync(string sql, Tuple? parameters = null, CancellationToken cancellationToken = default)
     {
         ThrowIfNotActive();
         return _connection.PreparedQueryAsync(sql, parameters, cancellationToken);
@@ -450,7 +450,7 @@ internal sealed class PooledTransaction : IPooledTransaction
     }
 
     /// <inheritdoc/>
-    public ValueTask<RowSet> PreparedQueryAsync(string sql, ITuple? parameters = null, CancellationToken cancellationToken = default)
+    public ValueTask<RowSet> PreparedQueryAsync(string sql, Tuple? parameters = null, CancellationToken cancellationToken = default)
     {
         return _transaction.PreparedQueryAsync(sql, parameters, cancellationToken);
     }

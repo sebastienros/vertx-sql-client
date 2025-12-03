@@ -139,7 +139,7 @@ internal sealed class SimpleQueryCommand : PgCommand
 internal sealed class PreparedQueryCommand : PgCommand
 {
     private readonly string _sql;
-    private readonly ITuple? _parameters;
+    private readonly Tuple? _parameters;
     private readonly PreparedStatementCache? _cache;
     private readonly TaskCompletionSource<RowSet> _tcs;
     private readonly List<Row> _rows = new();
@@ -159,7 +159,7 @@ internal sealed class PreparedQueryCommand : PgCommand
         BindExecute     // Waiting for BindComplete, DataRows, CommandComplete, ReadyForQuery
     }
 
-    public PreparedQueryCommand(string sql, ITuple? parameters, PreparedStatementCache? cache)
+    public PreparedQueryCommand(string sql, Tuple? parameters, PreparedStatementCache? cache)
     {
         _sql = sql;
         _parameters = parameters;

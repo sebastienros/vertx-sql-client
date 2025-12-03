@@ -432,7 +432,7 @@ internal sealed class PgSocketConnection : IAsyncDisposable
     /// <summary>
     /// Executes a prepared query with parameters and returns a streaming reader for the results.
     /// </summary>
-    public async ValueTask<PgDataReader> ExecuteReaderAsync(string sql, ITuple? parameters, CancellationToken cancellationToken = default)
+    public async ValueTask<PgDataReader> ExecuteReaderAsync(string sql, Tuple? parameters, CancellationToken cancellationToken = default)
     {
         // Check if we have a cached statement
         if (_preparedStatementCache is not null && _preparedStatementCache.TryGet(sql, out var cached))
@@ -541,7 +541,7 @@ internal sealed class PgSocketConnection : IAsyncDisposable
 
     private async ValueTask<PgDataReader> ExecuteReaderCachedStatementAsync(
         CachedPreparedStatement cached,
-        ITuple? parameters,
+        Tuple? parameters,
         CancellationToken cancellationToken)
     {
         _encoder.Reset();
@@ -571,7 +571,7 @@ internal sealed class PgSocketConnection : IAsyncDisposable
         );
     }
 
-    public async ValueTask<RowSet> PreparedQueryAsync(string sql, ITuple? parameters, CancellationToken cancellationToken = default)
+    public async ValueTask<RowSet> PreparedQueryAsync(string sql, Tuple? parameters, CancellationToken cancellationToken = default)
     {
         // Check if we have a cached statement
         if (_preparedStatementCache is not null && _preparedStatementCache.TryGet(sql, out var cached))
@@ -685,7 +685,7 @@ internal sealed class PgSocketConnection : IAsyncDisposable
 
     private async ValueTask<RowSet> ExecuteCachedStatementAsync(
         CachedPreparedStatement cached, 
-        ITuple? parameters, 
+        Tuple? parameters, 
         CancellationToken cancellationToken)
     {
         _encoder.Reset();

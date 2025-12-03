@@ -199,7 +199,7 @@ public class ArrayTypeTests : IClassFixture<PostgresFixture>
         var inputArray = new[] { 10, 20, 30, 40, 50 };
         await connection.PreparedQueryAsync(
             "INSERT INTO test_array (values) VALUES ($1)",
-            Tuple.Of(inputArray));
+            Tuple.Create(inputArray));
         
         // Select back
         var result = await connection.QueryAsync("SELECT values FROM test_array");
@@ -243,7 +243,7 @@ public class ArrayTypeTests : IClassFixture<PostgresFixture>
         var inputArray = new[] { true, false, true, false };
         await connection.PreparedQueryAsync(
             "INSERT INTO test_bool_array (values) VALUES ($1)",
-            Tuple.Of(inputArray));
+            Tuple.Create(inputArray));
         
         // Select back
         var result = await connection.QueryAsync("SELECT values FROM test_bool_array");
@@ -265,7 +265,7 @@ public class ArrayTypeTests : IClassFixture<PostgresFixture>
         var inputArray = new[] { 1.1, 2.2, 3.3, 4.4 };
         await connection.PreparedQueryAsync(
             "INSERT INTO test_double_array (values) VALUES ($1)",
-            Tuple.Of(inputArray));
+            Tuple.Create(inputArray));
         
         // Select back
         var result = await connection.QueryAsync("SELECT values FROM test_double_array");
@@ -287,7 +287,7 @@ public class ArrayTypeTests : IClassFixture<PostgresFixture>
         var inputArray = new[] { Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid() };
         await connection.PreparedQueryAsync(
             "INSERT INTO test_uuid_array (values) VALUES ($1)",
-            Tuple.Of(inputArray));
+            Tuple.Create(inputArray));
         
         // Select back
         var result = await connection.QueryAsync("SELECT values FROM test_uuid_array");
@@ -309,7 +309,7 @@ public class ArrayTypeTests : IClassFixture<PostgresFixture>
         var inputArray = new[] { new DateOnly(2023, 1, 1), new DateOnly(2023, 6, 15), new DateOnly(2023, 12, 31) };
         await connection.PreparedQueryAsync(
             "INSERT INTO test_date_array (values) VALUES ($1)",
-            Tuple.Of(inputArray));
+            Tuple.Create(inputArray));
         
         // Select back
         var result = await connection.QueryAsync("SELECT values FROM test_date_array");
@@ -346,7 +346,7 @@ public class ArrayTypeTests : IClassFixture<PostgresFixture>
         var searchValues = new[] { 2, 4 };
         var result = await connection.PreparedQueryAsync(
             "SELECT value FROM test_any WHERE value = ANY($1) ORDER BY value",
-            Tuple.Of(searchValues));
+            Tuple.Create(searchValues));
         
         Assert.Equal(2, result.Count);
         Assert.Equal(2, result[0].GetValue(0).GetInteger());
@@ -361,7 +361,7 @@ public class ArrayTypeTests : IClassFixture<PostgresFixture>
         var inputArray = new[] { 10, 20, 30 };
         var result = await connection.PreparedQueryAsync(
             "SELECT unnest($1::int[]) AS value",
-            Tuple.Of(inputArray));
+            Tuple.Create(inputArray));
         
         Assert.Equal(3, result.Count);
         Assert.Equal(10, result[0].GetValue(0).GetInteger());

@@ -50,7 +50,7 @@ public interface IRow
 /// <summary>
 /// PostgreSQL row implementation using PgValue for no-boxing storage.
 /// </summary>
-public sealed class PgRow : IRow, ITuple
+public sealed class PgRow : IRow
 {
     private readonly PgValue[] _values;
     private readonly PgColumnDesc[] _descriptor;
