@@ -441,72 +441,6 @@ public sealed class PgPool : IAsyncDisposable
         }
     }
 
-    private async ValueTask<PooledConnection> AcquireForPipeliningAsync(CancellationToken cancellationToken)
-    {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-
-        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _disposeCts.Token);
-        var linkedToken = linkedCts.Token;
-
-        await _poolLock.WaitAsync(linkedToken);
-        try
-        {
-            // Find the connection with the most available pipeline capacity
-            PooledConnection? best = null;
-            int bestAvailable = 0;
-
-            foreach (var conn in _connections)
-            {
-                int available = conn.AvailablePipelineSlots;
-                if (available > bestAvailable)
-                {
-                    best = conn;
-                    bestAvailable = available;
-                }
-            }
-
-            // If we found a connection with capacity, use it
-            if (best is not null && bestAvailable > 0)
-            {
-                best.IncrementInflight();
-                return best;
-            }
-
-            // Can we create a new connection?
-            if (_connections.Count < _poolOptions.MaxSize)
-            {
-                var socket = new PgSocketConnection(_connectOptions, _logger);
-                await socket.ConnectAsync(linkedToken);
-                
-                var pooled = new PooledConnection(this, socket);
-                pooled.IncrementInflight();
-                _connections.Add(pooled);
-
-                if (_logger.IsEnabled(LogLevel.Debug))
-                {
-                    _logger.LogDebug("Created new connection for pipelining. Pool size: {Size}/{MaxSize}",
-                        _connections.Count, _poolOptions.MaxSize);
-                }
-
-                return pooled;
-            }
-
-            // All connections are at capacity, wait for one with the most capacity
-            // For now, just use the one with most capacity (even if 0)
-            if (best is not null)
-            {
-                best.IncrementInflight();
-                return best;
-            }
-
-            throw new InvalidOperationException("No connections available");
-        }
-        finally
-        {
-            _poolLock.Release();
-        }
-    }
-
     private void Release(PooledConnection connection)
     {
         connection.Release();
@@ -528,11 +462,6 @@ public sealed class PgPool : IAsyncDisposable
     internal void ReleasePooledConnection(PooledConnection connection)
     {
         Release(connection);
-    }
-
-    private void ReleaseFromPipelining(PooledConnection connection)
-    {
-        connection.DecrementInflight();
     }
 
     internal void RemoveConnection(PooledConnection connection)
@@ -664,14 +593,9 @@ internal sealed class PooledConnection : IPooledConnection
     private readonly PgSocketConnection _socket;
     private readonly SemaphoreSlim _commandLock = new(1, 1);
     private int _acquired; // 0 = idle, 1 = acquired for exclusive use
-    private int _inflight; // Number of pipelined commands in flight
     private bool _disposed;
 
     public bool IsValid => _socket.IsConnected && !_disposed;
-
-    public int PipeliningLimit => _socket.PipeliningLimit;
-
-    public int AvailablePipelineSlots => Math.Max(0, PipeliningLimit - _inflight);
 
     internal PooledConnection(PgPool pool, PgSocketConnection socket)
     {
@@ -687,16 +611,6 @@ internal sealed class PooledConnection : IPooledConnection
     internal void Release()
     {
         Interlocked.Exchange(ref _acquired, 0);
-    }
-
-    internal void IncrementInflight()
-    {
-        Interlocked.Increment(ref _inflight);
-    }
-
-    internal void DecrementInflight()
-    {
-        Interlocked.Decrement(ref _inflight);
     }
 
     public async ValueTask<RowSet> QueryAsync(string sql, CancellationToken cancellationToken = default)

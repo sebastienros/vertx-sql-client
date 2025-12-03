@@ -150,6 +150,7 @@ internal sealed class MultiplexedConnection : IAsyncDisposable
         
         try
         {
+            // Wait for data to be available
             while (await _commandChannel.Reader.WaitToReadAsync(_disposeCts.Token))
             {
                 batch.Clear();
