@@ -499,7 +499,6 @@ public class PoolTests
                 int pid = producerId; // Capture for closure
                 var producerTask = Task.Run(async () =>
                 {
-                    var tasks = new List<Task>();
                     for (int seq = 0; seq < queriesPerProducer; seq++)
                     {
                         int s = seq; // Capture for closure
@@ -518,9 +517,9 @@ public class PoolTests
                                 Interlocked.Increment(ref completedQueries[pid]);
                             }
                         });
-                        tasks.Add(queryTask);
+
+                        await queryTask;
                     }
-                    await Task.WhenAll(tasks);
                 });
                 allTasks.Add(producerTask);
             }

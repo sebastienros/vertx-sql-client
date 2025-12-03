@@ -17,17 +17,23 @@ public class NpgsqlThroughputBenchmarks
     private PostgresFixture _fixture = null!;
     private NpgsqlDataSource _dataSource = null!;
 
+    // Number of connections in the pool
+    private int Connections;
     private const int DurationSeconds = 10;
-    private const int ConcurrencyLevel = 64;
+    private int ConcurrencyLevel;
 
     [GlobalSetup]
     public async Task Setup()
     {
+        var processorCount = Environment.ProcessorCount;
+        Connections =  processorCount;
+        ConcurrencyLevel = processorCount * 16;
+
         _fixture = new PostgresFixture();
         await _fixture.InitializeAsync();
 
         // Configure connection string with pool size
-        var connectionString = _fixture.ConnectionString + ";Maximum Pool Size=16";
+        var connectionString = _fixture.ConnectionString + $";Maximum Pool Size={Connections}";
         _dataSource = NpgsqlDataSource.Create(connectionString);
 
         // Warmup: run a few queries to establish connections
@@ -50,7 +56,7 @@ public class NpgsqlThroughputBenchmarks
     /// Measures queries per second for fortune queries over 5 seconds using Npgsql.
     /// Maintains a fixed concurrency level by immediately starting a new query when one completes.
     /// </summary>
-    [Benchmark(Description = "Npgsql: fortunes throughput (5s)")]
+    [Benchmark(Description = "Npgsql: fortunes throughput")]
     public async Task<double> NpgsqlFortunesThroughput()
     {
         long completedQueries = 0;
@@ -58,19 +64,16 @@ public class NpgsqlThroughputBenchmarks
         var token = cts.Token;
 
         // Use a semaphore to maintain fixed concurrency
-        var semaphore = new SemaphoreSlim(ConcurrencyLevel, ConcurrencyLevel);
         var tasks = new List<Task>();
         var stopwatch = Stopwatch.StartNew();
 
-        try
+        for (int i = 0; i < ConcurrencyLevel; i++)
         {
-            while (!token.IsCancellationRequested)
+            var task = Task.Run(async () =>
             {
-                await semaphore.WaitAsync(token);
-
-                var task = Task.Run(async () =>
+                try
                 {
-                    try
+                    while (!token.IsCancellationRequested)
                     {
                         await using var cmd = _dataSource.CreateCommand("SELECT id, message FROM fortune");
                         await using var reader = await cmd.ExecuteReaderAsync();
@@ -81,18 +84,14 @@ public class NpgsqlThroughputBenchmarks
                         }
                         Interlocked.Increment(ref completedQueries);
                     }
-                    finally
-                    {
-                        semaphore.Release();
-                    }
-                }, CancellationToken.None);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Expected when duration expires
+                }
+            }, CancellationToken.None);
 
-                tasks.Add(task);
-            }
-        }
-        catch (OperationCanceledException)
-        {
-            // Expected when duration expires
+            tasks.Add(task);
         }
 
         // Wait for all in-flight queries to complete

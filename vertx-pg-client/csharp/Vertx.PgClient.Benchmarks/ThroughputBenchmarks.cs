@@ -33,19 +33,20 @@ public class ThroughputBenchmarks
         // Start with the number of connections the server can sustain:
         var processorCount = Environment.ProcessorCount;
         Connections =  processorCount;
-        ConcurrencyLevel = processorCount * 4;
-        PipeliningFactor = processorCount * 2;
+        ConcurrencyLevel = processorCount * 16;
+        PipeliningFactor = 256;
 
         _fixture = new PostgresFixture();
         await _fixture.InitializeAsync();
 
         var options = _fixture.CreateConnectOptions()
-            .SetCachePreparedStatements(true);
+            .SetCachePreparedStatements(true)
+            .SetPipeliningLimit(PipeliningFactor);
 
         _pool = PgPool.Create(options, new PgPoolOptions
         {
             MaxSize = Connections,
-            Pipelined = true
+            Pipelined = true,
         });
 
         // Warmup: run a few queries to establish connections
@@ -66,7 +67,7 @@ public class ThroughputBenchmarks
     /// Measures queries per second for pipelined fortune queries over 5 seconds.
     /// Maintains a fixed concurrency level by immediately starting a new query when one completes.
     /// </summary>
-    [Benchmark(Description = "Pipelined fortunes throughput (5s)")]
+    [Benchmark(Description = "Pipelined fortunes throughput")]
     public async Task<double> PipelinedFortunesThroughput()
     {
         long completedQueries = 0;
@@ -84,7 +85,12 @@ public class ThroughputBenchmarks
                 {
                     while (!token.IsCancellationRequested)
                     {
-                        await _pool.QueryAsync("SELECT id, message FROM fortune");
+                        var result =await _pool.QueryAsync("SELECT id, message FROM fortune");
+                        foreach (var row in result)
+                        {
+                            _ = row.GetValue(0).GetInteger();
+                            _ = row.GetValue(1).GetString();
+                        }
                         Interlocked.Increment(ref completedQueries);
                     }
                 }

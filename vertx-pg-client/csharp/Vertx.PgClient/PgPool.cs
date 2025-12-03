@@ -19,7 +19,7 @@ public sealed class PgPool : IAsyncDisposable
     private readonly ILogger _logger;
     private readonly SemaphoreSlim _poolLock = new(1, 1);
     private readonly List<PooledConnection> _connections = new();
-    private readonly List<MultiplexedConnection> _multiplexedConnections = new();
+    private List<MultiplexedConnection> _multiplexedConnections = new();
     private readonly ConcurrentQueue<PendingRequest> _waitQueue = new();
     private readonly SemaphoreSlim _multiplexedAvailable = new(0);
     private readonly CancellationTokenSource _disposeCts = new();
@@ -86,17 +86,7 @@ public sealed class PgPool : IAsyncDisposable
         if (_poolOptions.Pipelined)
         {
             var connection = await AcquireMultiplexedAsync(cancellationToken);
-            try
-            {
-                return await connection.QueryAsync(sql, cancellationToken);
-            }
-            finally
-            {
-                if (!_disposed)
-                {
-                    _multiplexedAvailable.Release();
-                }
-            }
+            return await connection.QueryAsync(sql, cancellationToken);
         }
 
         var pooled = await AcquireAsync(cancellationToken);
@@ -120,17 +110,7 @@ public sealed class PgPool : IAsyncDisposable
         if (_poolOptions.Pipelined)
         {
             var connection = await AcquireMultiplexedAsync(cancellationToken);
-            try
-            {
-                return await connection.PreparedQueryAsync(sql, parameters, cancellationToken);
-            }
-            finally
-            {
-                if (!_disposed)
-                {
-                    _multiplexedAvailable.Release();
-                }
-            }
+            return await connection.PreparedQueryAsync(sql, parameters, cancellationToken);
         }
 
         var pooled = await AcquireAsync(cancellationToken);
@@ -278,66 +258,83 @@ public sealed class PgPool : IAsyncDisposable
         {
             linkedToken.ThrowIfCancellationRequested();
 
-            await _poolLock.WaitAsync(linkedToken);
-            try
+            // Find the connection with the most available slots
+            MultiplexedConnection? best = null;
+            int bestAvailable = 0;
+
+            var multiplexedConnections = _multiplexedConnections;
+            foreach (var conn in multiplexedConnections)
             {
-                // Find the connection with the most available slots
-                MultiplexedConnection? best = null;
-                int bestAvailable = 0;
+                if (!conn.IsConnected)
+                    continue;
 
-                foreach (var conn in _multiplexedConnections)
+                int available = conn.AvailableSlots;
+
+                // Can't do better than this, there is an idle connection
+                if (available == conn.PipeliningLimit)
                 {
-                    if (!conn.IsConnected)
-                        continue;
-
-                    int available = conn.AvailableSlots;
-                    if (available > bestAvailable)
-                    {
-                        best = conn;
-                        bestAvailable = available;
-                    }
+                    return conn;
                 }
 
-                // If we found a connection with capacity, use it
-                if (best is not null && bestAvailable > 0)
+                if (available > bestAvailable)
                 {
-                    return best;
+                    best = conn;
+                    bestAvailable = available;
                 }
-
-                // Can we create a new multiplexed connection?
-                int totalConnections = _connections.Count + _multiplexedConnections.Count;
-                if (totalConnections < _poolOptions.MaxSize)
-                {
-                    var connection = await MultiplexedConnection.CreateAsync(_connectOptions, _logger, linkedToken);
-                    _multiplexedConnections.Add(connection);
-
-                    if (_logger.IsEnabled(LogLevel.Debug))
-                    {
-                        _logger.LogDebug("Created new multiplexed connection. Total connections: {Size}/{MaxSize}",
-                            totalConnections + 1, _poolOptions.MaxSize);
-                    }
-
-                    return connection;
-                }
-
-                // All connections are at capacity - use the one with most capacity anyway
-                // (it will queue the command)
-                if (best is not null)
-                {
-                    if (_logger.IsEnabled(LogLevel.Debug))
-                    {
-                        _logger.LogDebug("Pool saturated: all {ConnectionCount} connections at capacity, queuing on connection with {AvailableSlots} available slots",
-                            _multiplexedConnections.Count, best.AvailableSlots);
-                    }
-                    return best;
-                }
-
-                // No multiplexed connections available - wait for a slot to become available
             }
-            finally
+            
+            if (multiplexedConnections.Count < _poolOptions.MaxSize)
             {
-                _poolLock.Release();
+                // We didn't find an idle connection, can we create a new multiplexed connection?
+                await _poolLock.WaitAsync(linkedToken);
+                try
+                {
+                    if (_multiplexedConnections.Count < _poolOptions.MaxSize)
+                    {
+                        var connection = await MultiplexedConnection.CreateAsync(_connectOptions, _logger, linkedToken);
+                        
+                        connection.AvailableWorker = () =>
+                        {
+                            _multiplexedAvailable.Release();
+                            return Task.CompletedTask;
+                        };
+
+                        // Clone the list to avoid threading issues
+                        _multiplexedConnections = _multiplexedConnections.ToList();
+                        _multiplexedConnections.Add(connection);
+
+                        if (_logger.IsEnabled(LogLevel.Debug))
+                        {
+                            _logger.LogDebug("Created new multiplexed connection. Total connections: {Size}/{MaxSize}",
+                                _multiplexedConnections.Count, _poolOptions.MaxSize);
+                        }
+
+                        return connection;
+                    }
+                }
+                finally
+                {
+                    _poolLock.Release();
+                }
             }
+            
+            // The pool is full, use the best available connection
+            if (best is not null)
+            {
+                return best;
+            }
+
+            // Pool is saturated (all connections at capacity)
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Pool saturated: all {ConnectionCount} connections at capacity, queuing on connection with less back pressure",
+                    _multiplexedConnections.Count);
+            }
+
+            // We could return a random connection to spread the load
+            // but instead we wait for a connection to release some commands
+            // so the connection timeout has some meaning, otherwise we always get a connection immediately
+            // return _multiplexedConnections[new Random().Next(_multiplexedConnections.Count)];
 
             // Pool is exhausted, wait for a multiplexed slot to become available
             using var timeoutCts = new CancellationTokenSource(TimeSpan.FromMilliseconds(_poolOptions.ConnectionTimeout));

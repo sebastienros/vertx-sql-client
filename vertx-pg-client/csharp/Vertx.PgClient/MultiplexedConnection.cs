@@ -15,6 +15,9 @@ namespace Vertx.PgClient;
 /// </summary>
 internal sealed class MultiplexedConnection : IAsyncDisposable
 {
+    private static int _connectionCounter;
+
+    private readonly int _connectionId;
     private readonly PgSocketConnection _socket;
     private readonly ILogger _logger;
     private readonly Channel<PgCommand> _commandChannel;
@@ -27,6 +30,11 @@ internal sealed class MultiplexedConnection : IAsyncDisposable
     private bool _disposed;
 
     /// <summary>
+    /// Gets a function that is called when a worker thread becomes available.
+    /// </summary>
+    public Func<Task> AvailableWorker { get; set; } = () => Task.CompletedTask;
+
+    /// <summary>
     /// Gets the pipelining limit for this connection.
     /// </summary>
     public int PipeliningLimit => _socket.PipeliningLimit;
@@ -34,16 +42,7 @@ internal sealed class MultiplexedConnection : IAsyncDisposable
     /// <summary>
     /// Gets the current number of inflight commands.
     /// </summary>
-    public int InflightCount
-    {
-        get
-        {
-            lock (_inflight)
-            {
-                return _inflight.Count;
-            }
-        }
-    }
+    public int InflightCount { get; private set; }
 
     /// <summary>
     /// Gets the number of available pipeline slots.
@@ -57,6 +56,7 @@ internal sealed class MultiplexedConnection : IAsyncDisposable
 
     private MultiplexedConnection(PgSocketConnection socket, ILogger? logger, PreparedStatementCache? cache)
     {
+        _connectionId = Interlocked.Increment(ref _connectionCounter);
         _socket = socket;
         _logger = logger ?? NullLogger.Instance;
         _preparedStatementCache = cache;
@@ -146,6 +146,7 @@ internal sealed class MultiplexedConnection : IAsyncDisposable
     /// </summary>
     private async Task CommandSenderAsync()
     {
+        // The task is long running so this instance is reused to avoid allocations
         var batch = new List<PgCommand>(PipeliningLimit);
         
         try
@@ -161,6 +162,8 @@ internal sealed class MultiplexedConnection : IAsyncDisposable
                     batch.Add(command);
                 }
                 
+                await AvailableWorker.Invoke();
+
                 if (batch.Count == 0)
                 {
                     continue;
@@ -174,6 +177,7 @@ internal sealed class MultiplexedConnection : IAsyncDisposable
                         foreach (var command in batch)
                         {
                             _inflight.Enqueue(command);
+                            InflightCount++;
                         }
                     }
 
@@ -181,6 +185,12 @@ internal sealed class MultiplexedConnection : IAsyncDisposable
                     await _sendLock.WaitAsync(_disposeCts.Token);
                     try
                     {
+                        if (_logger.IsEnabled(LogLevel.Debug))
+                        {
+                            _logger.LogDebug("[Conn {ConnectionId}] Sending {Count} commands. Inflight: {Inflight}/{PipeliningLimit}",
+                                _connectionId, batch.Count, InflightCount, PipeliningLimit);
+                        }
+
                         await _socket.SendCommandsAsync(batch, _disposeCts.Token);
                     }
                     finally
@@ -190,7 +200,7 @@ internal sealed class MultiplexedConnection : IAsyncDisposable
                 }
                 catch (Exception ex) when (!_disposeCts.Token.IsCancellationRequested)
                 {
-                    _logger.LogError(ex, "Error sending {Count} commands", batch.Count);
+                    _logger.LogError(ex, "[Conn {ConnectionId}] Error sending {Count} commands", _connectionId, batch.Count);
                     
                     // Complete all commands in the batch with error
                     lock (_inflight)
@@ -200,9 +210,12 @@ internal sealed class MultiplexedConnection : IAsyncDisposable
                         for (int i = 0; i < count; i++)
                         {
                             var c = _inflight.Dequeue();
+                            InflightCount--;
+
                             if (!batch.Contains(c))
                             {
                                 _inflight.Enqueue(c);
+                                InflightCount++;
                             }
                         }
                     }
@@ -220,7 +233,7 @@ internal sealed class MultiplexedConnection : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Command sender crashed");
+            _logger.LogError(ex, "[Conn {ConnectionId}] Command sender crashed", _connectionId);
         }
     }
 
@@ -297,6 +310,7 @@ internal sealed class MultiplexedConnection : IAsyncDisposable
                         lock (_inflight)
                         {
                             _inflight.Dequeue();
+                            InflightCount--;
                         }
                         current.Complete();
                     }
@@ -307,7 +321,7 @@ internal sealed class MultiplexedConnection : IAsyncDisposable
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Error in response dispatcher");
+                    _logger.LogError(ex, "[Conn {ConnectionId}] Error in response dispatcher", _connectionId);
                     
                     // Complete the current command with error
                     if (current is not null)
@@ -317,6 +331,7 @@ internal sealed class MultiplexedConnection : IAsyncDisposable
                             if (_inflight.TryPeek(out var peek) && peek == current)
                             {
                                 _inflight.Dequeue();
+                                InflightCount--;
                             }
                         }
                         current.Complete(ex);
@@ -330,7 +345,7 @@ internal sealed class MultiplexedConnection : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Response dispatcher crashed");
+            _logger.LogError(ex, "[Conn {ConnectionId}] Response dispatcher crashed", _connectionId);
         }
         finally
         {
@@ -339,6 +354,7 @@ internal sealed class MultiplexedConnection : IAsyncDisposable
             {
                 while (_inflight.TryDequeue(out var cmd))
                 {
+                    InflightCount--;
                     cmd.Complete(new ObjectDisposedException(nameof(MultiplexedConnection)));
                 }
             }
