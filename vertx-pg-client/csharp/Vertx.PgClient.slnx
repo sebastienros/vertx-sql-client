@@ -1,0 +1,10 @@
+<Solution>
+  <Configurations>
+    <Platform Name="Any CPU" />
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="Vertx.PgClient.Benchmarks/Vertx.PgClient.Benchmarks.csproj" />
+  <Project Path="Vertx.PgClient.Tests/Vertx.PgClient.Tests.csproj" />
+  <Project Path="Vertx.PgClient/Vertx.PgClient.csproj" />
+</Solution>
