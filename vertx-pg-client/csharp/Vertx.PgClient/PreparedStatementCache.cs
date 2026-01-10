@@ -17,44 +17,48 @@ internal sealed class CachedPreparedStatement
 
 /// <summary>
 /// LRU cache for prepared statements.
+/// Not thread-safe - each MultiplexedConnection has its own cache accessed by a single task.
 /// </summary>
 internal sealed class PreparedStatementCache
 {
     private readonly int _maxSize;
     private readonly int _sqlLimit;
-    private readonly Dictionary<string, LinkedListNode<CacheEntry>> _cache;
+    private readonly Dictionary<string, CacheEntry> _cache;
     private readonly LinkedList<CacheEntry> _lruList;
-    private readonly Queue<byte[]> _statementsToClose;
+    private readonly List<byte[]> _statementsToClose;
 
     private sealed class CacheEntry
     {
         public required string Sql { get; init; }
         public required CachedPreparedStatement Statement { get; init; }
+        public LinkedListNode<CacheEntry>? Node { get; set; }
     }
 
     public PreparedStatementCache(int maxSize, int sqlLimit)
     {
         _maxSize = maxSize;
         _sqlLimit = sqlLimit;
-        _cache = new Dictionary<string, LinkedListNode<CacheEntry>>(maxSize);
+        _cache = new Dictionary<string, CacheEntry>(maxSize);
         _lruList = new LinkedList<CacheEntry>();
-        _statementsToClose = new Queue<byte[]>();
+        _statementsToClose = new List<byte[]>();
     }
 
     /// <summary>
     /// Tries to get a cached prepared statement.
     /// </summary>
-    /// <param name="sql">The SQL query.</param>
-    /// <param name="statement">The cached statement if found.</param>
-    /// <returns>True if the statement was found in the cache.</returns>
     public bool TryGet(string sql, out CachedPreparedStatement? statement)
     {
-        if (_cache.TryGetValue(sql, out var node))
+        if (_cache.TryGetValue(sql, out var entry))
         {
+            statement = entry.Statement;
+            
             // Move to front (most recently used)
-            _lruList.Remove(node);
-            _lruList.AddFirst(node);
-            statement = node.Value.Statement;
+            if (entry.Node is not null)
+            {
+                _lruList.Remove(entry.Node);
+                _lruList.AddFirst(entry.Node);
+            }
+            
             return true;
         }
 
@@ -65,8 +69,6 @@ internal sealed class PreparedStatementCache
     /// <summary>
     /// Adds a prepared statement to the cache.
     /// </summary>
-    /// <param name="sql">The SQL query.</param>
-    /// <param name="statement">The statement metadata to cache.</param>
     public void Add(string sql, CachedPreparedStatement statement)
     {
         // Don't cache if SQL is too long
@@ -75,7 +77,7 @@ internal sealed class PreparedStatementCache
             return;
         }
 
-        // Don't add duplicates
+        // Check if already exists
         if (_cache.ContainsKey(sql))
         {
             return;
@@ -85,17 +87,20 @@ internal sealed class PreparedStatementCache
         while (_cache.Count >= _maxSize && _lruList.Last is not null)
         {
             var oldest = _lruList.Last;
-            _cache.Remove(oldest.Value.Sql);
             _lruList.RemoveLast();
-            // Queue the statement for closing
-            _statementsToClose.Enqueue(oldest.Value.Statement.StatementName);
+            
+            if (_cache.Remove(oldest.Value.Sql, out var removed))
+            {
+                removed.Node = null;
+                _statementsToClose.Add(removed.Statement.StatementName);
+            }
         }
 
-        // Add new entry at front
+        // Create and add new entry
         var entry = new CacheEntry { Sql = sql, Statement = statement };
-        var node = new LinkedListNode<CacheEntry>(entry);
-        _lruList.AddFirst(node);
-        _cache[sql] = node;
+        var node = _lruList.AddFirst(entry);
+        entry.Node = node;
+        _cache[sql] = entry;
     }
 
     /// <summary>
@@ -106,7 +111,6 @@ internal sealed class PreparedStatementCache
     /// <summary>
     /// Gets statements that need to be closed on the server (due to eviction).
     /// </summary>
-    /// <returns>Statements to close, or empty if none.</returns>
     public IReadOnlyList<byte[]> GetStatementsToClose()
     {
         if (_statementsToClose.Count == 0)
@@ -114,11 +118,8 @@ internal sealed class PreparedStatementCache
             return Array.Empty<byte[]>();
         }
 
-        var result = new List<byte[]>(_statementsToClose.Count);
-        while (_statementsToClose.TryDequeue(out var name))
-        {
-            result.Add(name);
-        }
+        var result = _statementsToClose.ToArray();
+        _statementsToClose.Clear();
         return result;
     }
 
@@ -127,10 +128,12 @@ internal sealed class PreparedStatementCache
     /// </summary>
     public void Clear()
     {
-        foreach (var node in _lruList)
+        foreach (var entry in _cache.Values)
         {
-            _statementsToClose.Enqueue(node.Statement.StatementName);
+            _statementsToClose.Add(entry.Statement.StatementName);
+            entry.Node = null;
         }
+        
         _cache.Clear();
         _lruList.Clear();
     }
