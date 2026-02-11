@@ -1332,5 +1332,6 @@ internal sealed class PgSocketConnection : IAsyncDisposable
         _stream = null;
 
         ArrayPool<byte>.Shared.Return(_receiveBuffer);
+        _encoder.ReturnBuffer();
     }
 }

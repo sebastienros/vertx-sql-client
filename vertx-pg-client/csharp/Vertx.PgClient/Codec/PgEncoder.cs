@@ -1,6 +1,7 @@
 // Copyright (C) 2017 Julien Viet
 // Licensed under the Apache License, Version 2.0
 
+using System.Buffers;
 using System.Buffers.Binary;
 using System.Numerics;
 using System.Text;
@@ -16,9 +17,14 @@ internal sealed class PgEncoder
     private static readonly byte[] BuffUser = "user"u8.ToArray();
     private static readonly byte[] BuffDatabase = "database"u8.ToArray();
 
-    private byte[] _buffer = new byte[4096];
+    private byte[] _buffer;
     private int _position;
     private int _statementCounter;
+
+    public PgEncoder()
+    {
+        _buffer = ArrayPool<byte>.Shared.Rent(4096);
+    }
 
     public ReadOnlyMemory<byte> Buffer => new(_buffer, 0, _position);
 
@@ -29,7 +35,22 @@ internal sealed class PgEncoder
         if (_position + additionalBytes > _buffer.Length)
         {
             int newSize = Math.Max(_buffer.Length * 2, _position + additionalBytes);
-            Array.Resize(ref _buffer, newSize);
+            var newBuffer = ArrayPool<byte>.Shared.Rent(newSize);
+            System.Array.Copy(_buffer, 0, newBuffer, 0, _position);
+            ArrayPool<byte>.Shared.Return(_buffer);
+            _buffer = newBuffer;
+        }
+    }
+
+    /// <summary>
+    /// Returns the encoder buffer to the pool. Call when the connection is disposed.
+    /// </summary>
+    public void ReturnBuffer()
+    {
+        if (_buffer is not null)
+        {
+            ArrayPool<byte>.Shared.Return(_buffer);
+            _buffer = null!;
         }
     }
 
