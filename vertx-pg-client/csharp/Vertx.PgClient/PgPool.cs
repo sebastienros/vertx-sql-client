@@ -379,8 +379,13 @@ public sealed class PgPool : IAsyncDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _disposeCts.Token);
-        var linkedToken = linkedCts.Token;
+        // Avoid allocating a linked CTS when no external cancellation is requested
+        var linkedCts = cancellationToken.CanBeCanceled
+            ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _disposeCts.Token)
+            : null;
+        var linkedToken = linkedCts?.Token ?? _disposeCts.Token;
+        try
+        {
 
         while (true)
         {
@@ -480,6 +485,11 @@ public sealed class PgPool : IAsyncDisposable
                 throw new TimeoutException("Timed out waiting for a multiplexed connection slot from the pool");
             }
         }
+        }
+        finally
+        {
+            linkedCts?.Dispose();
+        }
     }
 
     /// <summary>
@@ -495,8 +505,13 @@ public sealed class PgPool : IAsyncDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _disposeCts.Token);
-        var linkedToken = linkedCts.Token;
+        // Avoid allocating a linked CTS when no external cancellation is requested
+        var linkedCts = cancellationToken.CanBeCanceled
+            ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _disposeCts.Token)
+            : null;
+        var linkedToken = linkedCts?.Token ?? _disposeCts.Token;
+        try
+        {
 
         // Try to get an existing idle connection or create a new one
         while (true)
@@ -566,6 +581,11 @@ public sealed class PgPool : IAsyncDisposable
             {
                 throw new TimeoutException("Timed out waiting for a connection from the pool");
             }
+        }
+        }
+        finally
+        {
+            linkedCts?.Dispose();
         }
     }
 
