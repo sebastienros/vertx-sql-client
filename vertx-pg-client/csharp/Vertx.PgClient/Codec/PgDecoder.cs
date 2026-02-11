@@ -196,6 +196,16 @@ internal sealed class PgDecoder
     {
         short columnCount = BinaryPrimitives.ReadInt16BigEndian(payload);
         var values = new PgValue[columnCount];
+        DecodeDataRowDirect(payload, columnDesc, values);
+        return values;
+    }
+
+    /// <summary>
+    /// Decodes a DataRow message into a pre-allocated PgValue buffer, avoiding per-row array allocations.
+    /// </summary>
+    public static void DecodeDataRowDirect(ReadOnlySpan<byte> payload, PgColumnDesc[] columnDesc, PgValue[] values)
+    {
+        short columnCount = BinaryPrimitives.ReadInt16BigEndian(payload);
         int pos = 2;
 
         for (int i = 0; i < columnCount; i++)
@@ -217,8 +227,6 @@ internal sealed class PgDecoder
                 pos += length;
             }
         }
-
-        return values;
     }
 
     private Response ParseErrorOrNotice(ReadOnlySpan<byte> payload, bool isError)

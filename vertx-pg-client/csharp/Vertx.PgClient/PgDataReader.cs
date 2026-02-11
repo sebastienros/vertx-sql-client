@@ -21,6 +21,7 @@ public sealed class PgDataReader : IAsyncDisposable
     private PgColumnDesc[]? _columnDesc;
     private string[]? _columnNames;
     private PgValue[]? _currentRow;
+    private PgValue[]? _rowBuffer; // Reusable buffer for decoding rows
     private int _rowsAffected;
     private bool _hasRows;
     private bool _isCompleted;
@@ -96,6 +97,8 @@ public sealed class PgDataReader : IAsyncDisposable
                     {
                         _columnNames[i] = rd.Columns[i].Name;
                     }
+                    // Allocate reusable row buffer once per result set
+                    _rowBuffer = new PgValue[rd.Columns.Length];
                     break;
 
                 case DecodedDataRowResponse decodedRow:
@@ -106,7 +109,13 @@ public sealed class PgDataReader : IAsyncDisposable
                 case DataRowResponse dataRow:
                     if (_columnDesc is not null)
                     {
-                        _currentRow = DecodeRow(dataRow.Values, _columnDesc);
+                        // Reuse the row buffer to avoid per-row allocations
+                        if (_rowBuffer is null || _rowBuffer.Length != _columnDesc.Length)
+                        {
+                            _rowBuffer = new PgValue[_columnDesc.Length];
+                        }
+                        DecodeRowInto(dataRow.Values, _columnDesc, _rowBuffer);
+                        _currentRow = _rowBuffer;
                         _hasRows = true;
                         return true;
                     }
@@ -266,26 +275,22 @@ public sealed class PgDataReader : IAsyncDisposable
     /// </summary>
     public T? GetFieldValue<T>(int ordinal) => GetValue(ordinal).Get<T>();
 
-    private static PgValue[] DecodeRow(byte[][] values, PgColumnDesc[] columnDesc)
+    private static void DecodeRowInto(byte[][] values, PgColumnDesc[] columnDesc, PgValue[] target)
     {
-        var decodedValues = new PgValue[values.Length];
-        
         for (int i = 0; i < values.Length; i++)
         {
             var column = columnDesc[i];
             if (values[i] is null)
             {
-                decodedValues[i] = PgValue.CreateNull(column.DataType);
+                target[i] = PgValue.CreateNull(column.DataType);
             }
             else
             {
-                decodedValues[i] = column.DataFormat == DataFormat.Binary
+                target[i] = column.DataFormat == DataFormat.Binary
                     ? PgValue.DecodeBinary(column.DataType, values[i])
                     : PgValue.DecodeText(column.DataType, values[i]);
             }
         }
-
-        return decodedValues;
     }
 
     /// <summary>
