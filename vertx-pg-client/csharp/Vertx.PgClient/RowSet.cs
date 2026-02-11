@@ -50,7 +50,22 @@ public sealed class RowSet : IRowSet
     public IRowSet? Next { get; internal set; }
 
     private string[]? _columnNames;
-    public IReadOnlyList<string> ColumnNames => _columnNames ??= RowDescriptor.Select(c => c.Name).ToArray();
+    public IReadOnlyList<string> ColumnNames
+    {
+        get
+        {
+            if (_columnNames is null)
+            {
+                var names = new string[RowDescriptor.Length];
+                for (int i = 0; i < RowDescriptor.Length; i++)
+                {
+                    names[i] = RowDescriptor[i].Name;
+                }
+                _columnNames = names;
+            }
+            return _columnNames;
+        }
+    }
 
     public RowSet(PgColumnDesc[] descriptor)
     {

@@ -466,7 +466,12 @@ internal sealed class PgSocketConnection : IAsyncDisposable
                     break;
 
                 case ParameterDescriptionResponse paramDesc:
-                    paramTypes = paramDesc.TypeOids.Select(DataType.LookupByOid).ToArray();
+                    var oids1 = paramDesc.TypeOids;
+                    paramTypes = new DataType[oids1.Length];
+                    for (int i = 0; i < oids1.Length; i++)
+                    {
+                        paramTypes[i] = DataType.LookupByOid(oids1[i]);
+                    }
                     break;                case RowDescriptionResponse rd:
                     rowDesc = rd.Columns;
                     break;
@@ -498,7 +503,14 @@ internal sealed class PgSocketConnection : IAsyncDisposable
         if (shouldCache && _preparedStatementCache is not null)
         {
             // Convert to binary format since we request binary results in Bind
-            var binaryRowDesc = rowDesc?.Select(c => c.ToBinaryDataFormat()).ToArray();
+            var binaryRowDesc = rowDesc is not null ? new PgColumnDesc[rowDesc.Length] : null;
+            if (rowDesc is not null)
+            {
+                for (int i = 0; i < rowDesc.Length; i++)
+                {
+                    binaryRowDesc![i] = rowDesc[i].ToBinaryDataFormat();
+                }
+            }
             var entry = new CachedPreparedStatement
             {
                 StatementName = statementName,
@@ -511,7 +523,10 @@ internal sealed class PgSocketConnection : IAsyncDisposable
         else if (rowDesc is not null)
         {
             // Convert to binary format since we request binary results in Bind
-            rowDesc = rowDesc.Select(c => c.ToBinaryDataFormat()).ToArray();
+            for (int i = 0; i < rowDesc.Length; i++)
+            {
+                rowDesc[i] = rowDesc[i].ToBinaryDataFormat();
+            }
         }
 
         // Send Bind, Execute, and Sync
@@ -605,7 +620,12 @@ internal sealed class PgSocketConnection : IAsyncDisposable
                     break;
 
                 case ParameterDescriptionResponse paramDesc:
-                    paramTypes = paramDesc.TypeOids.Select(DataType.LookupByOid).ToArray();
+                    var oids2 = paramDesc.TypeOids;
+                    paramTypes = new DataType[oids2.Length];
+                    for (int i = 0; i < oids2.Length; i++)
+                    {
+                        paramTypes[i] = DataType.LookupByOid(oids2[i]);
+                    }
                     break;
 
                 case RowDescriptionResponse rd:

@@ -280,7 +280,12 @@ internal sealed class PreparedQueryCommand : PgCommand
                 return false;
 
             case ParameterDescriptionResponse paramDesc:
-                _paramTypes = paramDesc.TypeOids.Select(DataType.LookupByOid).ToArray();
+                var oids = paramDesc.TypeOids;
+                _paramTypes = new DataType[oids.Length];
+                for (int i = 0; i < oids.Length; i++)
+                {
+                    _paramTypes[i] = DataType.LookupByOid(oids[i]);
+                }
                 return false;
 
             case RowDescriptionResponse rd:
