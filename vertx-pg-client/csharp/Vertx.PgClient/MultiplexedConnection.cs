@@ -267,7 +267,7 @@ internal sealed class MultiplexedConnection : IAsyncDisposable
 
                 try
                 {
-                    var response = await _socket.ReceiveResponseAsync(_disposeCts.Token);
+                    var response = await _socket.ReceiveResponseAsync(current.CurrentColumnDesc, _disposeCts.Token);
 
                     // Handle global responses that don't belong to any command
                     switch (response)

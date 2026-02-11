@@ -920,6 +920,15 @@ internal sealed class PgSocketConnection : IAsyncDisposable
     }
 
     /// <summary>
+    /// Receives a single response from the server with column descriptors for direct DataRow decoding.
+    /// Used by MultiplexedConnection to enable zero-allocation row decoding.
+    /// </summary>
+    internal async ValueTask<Response> ReceiveResponseAsync(PgColumnDesc[]? columnDesc, CancellationToken cancellationToken = default)
+    {
+        return await ReceiveAsync(columnDesc, cancellationToken);
+    }
+
+    /// <summary>
     /// Sends a raw buffer to the server. Used by MultiplexedConnection for extended query bind/execute.
     /// </summary>
     internal async ValueTask SendBufferAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)

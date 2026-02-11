@@ -31,6 +31,12 @@ internal abstract class PgCommand
     /// Gets whether this command expects a ReadyForQuery message to complete.
     /// </summary>
     public virtual bool ExpectsReadyForQuery => true;
+
+    /// <summary>
+    /// Gets the current column descriptors for direct DataRow decoding.
+    /// Available after a RowDescriptionResponse has been received.
+    /// </summary>
+    public virtual PgColumnDesc[]? CurrentColumnDesc => null;
 }
 
 /// <summary>
@@ -53,6 +59,8 @@ internal sealed class SimpleQueryCommand : PgCommand
 
     public Task<RowSet> Task => _tcs.Task;
 
+    public override PgColumnDesc[]? CurrentColumnDesc => _columnDesc;
+
     public override void Encode(PgEncoder encoder)
     {
         encoder.WriteQuery(_sql);
@@ -64,6 +72,13 @@ internal sealed class SimpleQueryCommand : PgCommand
         {
             case RowDescriptionResponse rd:
                 _columnDesc = rd.Columns;
+                return false;
+
+            case DecodedDataRowResponse decodedRow:
+                if (_columnDesc is not null)
+                {
+                    _rows.Add(new Row(decodedRow.Values, _columnDesc));
+                }
                 return false;
 
             case DataRowResponse dataRow:
@@ -181,6 +196,8 @@ internal sealed class PreparedQueryCommand : PgCommand
 
     public Task<RowSet> Task => _tcs.Task;
 
+    public override PgColumnDesc[]? CurrentColumnDesc => _rowDesc;
+
     public override void Encode(PgEncoder encoder)
     {
         if (_cachedStatement is not null)
@@ -296,6 +313,13 @@ internal sealed class PreparedQueryCommand : PgCommand
                 return false;
 
             case BindCompleteResponse:
+                return false;
+
+            case DecodedDataRowResponse decodedRow:
+                if (_rowDesc is not null)
+                {
+                    _rows.Add(new Row(decodedRow.Values, _rowDesc));
+                }
                 return false;
 
             case DataRowResponse dataRow:
