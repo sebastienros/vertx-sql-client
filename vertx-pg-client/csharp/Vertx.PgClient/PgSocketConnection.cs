@@ -103,6 +103,16 @@ internal sealed class PgSocketConnection : IAsyncDisposable
             NoDelay = true
         };
 
+        if (_options.ReceiveBufferSize > 0)
+        {
+            _socket.ReceiveBufferSize = _options.ReceiveBufferSize;
+        }
+
+        if (_options.SendBufferSize > 0)
+        {
+            _socket.SendBufferSize = _options.SendBufferSize;
+        }
+
         var host = _options.Host;
         var port = _options.Port;
 

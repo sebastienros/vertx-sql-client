@@ -53,6 +53,18 @@ public sealed class PgConnectOptions
     public int ReconnectAttempts { get; set; }
     public TimeSpan ReconnectInterval { get; set; } = TimeSpan.FromSeconds(1);
 
+    /// <summary>
+    /// Gets or sets the socket receive buffer size in bytes.
+    /// 0 means use the OS default. Higher values can improve throughput for large result sets.
+    /// </summary>
+    public int ReceiveBufferSize { get; set; }
+
+    /// <summary>
+    /// Gets or sets the socket send buffer size in bytes.
+    /// 0 means use the OS default. Higher values can improve throughput for large batch writes.
+    /// </summary>
+    public int SendBufferSize { get; set; }
+
     public Dictionary<string, string> Properties { get; set; } = new(DefaultProperties);
 
     /// <summary>
@@ -77,6 +89,8 @@ public sealed class PgConnectOptions
         PreparedStatementCacheSqlLimit = other.PreparedStatementCacheSqlLimit;
         ReconnectAttempts = other.ReconnectAttempts;
         ReconnectInterval = other.ReconnectInterval;
+        ReceiveBufferSize = other.ReceiveBufferSize;
+        SendBufferSize = other.SendBufferSize;
         Properties = new Dictionary<string, string>(other.Properties);
         SslOptions = other.SslOptions is not null ? new PgSslOptions(other.SslOptions) : null;
     }
@@ -157,6 +171,8 @@ public sealed class PgConnectOptions
     public PgConnectOptions SetPreparedStatementCacheSqlLimit(int limit) { PreparedStatementCacheSqlLimit = limit; return this; }
     public PgConnectOptions SetReconnectAttempts(int attempts) { ReconnectAttempts = attempts; return this; }
     public PgConnectOptions SetReconnectInterval(TimeSpan interval) { ReconnectInterval = interval; return this; }
+    public PgConnectOptions SetReceiveBufferSize(int size) { ReceiveBufferSize = size; return this; }
+    public PgConnectOptions SetSendBufferSize(int size) { SendBufferSize = size; return this; }
 
     public PgConnectOptions AddProperty(string key, string value)
     {
