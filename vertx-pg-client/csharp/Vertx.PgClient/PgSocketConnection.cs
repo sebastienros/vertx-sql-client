@@ -27,20 +27,7 @@ internal sealed class PgSocketConnection : IAsyncDisposable
     private readonly PgEncoder _encoder;
     private readonly PgDecoder _decoder;
     private readonly Dictionary<string, string> _serverParameters = new();
-    private byte[] _receiveBuffer;
-    private int _receiveBufferOffset;
-    private int _receiveBufferLength;
-    
-    // Buffer sizing strategy:
-    // - Initial size is 64KB, under the 85KB LOH (Large Object Heap) threshold
-    // - Buffer grows by doubling when a message doesn't fit
-    // - For very large messages (>85KB), buffers will be allocated on LOH which is acceptable
-    //   since large PostgreSQL messages (huge TEXT/BYTEA/JSON) are rare
-    // - Alternative: Use System.IO.Pipelines with ReadOnlySequence<byte> to chain small buffers,
-    //   but this would require significant refactoring of PgDecoder to work with non-contiguous memory
-    private const int InitialReceiveBufferSize = 65536; // 64KB - under LOH threshold
-    private const int LargeObjectHeapThreshold = 85000; // .NET LOH threshold
-    private const int MaxReceiveBufferSize = 1024 * 1024 * 1024; // 1GB sanity limit
+    private System.IO.Pipelines.PipeReader? _pipeReader;
 
     // Pipelining state
     private readonly Queue<PgCommand> _pending = new();
@@ -86,7 +73,6 @@ internal sealed class PgSocketConnection : IAsyncDisposable
         _logger = logger ?? NullLogger.Instance;
         _encoder = new PgEncoder();
         _decoder = new PgDecoder();
-        _receiveBuffer = ArrayPool<byte>.Shared.Rent(InitialReceiveBufferSize);
         
         if (options.CachePreparedStatements)
         {
@@ -130,6 +116,12 @@ internal sealed class PgSocketConnection : IAsyncDisposable
         {
             await NegotiateSslAsync(cancellationToken);
         }
+
+        // Create PipeReader for efficient buffered reading from the stream
+        _pipeReader = System.IO.Pipelines.PipeReader.Create(_stream!, new System.IO.Pipelines.StreamPipeReaderOptions(
+            bufferSize: 65536, // 64KB per segment
+            leaveOpen: true
+        ));
 
         // Send startup message
         await SendStartupMessageAsync(cancellationToken);
@@ -1245,71 +1237,59 @@ internal sealed class PgSocketConnection : IAsyncDisposable
 
     private async ValueTask<Response> ReceiveAsync(PgColumnDesc[]? columnDesc, CancellationToken cancellationToken)
     {
-        if (_stream is null)
+        if (_pipeReader is null)
             throw new InvalidOperationException("Not connected");
 
         while (true)
         {
-            // Try to parse from existing buffer
-            var availableData = new ReadOnlySpan<byte>(_receiveBuffer, _receiveBufferOffset, _receiveBufferLength);
-            if (_decoder.TryParse(availableData, columnDesc, out var response, out int bytesConsumed))
+            var result = await _pipeReader.ReadAsync(cancellationToken);
+            var buffer = result.Buffer;
+
+            if (buffer.IsEmpty && result.IsCompleted)
             {
-                _receiveBufferOffset += bytesConsumed;
-                _receiveBufferLength -= bytesConsumed;
+                throw new PgException("Connection closed by server", "08003", "");
+            }
+
+            // Try to parse a message from the buffer
+            bool parsed;
+            Response? response;
+            int bytesConsumed;
+
+            if (buffer.IsSingleSegment)
+            {
+                // Fast path: single contiguous segment — use span directly
+                parsed = _decoder.TryParse(buffer.FirstSpan, columnDesc, out response, out bytesConsumed);
+            }
+            else
+            {
+                // Multi-segment: copy to contiguous buffer for parsing
+                // This is rare — only happens when a message spans PipeReader segments
+                int len = (int)buffer.Length;
+                byte[] temp = ArrayPool<byte>.Shared.Rent(len);
+                try
+                {
+                    buffer.CopyTo(temp);
+                    parsed = _decoder.TryParse(new ReadOnlySpan<byte>(temp, 0, len), columnDesc, out response, out bytesConsumed);
+                }
+                finally
+                {
+                    ArrayPool<byte>.Shared.Return(temp);
+                }
+            }
+
+            if (parsed)
+            {
+                _pipeReader.AdvanceTo(buffer.GetPosition(bytesConsumed));
                 return response!;
             }
 
-            // Need more data - check if we have space to read into
-            int availableSpace = _receiveBuffer.Length - (_receiveBufferOffset + _receiveBufferLength);
-            
-            if (availableSpace == 0)
+            // Not enough data — tell the PipeReader we examined everything but consumed nothing
+            _pipeReader.AdvanceTo(buffer.Start, buffer.End);
+
+            if (result.IsCompleted)
             {
-                // No space at the end of the buffer
-                if (_receiveBufferOffset > 0)
-                {
-                    // Compact: move unconsumed data to the beginning to free up space
-                    Array.Copy(_receiveBuffer, _receiveBufferOffset, _receiveBuffer, 0, _receiveBufferLength);
-                    _receiveBufferOffset = 0;
-                    availableSpace = _receiveBuffer.Length - _receiveBufferLength;
-                }
-                else
-                {
-                    // Buffer is truly full (no offset to reclaim), need to grow it
-                    int newSize = _receiveBuffer.Length * 2;
-                    if (newSize > MaxReceiveBufferSize)
-                    {
-                        throw new InvalidOperationException($"Message too large: buffer would exceed {MaxReceiveBufferSize} bytes");
-                    }
-
-                    // Log when we cross the LOH threshold - useful for telemetry to identify
-                    // queries returning unexpectedly large data
-                    if (newSize >= LargeObjectHeapThreshold && _receiveBuffer.Length < LargeObjectHeapThreshold)
-                    {
-                        _logger.LogWarning(
-                            "Receive buffer growing to {NewSize} bytes, exceeding LOH threshold. " +
-                            "Consider reviewing queries that return very large values.",
-                            newSize);
-                    }
-
-                    // Return old buffer to pool and rent a larger one
-                    var oldBuffer = _receiveBuffer;
-                    _receiveBuffer = ArrayPool<byte>.Shared.Rent(newSize);
-                    Array.Copy(oldBuffer, 0, _receiveBuffer, 0, _receiveBufferLength);
-                    ArrayPool<byte>.Shared.Return(oldBuffer);
-                    availableSpace = _receiveBuffer.Length - _receiveBufferLength;
-                }
+                throw new PgException("Connection closed by server (incomplete message)", "08003", "");
             }
-
-            // Read more data at the end of the buffer (after offset + length)
-            int bytesRead = await _stream.ReadAsync(
-                _receiveBuffer.AsMemory(_receiveBufferOffset + _receiveBufferLength, availableSpace),
-                cancellationToken
-            );
-
-            if (bytesRead == 0)
-                throw new PgException("Connection closed by server", "08003", "");
-
-            _receiveBufferLength += bytesRead;
         }
     }
 
@@ -1334,6 +1314,12 @@ internal sealed class PgSocketConnection : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        if (_pipeReader is not null)
+        {
+            await _pipeReader.CompleteAsync();
+            _pipeReader = null;
+        }
+
         if (_sslStream is not null)
         {
             await _sslStream.DisposeAsync();
@@ -1350,7 +1336,6 @@ internal sealed class PgSocketConnection : IAsyncDisposable
         _socket = null;
         _stream = null;
 
-        ArrayPool<byte>.Shared.Return(_receiveBuffer);
         _encoder.ReturnBuffer();
     }
 }
