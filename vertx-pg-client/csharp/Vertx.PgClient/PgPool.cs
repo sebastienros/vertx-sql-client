@@ -51,11 +51,17 @@ public sealed class PgPool : IAsyncDisposable
 
     private void NotifyConnectionCreated(string connectionType)
     {
-        PgClientTelemetry.ConnectionsCreated.Add(1,
-            new KeyValuePair<string, object?>("pgclient.connection.type", connectionType));
+        if (PgClientTelemetry.ConnectionsCreated.Enabled)
+        {
+            PgClientTelemetry.ConnectionsCreated.Add(1,
+                new KeyValuePair<string, object?>("pgclient.connection.type", connectionType));
+        }
 
-        using var activity = PgClientTelemetry.ActivitySource.StartActivity("pgclient.connection.create", ActivityKind.Client);
-        activity?.SetTag("pgclient.connection.type", connectionType);
+        if (PgClientTelemetry.ActivitySource.HasListeners())
+        {
+            using var activity = PgClientTelemetry.ActivitySource.StartActivity("pgclient.connection.create", ActivityKind.Client);
+            activity?.SetTag("pgclient.connection.type", connectionType);
+        }
     }
 
     /// <summary>
@@ -161,22 +167,42 @@ public sealed class PgPool : IAsyncDisposable
     /// </summary>
     public async Task<RowSet> QueryAsync(string sql, CancellationToken cancellationToken = default)
     {
-        PgClientTelemetry.QueriesExecuted.Add(1,
-            new KeyValuePair<string, object?>("db.system", "postgresql"),
-            new KeyValuePair<string, object?>("db.operation", "query"),
-            new KeyValuePair<string, object?>("pgclient.pool.pipelined", _poolOptions.Pipelined));
-
-        using var activity = PgClientTelemetry.ActivitySource.StartActivity("pgclient.query", ActivityKind.Client);
-        activity?.SetTag("db.system", "postgresql");
-        activity?.SetTag("db.operation", "query");
-        activity?.SetTag("pgclient.pool.pipelined", _poolOptions.Pipelined);
-        
-        if (_poolOptions.Pipelined)
+        if (PgClientTelemetry.QueriesExecuted.Enabled)
         {
-            var connection = await AcquireMultiplexedAsync(cancellationToken);
+            PgClientTelemetry.QueriesExecuted.Add(1,
+                new KeyValuePair<string, object?>("db.system", "postgresql"),
+                new KeyValuePair<string, object?>("db.operation", "query"),
+                new KeyValuePair<string, object?>("pgclient.pool.pipelined", _poolOptions.Pipelined));
+        }
+
+        Activity? activity = PgClientTelemetry.ActivitySource.HasListeners()
+            ? PgClientTelemetry.ActivitySource.StartActivity("pgclient.query", ActivityKind.Client)
+            : null;
+        try
+        {
+            activity?.SetTag("db.system", "postgresql");
+            activity?.SetTag("db.operation", "query");
+            activity?.SetTag("pgclient.pool.pipelined", _poolOptions.Pipelined);
+        
+            if (_poolOptions.Pipelined)
+            {
+                var connection = await AcquireMultiplexedAsync(cancellationToken);
+                try
+                {
+                    return await connection.QueryAsync(sql, cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    activity?.AddEvent(CreateExceptionEvent(ex));
+                    activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+                    throw;
+                }
+            }
+
+            var pooled = await AcquireAsync(cancellationToken);
             try
             {
-                return await connection.QueryAsync(sql, cancellationToken);
+                return await pooled.QueryAsync(sql, cancellationToken);
             }
             catch (Exception ex)
             {
@@ -184,22 +210,14 @@ public sealed class PgPool : IAsyncDisposable
                 activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
                 throw;
             }
-        }
-
-        var pooled = await AcquireAsync(cancellationToken);
-        try
-        {
-            return await pooled.QueryAsync(sql, cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            activity?.AddEvent(CreateExceptionEvent(ex));
-            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
-            throw;
+            finally
+            {
+                Release(pooled);
+            }
         }
         finally
         {
-            Release(pooled);
+            activity?.Dispose();
         }
     }
 
@@ -210,22 +228,42 @@ public sealed class PgPool : IAsyncDisposable
     /// </summary>
     public async Task<RowSet> PreparedQueryAsync(string sql, Tuple? parameters = null, CancellationToken cancellationToken = default)
     {
-        PgClientTelemetry.QueriesExecuted.Add(1,
-            new KeyValuePair<string, object?>("db.system", "postgresql"),
-            new KeyValuePair<string, object?>("db.operation", "prepared_query"),
-            new KeyValuePair<string, object?>("pgclient.pool.pipelined", _poolOptions.Pipelined));
-
-        using var activity = PgClientTelemetry.ActivitySource.StartActivity("pgclient.prepared_query", ActivityKind.Client);
-        activity?.SetTag("db.system", "postgresql");
-        activity?.SetTag("db.operation", "prepared_query");
-        activity?.SetTag("pgclient.pool.pipelined", _poolOptions.Pipelined);
-        
-        if (_poolOptions.Pipelined)
+        if (PgClientTelemetry.QueriesExecuted.Enabled)
         {
-            var connection = await AcquireMultiplexedAsync(cancellationToken);
+            PgClientTelemetry.QueriesExecuted.Add(1,
+                new KeyValuePair<string, object?>("db.system", "postgresql"),
+                new KeyValuePair<string, object?>("db.operation", "prepared_query"),
+                new KeyValuePair<string, object?>("pgclient.pool.pipelined", _poolOptions.Pipelined));
+        }
+
+        Activity? activity = PgClientTelemetry.ActivitySource.HasListeners()
+            ? PgClientTelemetry.ActivitySource.StartActivity("pgclient.prepared_query", ActivityKind.Client)
+            : null;
+        try
+        {
+            activity?.SetTag("db.system", "postgresql");
+            activity?.SetTag("db.operation", "prepared_query");
+            activity?.SetTag("pgclient.pool.pipelined", _poolOptions.Pipelined);
+        
+            if (_poolOptions.Pipelined)
+            {
+                var connection = await AcquireMultiplexedAsync(cancellationToken);
+                try
+                {
+                    return await connection.PreparedQueryAsync(sql, parameters, cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    activity?.AddEvent(CreateExceptionEvent(ex));
+                    activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+                    throw;
+                }
+            }
+
+            var pooled = await AcquireAsync(cancellationToken);
             try
             {
-                return await connection.PreparedQueryAsync(sql, parameters, cancellationToken);
+                return await pooled.PreparedQueryAsync(sql, parameters, cancellationToken);
             }
             catch (Exception ex)
             {
@@ -233,22 +271,14 @@ public sealed class PgPool : IAsyncDisposable
                 activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
                 throw;
             }
-        }
-
-        var pooled = await AcquireAsync(cancellationToken);
-        try
-        {
-            return await pooled.PreparedQueryAsync(sql, parameters, cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            activity?.AddEvent(CreateExceptionEvent(ex));
-            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
-            throw;
+            finally
+            {
+                Release(pooled);
+            }
         }
         finally
         {
-            Release(pooled);
+            activity?.Dispose();
         }
     }
 
@@ -622,11 +652,17 @@ public sealed class PgPool : IAsyncDisposable
 
     internal void NotifyConnectionDisposed(string connectionType)
     {
-        PgClientTelemetry.ConnectionsDisposed.Add(1,
-            new KeyValuePair<string, object?>("pgclient.connection.type", connectionType));
+        if (PgClientTelemetry.ConnectionsDisposed.Enabled)
+        {
+            PgClientTelemetry.ConnectionsDisposed.Add(1,
+                new KeyValuePair<string, object?>("pgclient.connection.type", connectionType));
+        }
 
-        using var activity = PgClientTelemetry.ActivitySource.StartActivity("pgclient.connection.dispose", ActivityKind.Client);
-        activity?.SetTag("pgclient.connection.type", connectionType);
+        if (PgClientTelemetry.ActivitySource.HasListeners())
+        {
+            using var activity = PgClientTelemetry.ActivitySource.StartActivity("pgclient.connection.dispose", ActivityKind.Client);
+            activity?.SetTag("pgclient.connection.type", connectionType);
+        }
     }
 
     /// <summary>
