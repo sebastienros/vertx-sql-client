@@ -935,7 +935,10 @@ internal sealed class PgSocketConnection : IAsyncDisposable
         if (_stream is not null)
         {
             await _stream.WriteAsync(buffer, cancellationToken);
-            await _stream.FlushAsync(cancellationToken);
+            if (_sslStream is not null)
+            {
+                await _sslStream.FlushAsync(cancellationToken);
+            }
         }
     }
 
@@ -1225,7 +1228,13 @@ internal sealed class PgSocketConnection : IAsyncDisposable
 
         var data = _encoder.Buffer;
         await _stream.WriteAsync(data, cancellationToken);
-        await _stream.FlushAsync(cancellationToken);
+
+        // Only flush for SslStream which buffers internally.
+        // NetworkStream.Flush is a no-op since Socket.SendAsync sends immediately.
+        if (_sslStream is not null)
+        {
+            await _sslStream.FlushAsync(cancellationToken);
+        }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
