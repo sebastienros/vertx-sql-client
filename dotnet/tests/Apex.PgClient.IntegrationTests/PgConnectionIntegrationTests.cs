@@ -137,6 +137,89 @@ public sealed class PgConnectionIntegrationTests
     }
 
     CollectionAssert.AreEqual(new[] { 1, 2, 3, 4, 5 }, streamed);
+
+    List<int> preparedStreamed = [];
+    await using ISqlPreparedStatement preparedStream =
+      await connection.PrepareAsync("SELECT generate_series(1, 5)::int4 AS value");
+    await foreach (SqlRow row in preparedStream.StreamAsync(fetchSize: 2))
+    {
+      preparedStreamed.Add(row.Get<int>(0));
+    }
+
+    CollectionAssert.AreEqual(new[] { 1, 2, 3, 4, 5 }, preparedStreamed);
+  }
+
+  [TestMethod]
+  public async Task StopsClientStreamEarlyAndReusesConnection()
+  {
+    PostgreSqlContainer container = _container ??
+      throw new InvalidOperationException("The PostgreSQL container is not running.");
+    PgConnectOptions options = new()
+    {
+      Host = container.Hostname,
+      Port = container.GetMappedPublicPort(5432),
+      Database = "db",
+      Username = "user",
+      Password = "pass",
+    };
+
+    await using PgConnection connection = await PgClient.ConnectAsync(options);
+    List<int> values = [];
+    await foreach (SqlRow row in connection.StreamAsync(
+                     "SELECT generate_series(1, 1000000)::int4",
+                     fetchSize: 2))
+    {
+      values.Add(row.Get<int>(0));
+      if (values.Count == 3)
+      {
+        break;
+      }
+    }
+
+    CollectionAssert.AreEqual(new[] { 1, 2, 3 }, values);
+    SqlRowSet rows = await connection.QueryAsync("SELECT 42::int4");
+    Assert.AreEqual(42, rows[0].Get<int>(0));
+
+    await using ISqlTransaction transaction = await connection.BeginTransactionAsync();
+    await foreach (SqlRow row in connection.StreamAsync(
+                     "SELECT generate_series(1, 100000)::int4",
+                     fetchSize: 1))
+    {
+      Assert.AreEqual(1, row.Get<int>(0));
+      break;
+    }
+
+    rows = await connection.QueryAsync("SELECT 43::int4");
+    Assert.AreEqual(43, rows[0].Get<int>(0));
+    await transaction.RollbackAsync();
+  }
+
+  [TestMethod]
+  public async Task StreamingSendFailureCompletesConsumer()
+  {
+    PostgreSqlContainer container = _container ??
+      throw new InvalidOperationException("The PostgreSQL container is not running.");
+    PgConnectOptions options = new()
+    {
+      Host = container.Hostname,
+      Port = container.GetMappedPublicPort(5432),
+      Database = "db",
+      Username = "user",
+      Password = "pass",
+    };
+
+    await using PgConnection connection = await PgClient.ConnectAsync(options);
+    using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(5));
+    await Assert.ThrowsExactlyAsync<System.Text.EncoderFallbackException>(
+      async () =>
+      {
+        await foreach (SqlRow _ in connection.StreamAsync(
+                         "SELECT $1::text",
+                         SqlParameters.Create("\uD800"),
+                         cancellationToken: timeout.Token))
+        {
+        }
+      });
   }
 
   [TestMethod]

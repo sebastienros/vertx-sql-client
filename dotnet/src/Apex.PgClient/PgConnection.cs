@@ -13,6 +13,7 @@ using System.Runtime.CompilerServices;
 using System.Security.Authentication;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using System.Threading.Channels;
 using Apex.PgClient.Internal;
 using Apex.SqlClient;
 using Apex.SqlClient.Internal;
@@ -198,9 +199,10 @@ public sealed class PgConnection : ISqlConnection
       throw new ArgumentOutOfRangeException(nameof(fetchSize));
     }
 
-    await using ISqlPreparedStatement statement =
-      await PrepareAsync(sql, cancellationToken).ConfigureAwait(false);
-    await foreach (SqlRow row in statement.StreamAsync(
+    ArgumentException.ThrowIfNullOrWhiteSpace(sql);
+    await foreach (SqlRow row in StreamRowsAsync(
+                     sql,
+                     statementName: null,
                      parameters,
                      fetchSize,
                      cancellationToken).ConfigureAwait(false))
@@ -755,46 +757,104 @@ public sealed class PgConnection : ISqlConnection
       cancellationToken).ConfigureAwait(false);
   }
 
-  internal async IAsyncEnumerable<SqlRow> StreamPreparedAsync(
+  internal async IAsyncEnumerable<SqlRow> StreamPreparedRowsAsync(
     string statementName,
     SqlParameters parameters,
     int fetchSize,
     [EnumeratorCancellation] CancellationToken cancellationToken)
   {
-    ISqlTransaction? transaction = null;
-    if (_transactionStatus == (byte)'I')
+    await foreach (SqlRow row in StreamRowsAsync(
+                     sql: null,
+                     statementName,
+                     parameters,
+                     fetchSize,
+                     cancellationToken).ConfigureAwait(false))
     {
-      transaction = await BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+      yield return row;
     }
+  }
 
+  private async IAsyncEnumerable<SqlRow> StreamRowsAsync(
+    string? sql,
+    string? statementName,
+    SqlParameters parameters,
+    int capacity,
+    [EnumeratorCancellation] CancellationToken cancellationToken)
+  {
+    ObjectDisposedException.ThrowIf(_disposed, this);
+    Channel<SqlRow> rows = Channel.CreateBounded<SqlRow>(
+      new BoundedChannelOptions(capacity)
+      {
+        AllowSynchronousContinuations = false,
+        FullMode = BoundedChannelFullMode.Wait,
+        SingleReader = true,
+        SingleWriter = true,
+      });
+    using CancellationTokenSource stopPublishing = new();
+    Task<bool> operation = _scheduler.ExecuteAsync(
+      async token =>
+      {
+        token.ThrowIfCancellationRequested();
+        if (sql is not null)
+        {
+          await _writer.WriteExtendedQueryAsync(
+            sql,
+            parameters,
+            CancellationToken.None).ConfigureAwait(false);
+        }
+        else
+        {
+          await _writer.WritePreparedQueryAsync(
+            statementName!,
+            parameters,
+            CancellationToken.None).ConfigureAwait(false);
+        }
+      },
+      _ => ReadStreamingQueryResultsAsync(
+        rows.Writer,
+        cancellationToken,
+        stopPublishing.Token),
+      barrier: true,
+      cancellationToken).AsTask();
+    _ = CompleteStreamOnOperationFailureAsync(operation, rows.Writer);
     try
     {
-      await using ISqlCursor cursor = await CreateCursorAsync(
-        statementName,
-        parameters,
-        fetchSize,
-        cancellationToken).ConfigureAwait(false);
-      while (cursor.HasMore)
+      await foreach (SqlRow row in rows.Reader.ReadAllAsync(cancellationToken)
+                       .ConfigureAwait(false))
       {
-        SqlRowSet page = await cursor.ReadAsync(fetchSize, cancellationToken).ConfigureAwait(false);
-        foreach (SqlRow row in page)
-        {
-          cancellationToken.ThrowIfCancellationRequested();
-          yield return row;
-        }
+        yield return row;
       }
 
-      if (transaction is not null)
-      {
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-      }
+      await operation.ConfigureAwait(false);
     }
     finally
     {
-      if (transaction is not null)
+      if (!operation.IsCompleted)
       {
-        await transaction.DisposeAsync().ConfigureAwait(false);
+        await stopPublishing.CancelAsync().ConfigureAwait(false);
       }
+
+      try
+      {
+        await operation.ConfigureAwait(false);
+      }
+      catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+      {
+      }
+    }
+  }
+
+  private static async Task CompleteStreamOnOperationFailureAsync(
+    Task operation,
+    ChannelWriter<SqlRow> rows)
+  {
+    try
+    {
+      await operation.ConfigureAwait(false);
+    }
+    catch (Exception exception)
+    {
+      rows.TryComplete(exception);
     }
   }
 
@@ -893,6 +953,99 @@ public sealed class PgConnection : ISqlConnection
           throw new InvalidDataException(
             $"Unexpected PostgreSQL query message '{(char)message.Type}'.");
       }
+    }
+  }
+
+  private async ValueTask<bool> ReadStreamingQueryResultsAsync(
+    ChannelWriter<SqlRow> rows,
+    CancellationToken callerCancellation,
+    CancellationToken stopPublishing)
+  {
+    IReadOnlyList<SqlColumn> columns = Array.Empty<SqlColumn>();
+    PgException? error = null;
+    bool publish = true;
+    Task? cancellationRequest = null;
+    using CancellationTokenSource publishCancellation =
+      CancellationTokenSource.CreateLinkedTokenSource(
+        callerCancellation,
+        stopPublishing);
+    using CancellationTokenRegistration registration = callerCancellation.Register(
+      () => cancellationRequest = TryCancelRequestAsync());
+    try
+    {
+      while (true)
+      {
+        using PgWireMessage message =
+          await _reader.ReadAsync(CancellationToken.None).ConfigureAwait(false);
+        switch (message.Type)
+        {
+          case (byte)'T':
+            columns = ParseColumns(message.Payload.Span);
+            break;
+          case (byte)'D':
+            SqlRow row = ParseRow(message.Payload.Span, columns);
+            if (publish)
+            {
+              try
+              {
+                await rows.WriteAsync(row, publishCancellation.Token).ConfigureAwait(false);
+              }
+              catch (OperationCanceledException) when (publishCancellation.IsCancellationRequested)
+              {
+                publish = false;
+              }
+            }
+
+            break;
+          case (byte)'E':
+            error = ParseError(message.Payload.Span);
+            break;
+          case (byte)'N':
+            HandleNotice(message.Payload.Span);
+            break;
+          case (byte)'S':
+            HandleParameterStatus(message.Payload.Span);
+            break;
+          case (byte)'A':
+            HandleNotification(message.Payload.Span);
+            break;
+          case (byte)'1':
+          case (byte)'2':
+          case (byte)'3':
+          case (byte)'C':
+          case (byte)'I':
+          case (byte)'n':
+          case (byte)'t':
+            break;
+          case (byte)'Z':
+            UpdateTransactionStatus(message.Payload.Span);
+            if (cancellationRequest is not null)
+            {
+              await cancellationRequest.ConfigureAwait(false);
+            }
+
+            if (callerCancellation.IsCancellationRequested)
+            {
+              throw new OperationCanceledException(callerCancellation);
+            }
+
+            if (error is not null)
+            {
+              throw error;
+            }
+
+            rows.TryComplete();
+            return true;
+          default:
+            throw new InvalidDataException(
+              $"Unexpected PostgreSQL streaming message '{(char)message.Type}'.");
+        }
+      }
+    }
+    catch (Exception exception)
+    {
+      rows.TryComplete(exception);
+      throw;
     }
   }
 

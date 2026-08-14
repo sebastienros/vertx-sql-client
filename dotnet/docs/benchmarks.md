@@ -45,10 +45,10 @@ Apex was within 1.5% of Npgsql throughput and 8% of Vert.x throughput in this ru
 | Apex simple query | 301.96 us | 2,743 B |
 | Npgsql prepared query | 303.97 us | 1,208 B |
 | Apex prepared query | 295.56 us | 3,574 B |
-| Npgsql stream 100 rows | 327.39 us | 1,496 B |
-| Apex stream 100 rows | 3,682.49 us | 37,618 B |
+| Npgsql stream 100 rows | 325.60 us | 1,496 B |
+| Apex stream 100 rows | 359.60 us | 14,551 B |
 
-The Apex cursor-based stream fetches 16 rows per round trip in this benchmark and is substantially slower than Npgsql's reader. Streaming round trips and per-page allocations are the primary performance follow-up.
+The original Apex implementation used a server cursor and was substantially slower than Npgsql's reader. The profiling-guided client-streaming implementation described below replaces that path.
 
 ### Streaming profile
 
@@ -71,7 +71,20 @@ The reason is architectural:
 
 The macOS samples include blocked threads, so their counts are wall-clock residency rather than pure CPU time. They nevertheless show Apex repeatedly resident in scheduler, `WriteExecutePortalAsync`, `ReadPortalAsync`, and `ReadPortalPageAsync` state machines, whereas Npgsql is concentrated in `ExecuteReader`, `ReadMessageLong`, and `NpgsqlReadBuffer.Ensure`. Heap snapshots were small for both processes (approximately 0.4 MB Apex and 1.1 MB Npgsql), indicating the Apex difference is transient allocation rather than retained leakage.
 
-The recommended change is to make `StreamAsync` use one extended-query response and client-side socket backpressure, while retaining `OpenCursorAsync` for callers who explicitly require server cursors. A lower-allocation row representation or page-owned value storage is the second priority.
+### Client-streaming improvement
+
+`StreamAsync` now consumes one extended-query response through a bounded channel. The channel applies client-side socket backpressure, while `OpenCursorAsync` remains the explicit server-cursor API.
+
+The same PostgreSQL 16 single-connection workload after the change produced:
+
+| Driver | operations/s | p50 | p95 | p99 | allocated/op |
+|---|---:|---:|---:|---:|---:|
+| Apex client stream | 2,832 | 0.347 ms | 0.388 ms | 0.433 ms | 15,269 B |
+| Npgsql | 3,130 | 0.313 ms | 0.357 ms | 0.395 ms | 1,170 B |
+
+BenchmarkDotNet ShortRun measured Apex at 359.6 us and 14.21 KB versus Npgsql at 325.6 us and 1.46 KB. The change improved Apex's single-connection throughput by about 10.5 times and median latency by about 10.6 times. Apex is now within roughly 10% of Npgsql latency and throughput for this workload.
+
+Allocation remains the primary gap. Apex materializes every value into `object?[]` and every row into a lifetime-safe `SqlRow`; Npgsql reads typed values directly from a reusable reader buffer. A lower-allocation row representation or page-owned value storage is the next priority.
 
 ### Vert.x JMH
 

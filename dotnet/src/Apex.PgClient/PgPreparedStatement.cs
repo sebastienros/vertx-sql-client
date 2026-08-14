@@ -87,7 +87,7 @@ internal sealed class PgPreparedStatement : ISqlPreparedStatement
       throw new ArgumentOutOfRangeException(nameof(fetchSize));
     }
 
-    await foreach (SqlRow row in _connection.StreamPreparedAsync(
+    await foreach (SqlRow row in _connection.StreamPreparedRowsAsync(
                      _name,
                      parameters,
                      fetchSize,
