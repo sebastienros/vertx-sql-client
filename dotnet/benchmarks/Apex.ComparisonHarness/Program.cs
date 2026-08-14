@@ -16,6 +16,8 @@ string workload =
   Environment.GetEnvironmentVariable("APEX_BENCH_WORKLOAD") ?? "query";
 int fetchSize = int.Parse(
   Environment.GetEnvironmentVariable("APEX_BENCH_FETCH_SIZE") ?? "16");
+int rowCount = int.Parse(
+  Environment.GetEnvironmentVariable("APEX_BENCH_ROW_COUNT") ?? "100");
 int concurrency = int.Parse(
   Environment.GetEnvironmentVariable("APEX_BENCH_CONCURRENCY") ?? "16");
 TimeSpan warmup = TimeSpan.FromSeconds(double.Parse(
@@ -28,7 +30,12 @@ string connectionString =
 
 IQueryRunner[] runners = await Task.WhenAll(
   Enumerable.Range(0, concurrency)
-    .Select(_ => CreateRunnerAsync(driver, workload, fetchSize, connectionString).AsTask()));
+    .Select(_ => CreateRunnerAsync(
+      driver,
+      workload,
+      fetchSize,
+      rowCount,
+      connectionString).AsTask()));
 try
 {
   await RunPhaseAsync(driver, runners, warmup, record: false);
@@ -125,11 +132,19 @@ static ValueTask<IQueryRunner> CreateRunnerAsync(
   string driver,
   string workload,
   int fetchSize,
+  int rowCount,
   string connectionString) =>
   driver.ToLowerInvariant() switch
   {
-    "apex" => WrapAsync(ApexQueryRunner.CreateAsync(workload, fetchSize, connectionString)),
-    "npgsql" => WrapAsync(NpgsqlQueryRunner.CreateAsync(workload, connectionString)),
+    "apex" => WrapAsync(ApexQueryRunner.CreateAsync(
+      workload,
+      fetchSize,
+      rowCount,
+      connectionString)),
+    "npgsql" => WrapAsync(NpgsqlQueryRunner.CreateAsync(
+      workload,
+      rowCount,
+      connectionString)),
     _ => throw new ArgumentException($"Unknown driver '{driver}'."),
   };
 
@@ -159,11 +174,14 @@ internal interface IQueryRunner : IAsyncDisposable
 internal sealed class ApexQueryRunner(
   PgConnection connection,
   string workload,
-  int fetchSize) : IQueryRunner
+  int fetchSize,
+  string streamSql,
+  int expectedSum) : IQueryRunner
 {
   public static async ValueTask<ApexQueryRunner> CreateAsync(
     string workload,
     int fetchSize,
+    int rowCount,
     string connectionString)
   {
     NpgsqlConnectionStringBuilder builder = new(connectionString);
@@ -179,7 +197,12 @@ internal sealed class ApexQueryRunner(
       Password = builder.Password ?? string.Empty,
       PipeliningLimit = 256,
     });
-    return new ApexQueryRunner(connection, workload, fetchSize);
+    return new ApexQueryRunner(
+      connection,
+      workload,
+      fetchSize,
+      $"SELECT generate_series(1, {rowCount})::int4",
+      checked(rowCount * (rowCount + 1) / 2));
   }
 
   public async ValueTask QueryAsync(CancellationToken cancellationToken)
@@ -188,14 +211,14 @@ internal sealed class ApexQueryRunner(
     {
       int sum = 0;
       await foreach (SqlRow row in connection.StreamAsync(
-                       "SELECT generate_series(1, 100)::int4",
+                       streamSql,
                        fetchSize: fetchSize,
                        cancellationToken: cancellationToken))
       {
         sum += row.Get<int>(0);
       }
 
-      if (sum != 5050)
+      if (sum != expectedSum)
       {
         throw new InvalidOperationException($"Unexpected stream sum {sum}.");
       }
@@ -211,15 +234,22 @@ internal sealed class ApexQueryRunner(
 
 internal sealed class NpgsqlQueryRunner(
   NpgsqlConnection connection,
-  string workload) : IQueryRunner
+  string workload,
+  string streamSql,
+  int expectedSum) : IQueryRunner
 {
   public static async ValueTask<NpgsqlQueryRunner> CreateAsync(
     string workload,
+    int rowCount,
     string connectionString)
   {
     NpgsqlConnection connection = new(connectionString);
     await connection.OpenAsync();
-    return new NpgsqlQueryRunner(connection, workload);
+    return new NpgsqlQueryRunner(
+      connection,
+      workload,
+      $"SELECT generate_series(1, {rowCount})::int4",
+      checked(rowCount * (rowCount + 1) / 2));
   }
 
   public async ValueTask QueryAsync(CancellationToken cancellationToken)
@@ -227,7 +257,7 @@ internal sealed class NpgsqlQueryRunner(
     if (workload == "stream100")
     {
       await using NpgsqlCommand command =
-        new("SELECT generate_series(1, 100)::int4", connection);
+        new(streamSql, connection);
       await using NpgsqlDataReader reader =
         await command.ExecuteReaderAsync(cancellationToken);
       int sum = 0;
@@ -236,7 +266,7 @@ internal sealed class NpgsqlQueryRunner(
         sum += reader.GetInt32(0);
       }
 
-      if (sum != 5050)
+      if (sum != expectedSum)
       {
         throw new InvalidOperationException($"Unexpected stream sum {sum}.");
       }

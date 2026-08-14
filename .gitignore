@@ -41,3 +41,4 @@ artifacts/
 *.nupkg
 *.snupkg
 dependency-reduced-pom.xml
+profile-output/

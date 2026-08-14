@@ -86,6 +86,38 @@ BenchmarkDotNet ShortRun measured Apex at 359.6 us and 14.21 KB versus Npgsql at
 
 Allocation remains the primary gap. Apex materializes every value into `object?[]` and every row into a lifetime-safe `SqlRow`; Npgsql reads typed values directly from a reusable reader buffer. A lower-allocation row representation or page-owned value storage is the next priority.
 
+### Allocation attribution
+
+Allocation-event traces of matched 8-second streaming runs reported 417.4 MB for Apex and 38.8 MB for Npgsql. The leading Apex allocation types were:
+
+| Allocation group | Approximate share |
+|---|---:|
+| `object?[]`, `SqlRow`, and boxed `Int32` row materialization | 56% |
+| Bounded channel and channel wait operations | 13% |
+| Wire payload buffers | 6% |
+| Streaming/scheduler async state machines, delegates, cancellation, and remaining infrastructure | 25% |
+
+Npgsql had no per-row allocation category. About 90% of its sampled bytes were fixed per-operation `NpgsqlCommand`, `NpgsqlBatchCommand`, `ExecuteReader`/`NextResult` state machines, and command behavior objects.
+
+Scaling the same query validates the attribution:
+
+| Driver | Rows | Allocated/op |
+|---|---:|---:|
+| Apex | 1 | 5,775 B |
+| Apex | 10 | 6,849 B |
+| Apex | 100 | 15,710 B |
+| Npgsql | 1 | 1,184 B |
+| Npgsql | 10 | 1,182 B |
+| Npgsql | 100 | 1,186 B |
+
+A linear fit gives Apex approximately **5.7 KB fixed per stream plus 100 B per row**. Npgsql is effectively flat because `NpgsqlDataReader` exposes an ephemeral typed view over a reusable read buffer. Apex's `SqlRow` contract is stronger: yielded rows own safe managed values and remain usable after enumeration advances or the connection is released. The allocation comparison therefore includes a semantic difference, not only implementation overhead.
+
+The next allocation work should be split accordingly:
+
+1. Add an explicit ephemeral streaming-reader API for callers who want Npgsql-like zero-per-row ownership semantics.
+2. Back lifetime-safe `SqlRow` instances with shared immutable page buffers and offsets, decoding typed values lazily instead of allocating `object?[]` and boxing scalars.
+3. Replace the per-stream bounded channel with a custom pull enumerator integrated with the scheduler to reduce the roughly 5.7 KB fixed cost.
+
 ### Vert.x JMH
 
 JMH 1.37 used 3 warmups, 5 measurements, 2-second measurement iterations, and 2 forks:
