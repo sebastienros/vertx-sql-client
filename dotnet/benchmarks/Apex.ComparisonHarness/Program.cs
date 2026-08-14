@@ -18,6 +18,8 @@ int fetchSize = int.Parse(
   Environment.GetEnvironmentVariable("APEX_BENCH_FETCH_SIZE") ?? "16");
 int rowCount = int.Parse(
   Environment.GetEnvironmentVariable("APEX_BENCH_ROW_COUNT") ?? "100");
+int pipelineDepth = int.Parse(
+  Environment.GetEnvironmentVariable("APEX_BENCH_PIPELINE_DEPTH") ?? "64");
 int concurrency = int.Parse(
   Environment.GetEnvironmentVariable("APEX_BENCH_CONCURRENCY") ?? "16");
 TimeSpan warmup = TimeSpan.FromSeconds(double.Parse(
@@ -35,6 +37,7 @@ IQueryRunner[] runners = await Task.WhenAll(
       workload,
       fetchSize,
       rowCount,
+      pipelineDepth,
       connectionString).AsTask()));
 try
 {
@@ -80,7 +83,7 @@ static async Task<HarnessResult> RunPhaseAsync(
       runner,
       stop.Token,
       record ? latencies : null,
-      () => Interlocked.Increment(ref operations)))
+      count => Interlocked.Add(ref operations, count)))
     .ToArray();
   Stopwatch elapsed = Stopwatch.StartNew();
   await Task.WhenAll(workers);
@@ -108,7 +111,7 @@ static async Task RunWorkerAsync(
   IQueryRunner runner,
   CancellationToken cancellationToken,
   ConcurrentBag<long>? latencies,
-  Action completed)
+  Action<int> completed)
 {
   while (!cancellationToken.IsCancellationRequested)
   {
@@ -124,7 +127,7 @@ static async Task RunWorkerAsync(
     }
 
     latencies?.Add(Stopwatch.GetTimestamp() - started);
-    completed();
+    completed(runner.OperationsPerInvocation);
   }
 }
 
@@ -133,6 +136,7 @@ static ValueTask<IQueryRunner> CreateRunnerAsync(
   string workload,
   int fetchSize,
   int rowCount,
+  int pipelineDepth,
   string connectionString) =>
   driver.ToLowerInvariant() switch
   {
@@ -140,10 +144,12 @@ static ValueTask<IQueryRunner> CreateRunnerAsync(
       workload,
       fetchSize,
       rowCount,
+      pipelineDepth,
       connectionString)),
     "npgsql" => WrapAsync(NpgsqlQueryRunner.CreateAsync(
       workload,
       rowCount,
+      pipelineDepth,
       connectionString)),
     _ => throw new ArgumentException($"Unknown driver '{driver}'."),
   };
@@ -168,6 +174,8 @@ static double Percentile(long[] ordered, double percentile)
 
 internal interface IQueryRunner : IAsyncDisposable
 {
+  int OperationsPerInvocation { get; }
+
   ValueTask QueryAsync(CancellationToken cancellationToken);
 }
 
@@ -176,12 +184,15 @@ internal sealed class ApexQueryRunner(
   string workload,
   int fetchSize,
   string streamSql,
-  int expectedSum) : IQueryRunner
+  int expectedSum,
+  int pipelineDepth,
+  ISqlPreparedStatement? pipelineStatement) : IQueryRunner
 {
   public static async ValueTask<ApexQueryRunner> CreateAsync(
     string workload,
     int fetchSize,
     int rowCount,
+    int pipelineDepth,
     string connectionString)
   {
     NpgsqlConnectionStringBuilder builder = new(connectionString);
@@ -197,17 +208,40 @@ internal sealed class ApexQueryRunner(
       Password = builder.Password ?? string.Empty,
       PipeliningLimit = 256,
     });
+    ISqlPreparedStatement? pipelineStatement = workload == "pipeline"
+      ? await connection.PrepareAsync("SELECT 1::int4")
+      : null;
     return new ApexQueryRunner(
       connection,
       workload,
       fetchSize,
       $"SELECT generate_series(1, {rowCount})::int4",
-      checked(rowCount * (rowCount + 1) / 2));
+      checked(rowCount * (rowCount + 1) / 2),
+      pipelineDepth,
+      pipelineStatement);
   }
+
+  public int OperationsPerInvocation =>
+    workload == "pipeline" ? pipelineDepth : 1;
 
   public async ValueTask QueryAsync(CancellationToken cancellationToken)
   {
-    if (workload == "stream100")
+    if (workload == "pipeline")
+    {
+      Task<SqlRowSet>[] pending = new Task<SqlRowSet>[pipelineDepth];
+      for (int i = 0; i < pending.Length; i++)
+      {
+        pending[i] = pipelineStatement!.QueryAsync(
+          cancellationToken: CancellationToken.None).AsTask();
+      }
+
+      SqlRowSet[] results = await Task.WhenAll(pending);
+      if (results.Any(static rows => rows[0].Get<int>(0) != 1))
+      {
+        throw new InvalidOperationException("Unexpected Apex pipeline result.");
+      }
+    }
+    else if (workload == "stream100")
     {
       int sum = 0;
       await foreach (SqlRow row in connection.StreamAsync(
@@ -229,32 +263,84 @@ internal sealed class ApexQueryRunner(
     }
   }
 
-  public ValueTask DisposeAsync() => connection.DisposeAsync();
+  public async ValueTask DisposeAsync()
+  {
+    if (pipelineStatement is not null)
+    {
+      await pipelineStatement.DisposeAsync();
+    }
+
+    await connection.DisposeAsync();
+  }
 }
 
 internal sealed class NpgsqlQueryRunner(
   NpgsqlConnection connection,
   string workload,
   string streamSql,
-  int expectedSum) : IQueryRunner
+  int expectedSum,
+  int pipelineDepth,
+  NpgsqlBatch? pipelineBatch) : IQueryRunner
 {
   public static async ValueTask<NpgsqlQueryRunner> CreateAsync(
     string workload,
     int rowCount,
+    int pipelineDepth,
     string connectionString)
   {
     NpgsqlConnection connection = new(connectionString);
     await connection.OpenAsync();
+    NpgsqlBatch? pipelineBatch = null;
+    if (workload == "pipeline")
+    {
+      pipelineBatch = new NpgsqlBatch(connection);
+      for (int i = 0; i < pipelineDepth; i++)
+      {
+        pipelineBatch.BatchCommands.Add(
+          new NpgsqlBatchCommand("SELECT 1::int4"));
+      }
+
+      await pipelineBatch.PrepareAsync();
+    }
+
     return new NpgsqlQueryRunner(
       connection,
       workload,
       $"SELECT generate_series(1, {rowCount})::int4",
-      checked(rowCount * (rowCount + 1) / 2));
+      checked(rowCount * (rowCount + 1) / 2),
+      pipelineDepth,
+      pipelineBatch);
   }
+
+  public int OperationsPerInvocation =>
+    workload == "pipeline" ? pipelineDepth : 1;
 
   public async ValueTask QueryAsync(CancellationToken cancellationToken)
   {
-    if (workload == "stream100")
+    if (workload == "pipeline")
+    {
+      await using NpgsqlDataReader reader =
+        await pipelineBatch!.ExecuteReaderAsync(CancellationToken.None);
+      int count = 0;
+      do
+      {
+        if (!await reader.ReadAsync(CancellationToken.None) ||
+            reader.GetInt32(0) != 1)
+        {
+          throw new InvalidOperationException("Unexpected Npgsql pipeline result.");
+        }
+
+        count++;
+      }
+      while (await reader.NextResultAsync(CancellationToken.None));
+
+      if (count != pipelineDepth)
+      {
+        throw new InvalidOperationException(
+          $"Expected {pipelineDepth} Npgsql results but received {count}.");
+      }
+    }
+    else if (workload == "stream100")
     {
       await using NpgsqlCommand command =
         new(streamSql, connection);
@@ -278,7 +364,15 @@ internal sealed class NpgsqlQueryRunner(
     }
   }
 
-  public ValueTask DisposeAsync() => connection.DisposeAsync();
+  public async ValueTask DisposeAsync()
+  {
+    if (pipelineBatch is not null)
+    {
+      await pipelineBatch.DisposeAsync();
+    }
+
+    await connection.DisposeAsync();
+  }
 }
 
 internal sealed record HarnessResult(

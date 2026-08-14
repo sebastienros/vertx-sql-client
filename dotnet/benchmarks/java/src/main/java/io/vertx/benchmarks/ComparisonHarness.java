@@ -9,6 +9,10 @@ package io.vertx.benchmarks;
 import io.vertx.core.Vertx;
 import io.vertx.pgclient.PgConnectOptions;
 import io.vertx.pgclient.PgConnection;
+import io.vertx.sqlclient.PreparedQuery;
+import io.vertx.sqlclient.PreparedStatement;
+import io.vertx.sqlclient.Row;
+import io.vertx.sqlclient.RowSet;
 import java.lang.management.GarbageCollectorMXBean;
 import java.lang.management.ManagementFactory;
 import java.util.ArrayList;
@@ -24,10 +28,14 @@ public final class ComparisonHarness {
 
   public static void main(String[] args) throws Exception {
     int concurrency = Integer.parseInt(environment("APEX_BENCH_CONCURRENCY", "16"));
+    int pipelineDepth = Integer.parseInt(environment("APEX_BENCH_PIPELINE_DEPTH", "64"));
+    boolean pipeline = environment("APEX_BENCH_WORKLOAD", "query").equals("pipeline");
     double warmupSeconds = Double.parseDouble(environment("APEX_BENCH_WARMUP_SECONDS", "2"));
     double durationSeconds = Double.parseDouble(environment("APEX_BENCH_DURATION_SECONDS", "10"));
     Vertx vertx = Vertx.vertx();
     List<PgConnection> connections = new ArrayList<>(concurrency);
+    List<PreparedStatement> statements = new ArrayList<>(concurrency);
+    List<PreparedQuery<RowSet<Row>>> queries = new ArrayList<>(concurrency);
     PgConnectOptions options = new PgConnectOptions()
       .setHost(environment("APEX_PG_HOST", "localhost"))
       .setPort(Integer.parseInt(environment("APEX_PG_PORT", "5432")))
@@ -42,15 +50,35 @@ public final class ComparisonHarness {
           .join());
       }
 
-      run(connections, warmupSeconds, false);
+      if (pipeline) {
+        for (PgConnection connection : connections) {
+          PreparedStatement statement = connection.prepare("SELECT 1::INT4")
+            .toCompletionStage()
+            .toCompletableFuture()
+            .join();
+          statements.add(statement);
+          queries.add(statement.query());
+        }
+      }
+
+      run(connections, queries, pipeline, pipelineDepth, warmupSeconds, false);
       System.gc();
       long[] collectionsBefore = collections();
-      Result result = run(connections, durationSeconds, true);
+      Result result = run(
+        connections,
+        queries,
+        pipeline,
+        pipelineDepth,
+        durationSeconds,
+        true);
       long[] collectionsAfter = collections();
       result.gen0Collections = collectionsAfter[0] - collectionsBefore[0];
       result.gen1Collections = collectionsAfter[1] - collectionsBefore[1];
       System.out.println(result.toJson());
     } finally {
+      for (PreparedStatement statement : statements) {
+        statement.close().toCompletionStage().toCompletableFuture().join();
+      }
       for (PgConnection connection : connections) {
         connection.close().toCompletionStage().toCompletableFuture().join();
       }
@@ -60,6 +88,9 @@ public final class ComparisonHarness {
 
   private static Result run(
       List<PgConnection> connections,
+      List<PreparedQuery<RowSet<Row>>> queries,
+      boolean pipeline,
+      int pipelineDepth,
       double durationSeconds,
       boolean record) throws Exception {
     long deadline = System.nanoTime() + (long) (durationSeconds * 1_000_000_000L);
@@ -68,19 +99,38 @@ public final class ComparisonHarness {
     ExecutorService workers = Executors.newFixedThreadPool(connections.size());
     try {
       List<Future<?>> pending = new ArrayList<>(connections.size());
-      for (PgConnection connection : connections) {
+      for (int workerIndex = 0; workerIndex < connections.size(); workerIndex++) {
+        PgConnection connection = connections.get(workerIndex);
+        PreparedQuery<RowSet<Row>> preparedQuery =
+          pipeline ? queries.get(workerIndex) : null;
         pending.add(workers.submit(() -> {
           while (System.nanoTime() < deadline) {
             long started = System.nanoTime();
-            connection.query("SELECT 1")
-              .execute()
-              .toCompletionStage()
-              .toCompletableFuture()
-              .join();
+            if (pipeline) {
+              List<io.vertx.core.Future<RowSet<Row>>> batch = new ArrayList<>(pipelineDepth);
+              for (int i = 0; i < pipelineDepth; i++) {
+                batch.add(preparedQuery.execute());
+              }
+              io.vertx.core.Future.all(batch)
+                .toCompletionStage()
+                .toCompletableFuture()
+                .join();
+              for (io.vertx.core.Future<RowSet<Row>> result : batch) {
+                if (result.result().iterator().next().getInteger(0) != 1) {
+                  throw new IllegalStateException("Unexpected Vert.x pipeline result");
+                }
+              }
+            } else {
+              connection.query("SELECT 1")
+                .execute()
+                .toCompletionStage()
+                .toCompletableFuture()
+                .join();
+            }
             if (record) {
               latencies.add(System.nanoTime() - started);
             }
-            operations.increment();
+            operations.add(pipeline ? pipelineDepth : 1);
           }
         }));
       }

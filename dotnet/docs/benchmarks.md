@@ -118,6 +118,46 @@ The next allocation work should be split accordingly:
 2. Back lifetime-safe `SqlRow` instances with shared immutable page buffers and offsets, decoding typed values lazily instead of allocating `object?[]` and boxing scalars.
 3. Replace the per-stream bounded channel with a custom pull enumerator integrated with the scheduler to reduce the roughly 5.7 KB fixed cost.
 
+## Pipelining
+
+The common pipelining harness uses one physical connection and reports individual queries/second. Apex and Vert.x submit independent prepared-query operations concurrently in order. Npgsql does not permit concurrent commands on one connection, so its closest supported equivalent is one reusable `NpgsqlBatch` containing the same number of prepared `SELECT 1::int4` commands.
+
+PostgreSQL 16, one connection, 3-second warmup, 10-second measurement:
+
+| Driver | Depth | Queries/s | Batch p50 | Allocated/query |
+|---|---:|---:|---:|---:|
+| Apex | 1 | 3,106 | 0.301 ms | 3,630 B |
+| NpgsqlBatch | 1 | 3,189 | 0.300 ms | 729 B |
+| Vert.x | 1 | 3,054 | 0.317 ms | Not available |
+| Apex | 16 | 16,244 | 0.911 ms | 2,344 B |
+| NpgsqlBatch | 16 | 49,506 | 0.316 ms | 46 B |
+| Vert.x | 16 | 18,704 | 0.672 ms | Not available |
+| Apex | 64 | 26,450 | 2.364 ms | 2,239 B |
+| NpgsqlBatch | 64 | 170,835 | 0.364 ms | 12 B |
+| Vert.x | 64 | 38,835 | 1.478 ms | Not available |
+| Apex | 256 | 46,677 | 5.379 ms | 2,178 B |
+| NpgsqlBatch | 256 | 384,347 | 0.644 ms | 3 B |
+| Vert.x | 256 | 55,552 | 4.537 ms | Not available |
+
+At depth 1 the three drivers are effectively equal. At depth 256, Apex improves by 15 times over its depth-1 throughput; Vert.x improves by 18 times and remains about 19% faster than Apex. NpgsqlBatch is 8.2 times faster than Apex because it uses a single batch operation and amortizes one approximately 1 KB batch allocation across all commands. Apex and Vert.x retain one future/result lifecycle and protocol command sequence per submitted query.
+
+BenchmarkDotNet ShortRun confirms the .NET batch shape:
+
+| Driver | Depth | Batch mean | Allocated/batch |
+|---|---:|---:|---:|
+| Apex | 1 | 306.4 us | 3.47 KB |
+| NpgsqlBatch | 1 | 304.7 us | 1.01 KB |
+| Apex | 16 | 1,105.9 us | 36.48 KB |
+| NpgsqlBatch | 16 | 325.2 us | 1.01 KB |
+| Apex | 64 | 2,296.0 us | 139.21 KB |
+| NpgsqlBatch | 64 | 379.1 us | 1.01 KB |
+| Apex | 256 | 5,451.2 us | 542.45 KB |
+| NpgsqlBatch | 256 | 663.7 us | 1.01 KB |
+
+Vert.x JMH measured 3,093, 1,385, 614, and 216 batches/second at depths 1, 16, 64, and 256 respectively, equivalent to approximately 3.1k, 22.2k, 39.3k, and 55.4k queries/second.
+
+The next Apex pipelining optimization is a first-class reusable batch API that emits one protocol batch and returns compact batch results, instead of constructing one task, row set, and command lifecycle per query.
+
 ### Vert.x JMH
 
 JMH 1.37 used 3 warmups, 5 measurements, 2-second measurement iterations, and 2 forks:
