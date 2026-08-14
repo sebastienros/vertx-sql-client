@@ -8,9 +8,14 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text.Json;
 using Apex.PgClient;
+using Apex.SqlClient;
 using Npgsql;
 
 string driver = args.ElementAtOrDefault(0) ?? "apex";
+string workload =
+  Environment.GetEnvironmentVariable("APEX_BENCH_WORKLOAD") ?? "query";
+int fetchSize = int.Parse(
+  Environment.GetEnvironmentVariable("APEX_BENCH_FETCH_SIZE") ?? "16");
 int concurrency = int.Parse(
   Environment.GetEnvironmentVariable("APEX_BENCH_CONCURRENCY") ?? "16");
 TimeSpan warmup = TimeSpan.FromSeconds(double.Parse(
@@ -23,7 +28,7 @@ string connectionString =
 
 IQueryRunner[] runners = await Task.WhenAll(
   Enumerable.Range(0, concurrency)
-    .Select(_ => CreateRunnerAsync(driver, connectionString).AsTask()));
+    .Select(_ => CreateRunnerAsync(driver, workload, fetchSize, connectionString).AsTask()));
 try
 {
   await RunPhaseAsync(driver, runners, warmup, record: false);
@@ -116,11 +121,15 @@ static async Task RunWorkerAsync(
   }
 }
 
-static ValueTask<IQueryRunner> CreateRunnerAsync(string driver, string connectionString) =>
+static ValueTask<IQueryRunner> CreateRunnerAsync(
+  string driver,
+  string workload,
+  int fetchSize,
+  string connectionString) =>
   driver.ToLowerInvariant() switch
   {
-    "apex" => WrapAsync(ApexQueryRunner.CreateAsync(connectionString)),
-    "npgsql" => WrapAsync(NpgsqlQueryRunner.CreateAsync(connectionString)),
+    "apex" => WrapAsync(ApexQueryRunner.CreateAsync(workload, fetchSize, connectionString)),
+    "npgsql" => WrapAsync(NpgsqlQueryRunner.CreateAsync(workload, connectionString)),
     _ => throw new ArgumentException($"Unknown driver '{driver}'."),
   };
 
@@ -147,9 +156,15 @@ internal interface IQueryRunner : IAsyncDisposable
   ValueTask QueryAsync(CancellationToken cancellationToken);
 }
 
-internal sealed class ApexQueryRunner(PgConnection connection) : IQueryRunner
+internal sealed class ApexQueryRunner(
+  PgConnection connection,
+  string workload,
+  int fetchSize) : IQueryRunner
 {
-  public static async ValueTask<ApexQueryRunner> CreateAsync(string connectionString)
+  public static async ValueTask<ApexQueryRunner> CreateAsync(
+    string workload,
+    int fetchSize,
+    string connectionString)
   {
     NpgsqlConnectionStringBuilder builder = new(connectionString);
     string username = builder.Username ??
@@ -164,30 +179,73 @@ internal sealed class ApexQueryRunner(PgConnection connection) : IQueryRunner
       Password = builder.Password ?? string.Empty,
       PipeliningLimit = 256,
     });
-    return new ApexQueryRunner(connection);
+    return new ApexQueryRunner(connection, workload, fetchSize);
   }
 
   public async ValueTask QueryAsync(CancellationToken cancellationToken)
   {
-    _ = await connection.QueryAsync("SELECT 1", cancellationToken);
+    if (workload == "stream100")
+    {
+      int sum = 0;
+      await foreach (SqlRow row in connection.StreamAsync(
+                       "SELECT generate_series(1, 100)::int4",
+                       fetchSize: fetchSize,
+                       cancellationToken: cancellationToken))
+      {
+        sum += row.Get<int>(0);
+      }
+
+      if (sum != 5050)
+      {
+        throw new InvalidOperationException($"Unexpected stream sum {sum}.");
+      }
+    }
+    else
+    {
+      _ = await connection.QueryAsync("SELECT 1", cancellationToken);
+    }
   }
 
   public ValueTask DisposeAsync() => connection.DisposeAsync();
 }
 
-internal sealed class NpgsqlQueryRunner(NpgsqlConnection connection) : IQueryRunner
+internal sealed class NpgsqlQueryRunner(
+  NpgsqlConnection connection,
+  string workload) : IQueryRunner
 {
-  public static async ValueTask<NpgsqlQueryRunner> CreateAsync(string connectionString)
+  public static async ValueTask<NpgsqlQueryRunner> CreateAsync(
+    string workload,
+    string connectionString)
   {
     NpgsqlConnection connection = new(connectionString);
     await connection.OpenAsync();
-    return new NpgsqlQueryRunner(connection);
+    return new NpgsqlQueryRunner(connection, workload);
   }
 
   public async ValueTask QueryAsync(CancellationToken cancellationToken)
   {
-    await using NpgsqlCommand command = new("SELECT 1", connection);
-    _ = await command.ExecuteScalarAsync(cancellationToken);
+    if (workload == "stream100")
+    {
+      await using NpgsqlCommand command =
+        new("SELECT generate_series(1, 100)::int4", connection);
+      await using NpgsqlDataReader reader =
+        await command.ExecuteReaderAsync(cancellationToken);
+      int sum = 0;
+      while (await reader.ReadAsync(cancellationToken))
+      {
+        sum += reader.GetInt32(0);
+      }
+
+      if (sum != 5050)
+      {
+        throw new InvalidOperationException($"Unexpected stream sum {sum}.");
+      }
+    }
+    else
+    {
+      await using NpgsqlCommand command = new("SELECT 1", connection);
+      _ = await command.ExecuteScalarAsync(cancellationToken);
+    }
   }
 
   public ValueTask DisposeAsync() => connection.DisposeAsync();

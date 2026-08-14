@@ -50,6 +50,29 @@ Apex was within 1.5% of Npgsql throughput and 8% of Vert.x throughput in this ru
 
 The Apex cursor-based stream fetches 16 rows per round trip in this benchmark and is substantially slower than Npgsql's reader. Streaming round trips and per-page allocations are the primary performance follow-up.
 
+### Streaming profile
+
+A warmed macOS `sample` capture and managed heap dump used the same 100-row workload with one connection. The common harness ran for 30 seconds after a 5-second warmup:
+
+| Driver/configuration | operations/s | p50 | allocated/op |
+|---|---:|---:|---:|
+| Apex, fetch 16 | 270 | 3.670 ms | 37,944 B |
+| Apex, fetch 100 | 463 | 2.139 ms | 27,620 B |
+| Npgsql | 3,106 | 0.315 ms | 1,184 B |
+
+Increasing Apex's fetch size from 16 to 100 reduced the number of portal fetches, improving throughput by 71%, reducing median latency by 42%, and reducing allocation per operation by 27%. It remained 6.7 times slower than Npgsql and allocated 23 times more.
+
+The reason is architectural:
+
+- Apex direct streaming creates a prepared statement, starts a transaction, opens a named portal, performs one fetch per page, closes the portal, commits, and closes the statement.
+- With fetch size 16, 100 rows require seven portal executions in addition to setup and cleanup round trips.
+- Npgsql sends one query and streams all rows client-side from its read buffer.
+- Apex materializes every value into `object?[]` and every row into `SqlRow`, then creates a `SqlRowSet` for each fetched page. Npgsql's reader exposes values without equivalent row/page materialization.
+
+The macOS samples include blocked threads, so their counts are wall-clock residency rather than pure CPU time. They nevertheless show Apex repeatedly resident in scheduler, `WriteExecutePortalAsync`, `ReadPortalAsync`, and `ReadPortalPageAsync` state machines, whereas Npgsql is concentrated in `ExecuteReader`, `ReadMessageLong`, and `NpgsqlReadBuffer.Ensure`. Heap snapshots were small for both processes (approximately 0.4 MB Apex and 1.1 MB Npgsql), indicating the Apex difference is transient allocation rather than retained leakage.
+
+The recommended change is to make `StreamAsync` use one extended-query response and client-side socket backpressure, while retaining `OpenCursorAsync` for callers who explicitly require server cursors. A lower-allocation row representation or page-owned value storage is the second priority.
+
 ### Vert.x JMH
 
 JMH 1.37 used 3 warmups, 5 measurements, 2-second measurement iterations, and 2 forks:
