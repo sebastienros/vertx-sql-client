@@ -22,16 +22,41 @@ Environment variables:
 
 Results must record the exact driver commit/package, SDK/JDK, CPU, OS, database image/version, container limits, and harness settings. Short local runs are diagnostic only and are not release claims.
 
-## Initial diagnostic baseline
+## Final PostgreSQL-first baseline
 
-An August 2026 macOS Arm64 run against the same PostgreSQL 16 container, four workers, one-second warmup, and two-second measurement produced approximately:
+The final branch at commit `9b272f37` was measured on macOS 15.7.8 Arm64 against one PostgreSQL 16 Alpine container. The common harness used 16 workers, a 5-second warmup, and a 20-second measurement.
 
-| Driver | operations/s | p50 | p95 | p99 | allocated bytes |
+| Driver | operations/s | p50 | p95 | p99 | allocated/op |
 |---|---:|---:|---:|---:|---:|
-| Apex | 7,506 | 0.444 ms | 1.286 ms | 1.628 ms | 53.9 MB |
-| Npgsql | 7,566 | 0.441 ms | 1.290 ms | 1.586 ms | 20.4 MB |
-| Vert.x | 7,144 | 0.424 ms | 1.387 ms | 1.773 ms | Not available |
+| Apex | 19,943 | 0.748 ms | 1.305 ms | 1.684 ms | 2,785 B |
+| Npgsql | 20,240 | 0.728 ms | 1.307 ms | 1.704 ms | 1,346 B |
+| Vert.x | 21,654 | 0.665 ms | 1.294 ms | 1.623 ms | Not available |
 
-Throughput and latency were similar in this short run, while Apex allocated substantially more. Allocation reduction is therefore the first optimization target. Full artifacts are stored outside the repository in the session benchmark artifacts.
+Apex was within 1.5% of Npgsql throughput and 8% of Vert.x throughput in this run. Its latency distribution was close to Npgsql, but it allocated about 2.1 times as much per operation.
 
-After pooling wire payloads and scheduler `IValueTaskSource<T>` commands and encoding simple queries directly into the pipe, a comparable short Apex run allocated about 42.5 MB across 15,146 operations (approximately 2.8 KB/operation), down from roughly 3.6 KB/operation. The retained baseline artifacts are the source of truth; these short runs remain diagnostic rather than release claims.
+### BenchmarkDotNet ShortRun
+
+| Workload | Mean | Allocated |
+|---|---:|---:|
+| Decode numeric text | 160.98 ns | 296 B |
+| Decode numeric binary | 79.96 ns | 200 B |
+| Decode text array | 107.95 ns | 808 B |
+| Npgsql simple query | 308.34 us | 1,672 B |
+| Apex simple query | 301.96 us | 2,743 B |
+| Npgsql prepared query | 303.97 us | 1,208 B |
+| Apex prepared query | 295.56 us | 3,574 B |
+| Npgsql stream 100 rows | 327.39 us | 1,496 B |
+| Apex stream 100 rows | 3,682.49 us | 37,618 B |
+
+The Apex cursor-based stream fetches 16 rows per round trip in this benchmark and is substantially slower than Npgsql's reader. Streaming round trips and per-page allocations are the primary performance follow-up.
+
+### Vert.x JMH
+
+JMH 1.37 used 3 warmups, 5 measurements, 2-second measurement iterations, and 2 forks:
+
+| Workload | Throughput |
+|---|---:|
+| Vert.x simple query | 3,069.72 ops/s |
+| Vert.x prepared query | 1,564.33 ops/s |
+
+Native BenchmarkDotNet and JMH values are not compared directly. Full JSON, CSV, Markdown, HTML, and logs are retained outside the repository in the session benchmark artifacts under `final-9b272f37-20260814`.
