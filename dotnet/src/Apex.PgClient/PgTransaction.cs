@@ -22,8 +22,16 @@ internal sealed class PgTransaction : ISqlTransaction
     public async ValueTask CommitAsync(CancellationToken cancellationToken = default)
     {
         ThrowIfCompleted();
-        await _connection.ExecuteTransactionControlAsync("COMMIT", cancellationToken).ConfigureAwait(false);
-        IsCompleted = true;
+        try
+        {
+            await _connection.ExecuteTransactionControlAsync("COMMIT", cancellationToken).ConfigureAwait(false);
+            IsCompleted = true;
+        }
+        catch (PgException) when (_connection.IsReadyForPool)
+        {
+            IsCompleted = true;
+            throw;
+        }
     }
 
     public async ValueTask RollbackAsync(CancellationToken cancellationToken = default)

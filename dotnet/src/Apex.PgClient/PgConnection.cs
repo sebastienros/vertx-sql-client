@@ -619,22 +619,49 @@ public sealed class PgConnection : ISqlConnection
 
     internal async ValueTask<SqlRowSet> ExecutePreparedAsync(
         string name,
+                string sql,
         SqlParameters parameters,
         CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        return await _scheduler.ExecuteAsync(
-          async token =>
-          {
-              token.ThrowIfCancellationRequested();
-              await _writer.WritePreparedQueryAsync(
-            name,
-            parameters,
-            CancellationToken.None).ConfigureAwait(false);
-          },
-          _ => ReceiveQueryAsync(cancellationToken),
-          barrier: cancellationToken.CanBeCanceled,
-          cancellationToken: cancellationToken).ConfigureAwait(false);
+                var operation = GetOperation(sql);
+                using var activity = SqlClientDiagnostics.StartQuery(
+                    "postgresql",
+                    _options.Database,
+                    _options.Host,
+                    _options.Port,
+                    operation);
+                var started = System.Diagnostics.Stopwatch.GetTimestamp();
+                Exception? error = null;
+                try
+                {
+                        return await _scheduler.ExecuteAsync(
+                            async token =>
+                            {
+                                    token.ThrowIfCancellationRequested();
+                                    await _writer.WritePreparedQueryAsync(
+                                name,
+                                parameters,
+                                CancellationToken.None).ConfigureAwait(false);
+                            },
+                            _ => ReceiveQueryAsync(cancellationToken),
+                            barrier: cancellationToken.CanBeCanceled,
+                            cancellationToken: cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception exception)
+                {
+                        error = exception;
+                        activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Error, exception.Message);
+                        throw;
+                }
+                finally
+                {
+                        SqlClientDiagnostics.RecordQuery(
+                            System.Diagnostics.Stopwatch.GetElapsedTime(started),
+                            "postgresql",
+                            operation,
+                            error);
+                }
     }
 
     internal async ValueTask ExecuteTransactionControlAsync(

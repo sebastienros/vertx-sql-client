@@ -1,6 +1,7 @@
-﻿<Project Sdk="MSTest.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
+    <PackageReference Include="MSTest.TestFramework" VersionOverride="4.3.3" />
     <ProjectReference Include="..\..\src\Apex.SqlClient\Apex.SqlClient.csproj" />
   </ItemGroup>
 

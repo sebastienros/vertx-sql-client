@@ -5,6 +5,7 @@
  */
 
 using DotNet.Testcontainers.Builders;
+using DotNet.Testcontainers.Networks;
 using Testcontainers.MySql;
 
 namespace Apex.MySqlClient.IntegrationTests;
@@ -34,15 +35,28 @@ internal static class MySqlContainerFixture
       Environment.GetEnvironmentVariable("MYSQL_IMAGE") is { Length: > 0 } image ? image : DefaultImage;
 
     /// <summary>Starts a freshly configured, ready-to-use container for the given image tag.</summary>
-    internal static async Task<MySqlContainer> StartAsync(string? image = null)
+    internal static async Task<MySqlContainer> StartAsync(
+      string? image = null,
+      INetwork? network = null,
+      string? networkAlias = null)
     {
-        var container = new MySqlBuilder(image ?? ResolveImage())
+      var builder = new MySqlBuilder(image ?? ResolveImage())
           .WithDatabase(Database)
           .WithUsername(Username)
           .WithPassword(Password)
           .WithCommand("--local-infile=1")
-          .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(MySqlBuilder.MySqlPort))
-          .Build();
+        .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(MySqlBuilder.MySqlPort));
+      if (network is not null)
+      {
+        builder = builder.WithNetwork(network);
+      }
+
+      if (!string.IsNullOrWhiteSpace(networkAlias))
+      {
+        builder = builder.WithNetworkAliases(networkAlias);
+      }
+
+      var container = builder.Build();
         await container.StartAsync();
         await WaitUntilAcceptingConnectionsAsync(container);
         return container;

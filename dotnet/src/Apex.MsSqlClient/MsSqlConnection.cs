@@ -318,10 +318,17 @@ public sealed class MsSqlConnection : ISqlConnection
         _disposed = true;
         try
         {
-            await _scheduler.DisposeAsync().ConfigureAwait(false);
+            await _scheduler.ExecuteAsync(
+              static _ => ValueTask.CompletedTask,
+              static _ => ValueTask.FromResult(true),
+              barrier: true).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (IsFatalConnectionError(exception))
+        {
         }
         finally
         {
+            await _scheduler.DisposeAsync().ConfigureAwait(false);
             _rowDecoder.DisableCache();
             _writer.Dispose();
             await _stream.DisposeAsync().ConfigureAwait(false);

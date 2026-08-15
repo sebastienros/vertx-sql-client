@@ -5,6 +5,7 @@
  */
 
 using Apex.SqlClient;
+using Apex.SqlClient.SpecificationTests;
 using Testcontainers.PostgreSql;
 
 namespace Apex.PgClient.IntegrationTests;
@@ -95,6 +96,135 @@ public sealed class PgConnectionIntegrationTests
 
         Assert.AreEqual("42703", exception.SqlState);
         Assert.IsNotNull(exception.Severity);
+    }
+
+    [TestMethod]
+    public async Task RejectsInvalidDatabaseUsernameAndPassword()
+    {
+        var container = _container ??
+          throw new InvalidOperationException("The PostgreSQL container is not running.");
+        PgConnectOptions options = new()
+        {
+            Host = container.Hostname,
+            Port = container.GetMappedPublicPort(5432),
+            Database = "db",
+            Username = "user",
+            Password = "pass",
+        };
+
+        var database = await Assert.ThrowsExactlyAsync<PgException>(
+          () => PgClient.ConnectAsync(options with { Database = "missing_database" }).AsTask());
+        var username = await Assert.ThrowsExactlyAsync<PgException>(
+          () => PgClient.ConnectAsync(options with { Username = "missing_user" }).AsTask());
+        var password = await Assert.ThrowsExactlyAsync<PgException>(
+          () => PgClient.ConnectAsync(options with { Password = "wrong_password" }).AsTask());
+
+        Assert.AreEqual("3D000", database.SqlState);
+        Assert.AreEqual("28P01", username.SqlState);
+        Assert.AreEqual("28P01", password.SqlState);
+    }
+
+      [TestMethod]
+      public async Task ExhaustsConfiguredReconnectAttempts()
+      {
+        var port = ReserveUnusedPort();
+        PgConnectOptions options = new()
+        {
+          Host = "127.0.0.1",
+          Port = port,
+          Database = "db",
+          Username = "user",
+          Password = "pass",
+          ConnectTimeout = TimeSpan.FromMilliseconds(100),
+          ReconnectAttempts = 2,
+          ReconnectInterval = TimeSpan.FromMilliseconds(100),
+        };
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+
+        await Assert.ThrowsAsync<System.Net.Sockets.SocketException>(
+          () => PgClient.ConnectAsync(options).AsTask());
+
+        Assert.IsGreaterThanOrEqualTo(TimeSpan.FromMilliseconds(180), stopwatch.Elapsed);
+      }
+
+    [TestMethod]
+    public async Task ReceivesNoticeFields()
+    {
+        var container = _container ??
+          throw new InvalidOperationException("The PostgreSQL container is not running.");
+        PgConnectOptions options = new()
+        {
+            Host = container.Hostname,
+            Port = container.GetMappedPublicPort(5432),
+            Database = "db",
+            Username = "user",
+            Password = "pass",
+        };
+
+        await using var connection = await PgClient.ConnectAsync(options);
+        PgNotice? notice = null;
+        connection.Notice += value => notice = value;
+
+        await connection.ExecuteAsync(
+          "DO $$ BEGIN RAISE NOTICE 'apex notice' USING DETAIL = 'detail', HINT = 'hint'; END $$");
+
+        Assert.IsNotNull(notice);
+        Assert.AreEqual("apex notice", notice.Message);
+        Assert.AreEqual("NOTICE", notice.Severity);
+        Assert.AreEqual("00000", notice.SqlState);
+        Assert.AreEqual("detail", notice.Detail);
+        Assert.AreEqual("hint", notice.Hint);
+    }
+
+    [TestMethod]
+    public async Task DirectCancelRequestLeavesConnectionReusable()
+    {
+        var container = _container ??
+          throw new InvalidOperationException("The PostgreSQL container is not running.");
+        PgConnectOptions options = new()
+        {
+            Host = container.Hostname,
+            Port = container.GetMappedPublicPort(5432),
+            Database = "db",
+            Username = "user",
+            Password = "pass",
+        };
+
+        await using var connection = await PgClient.ConnectAsync(options);
+        var pending = connection.QueryAsync("SELECT pg_sleep(10)").AsTask();
+        await Task.Delay(200);
+
+        await connection.CancelRequestAsync();
+        var exception = await Assert.ThrowsExactlyAsync<PgException>(() => pending);
+
+        Assert.AreEqual("57014", exception.SqlState);
+        Assert.AreEqual(42, (await connection.QueryAsync("SELECT 42::int4"))[0].GetInt32(0));
+    }
+
+    [TestMethod]
+    public async Task InsertReturningProvidesRowsAndAffectedCount()
+    {
+        var container = _container ??
+          throw new InvalidOperationException("The PostgreSQL container is not running.");
+        PgConnectOptions options = new()
+        {
+            Host = container.Hostname,
+            Port = container.GetMappedPublicPort(5432),
+            Database = "db",
+            Username = "user",
+            Password = "pass",
+        };
+
+        await using var connection = await PgClient.ConnectAsync(options);
+        await connection.ExecuteAsync("CREATE TEMP TABLE returning_probe (value int4)");
+
+        var rows = await connection.QueryAsync(
+          "INSERT INTO returning_probe VALUES ($1::int4) RETURNING value",
+          SqlParameters.Create(42));
+
+        Assert.HasCount(1, rows);
+        Assert.AreEqual(1L, rows.AffectedRows);
+        Assert.AreEqual(42, rows[0].GetInt32("value"));
     }
 
     [TestMethod]
@@ -220,6 +350,39 @@ public sealed class PgConnectionIntegrationTests
               {
               }
           });
+    }
+
+    [TestMethod]
+    public async Task PreparedStreamDeliversFetchedRowsBeforeServerError()
+    {
+        var container = _container ??
+          throw new InvalidOperationException("The PostgreSQL container is not running.");
+        PgConnectOptions options = new()
+        {
+            Host = container.Hostname,
+            Port = container.GetMappedPublicPort(5432),
+            Database = "db",
+            Username = "user",
+            Password = "pass",
+        };
+        await using var connection = await PgClient.ConnectAsync(options);
+        await using var statement = await connection.PrepareAsync(
+          "SELECT CASE WHEN value = 5 THEN 1 / (value - value) ELSE value END " +
+          "FROM generate_series(1, 8) AS value");
+        List<int> values = [];
+
+        var exception = await Assert.ThrowsExactlyAsync<PgException>(
+          async () =>
+          {
+              await foreach (var row in statement.StreamAsync(fetchSize: 4))
+              {
+                  values.Add(row.GetInt32(0));
+              }
+          });
+
+        CollectionAssert.AreEqual(new[] { 1, 2, 3, 4 }, values);
+        Assert.AreEqual("22012", exception.SqlState);
+        Assert.AreEqual(42, (await connection.QueryAsync("SELECT 42::int4"))[0].GetInt32(0));
     }
 
     [TestMethod]
@@ -544,6 +707,41 @@ public sealed class PgConnectionIntegrationTests
     }
 
     [TestMethod]
+    public async Task EncodesNullParametersAcrossSupportedTypeFamilies()
+    {
+        var container = _container ??
+          throw new InvalidOperationException("The PostgreSQL container is not running.");
+        PgConnectOptions options = new()
+        {
+            Host = container.Hostname,
+            Port = container.GetMappedPublicPort(5432),
+            Database = "db",
+            Username = "user",
+            Password = "pass",
+        };
+        const string sql =
+          """
+          SELECT
+            $1::bool, $2::bytea, $3::int2, $4::int4, $5::int8,
+            $6::float4, $7::float8, $8::numeric, $9::uuid,
+            $10::date, $11::time, $12::timetz, $13::timestamp,
+            $14::timestamptz, $15::interval, $16::jsonb,
+            $17::point, $18::inet, $19::cidr, $20::money, $21::int4[]
+          """;
+        var parameters = SqlParameters.Create(
+          Enumerable.Repeat(SqlValue.Null, 21).ToArray());
+
+        await using var connection = await PgClient.ConnectAsync(options);
+        var row = (await connection.QueryAsync(sql, parameters))[0];
+
+        Assert.AreEqual(21, row.Count);
+        for (var ordinal = 0; ordinal < row.Count; ordinal++)
+        {
+            Assert.IsTrue(row.IsNull(ordinal), $"Column {ordinal} should be NULL.");
+        }
+    }
+
+    [TestMethod]
     public async Task BorrowedReaderReturnsOwnedByteMemory()
     {
         var container = _container ??
@@ -601,6 +799,73 @@ public sealed class PgConnectionIntegrationTests
 
         Assert.AreEqual(1, first[0].Get<int>(0));
         Assert.AreEqual(2, second[0].Get<int>(0));
+    }
+
+    [TestMethod]
+    public async Task BoundsPreparedCacheUnderConcurrencyAndEviction()
+    {
+        var container = _container ??
+          throw new InvalidOperationException("The PostgreSQL container is not running.");
+        PgConnectOptions options = new()
+        {
+            Host = container.Hostname,
+            Port = container.GetMappedPublicPort(5432),
+            Database = "db",
+            Username = "user",
+            Password = "pass",
+            CachePreparedStatements = true,
+            PreparedStatementCacheSize = 2,
+            PreparedStatementCacheSqlLengthLimit = 128,
+            PipeliningLimit = 16,
+        };
+
+        await using var connection = await PgClient.ConnectAsync(options);
+        var pending = Enumerable.Range(0, 32)
+          .Select(value => connection.QueryAsync(
+            "SELECT $1::int4 AS value",
+            SqlParameters.Create(value)).AsTask())
+          .ToArray();
+        var results = await Task.WhenAll(pending);
+        for (var index = 0; index < results.Length; index++)
+        {
+            Assert.AreEqual(index, results[index][0].GetInt32(0));
+        }
+
+        _ = await connection.QueryAsync("SELECT $1::int4 + 1", SqlParameters.Create(1));
+        _ = await connection.QueryAsync("SELECT $1::int4 + 2", SqlParameters.Create(1));
+        _ = await connection.QueryAsync("SELECT $1::int4 AS value", SqlParameters.Create(42));
+        var count = await connection.QueryAsync(
+          "SELECT COUNT(*)::int8 FROM pg_prepared_statements");
+        Assert.IsLessThanOrEqualTo(2L, count[0].GetInt64(0));
+    }
+
+    [TestMethod]
+    public async Task BypassesPreparedCacheAboveSqlLengthLimit()
+    {
+        var container = _container ??
+          throw new InvalidOperationException("The PostgreSQL container is not running.");
+        PgConnectOptions options = new()
+        {
+            Host = container.Hostname,
+            Port = container.GetMappedPublicPort(5432),
+            Database = "db",
+            Username = "user",
+            Password = "pass",
+            CachePreparedStatements = true,
+            PreparedStatementCacheSize = 8,
+            PreparedStatementCacheSqlLengthLimit = 1,
+        };
+
+        await using var connection = await PgClient.ConnectAsync(options);
+        Assert.AreEqual(
+          42,
+          (await connection.QueryAsync(
+            "SELECT $1::int4 AS value",
+            SqlParameters.Create(42)))[0].GetInt32(0));
+        var count = await connection.QueryAsync(
+          "SELECT COUNT(*)::int8 FROM pg_prepared_statements");
+
+        Assert.AreEqual(0L, count[0].GetInt64(0));
     }
 
     [TestMethod]
@@ -682,6 +947,72 @@ public sealed class PgConnectionIntegrationTests
     }
 
     [TestMethod]
+    public async Task SubscribesAndUnsubscribesQuotedChannel()
+    {
+        var container = _container ??
+          throw new InvalidOperationException("The PostgreSQL container is not running.");
+        PgConnectOptions options = new()
+        {
+            Host = container.Hostname,
+            Port = container.GetMappedPublicPort(5432),
+            Database = "db",
+            Username = "user",
+            Password = "pass",
+        };
+        const string channel = "apex quoted \" channel";
+
+        await using var subscriber = await PgClient.SubscribeAsync(options);
+        await subscriber.SubscribeAsync(channel);
+        Assert.IsTrue(subscriber.Channels.Contains(channel));
+        await using var sender = await PgClient.ConnectAsync(options);
+        await sender.ExecuteAsync("NOTIFY \"apex quoted \"\" channel\", 'payload'");
+        var notification = await NextNotificationAsync(
+          subscriber.Notifications,
+          TimeSpan.FromSeconds(5));
+        Assert.AreEqual(channel, notification.Channel);
+        Assert.AreEqual("payload", notification.Payload);
+
+        await subscriber.UnsubscribeAsync(channel);
+
+        Assert.IsFalse(subscriber.Channels.Contains(channel));
+        await Assert.ThrowsExactlyAsync<ArgumentException>(
+          () => subscriber.SubscribeAsync(new string('x', 64)).AsTask());
+    }
+
+    [TestMethod]
+    public async Task SubscriberStopsAfterReconnectPolicyIsExhausted()
+    {
+        var container = _container ??
+          throw new InvalidOperationException("The PostgreSQL container is not running.");
+        await using FaultInjectingTcpProxy proxy = new(
+          container.Hostname,
+          container.GetMappedPublicPort(5432),
+          connectionsToDrop: 0);
+        PgConnectOptions options = new()
+        {
+            Host = "127.0.0.1",
+            Port = proxy.Port,
+            Database = "db",
+            Username = "user",
+            Password = "pass",
+        };
+        await using var subscriber = await PgClient.SubscribeAsync(
+          options,
+          attempt => attempt < 2 ? TimeSpan.FromMilliseconds(25) : null);
+        await subscriber.SubscribeAsync("reconnect_exhaustion");
+        proxy.RejectNewConnections();
+        proxy.CloseActiveConnections();
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(5));
+        await using var notifications = subscriber.Notifications
+          .GetAsyncEnumerator(timeout.Token);
+
+        await Assert.ThrowsAsync<Exception>(
+          () => notifications.MoveNextAsync().AsTask());
+
+        Assert.IsGreaterThanOrEqualTo(3, proxy.AcceptedConnections);
+    }
+
+    [TestMethod]
     public async Task EnforcesLayer7PreparedStatementScope()
     {
         var container = _container ??
@@ -740,6 +1071,46 @@ public sealed class PgConnectionIntegrationTests
     }
 
     [TestMethod]
+    public async Task PreparedBatchFailureKeepsConnectionSynchronized()
+    {
+        var container = _container ??
+          throw new InvalidOperationException("The PostgreSQL container is not running.");
+        PgConnectOptions options = new()
+        {
+            Host = container.Hostname,
+            Port = container.GetMappedPublicPort(5432),
+            Database = "db",
+            Username = "user",
+            Password = "pass",
+            PipeliningLimit = 8,
+        };
+
+        await using var connection = await PgClient.ConnectAsync(options);
+        await connection.ExecuteAsync(
+          "CREATE TEMP TABLE batch_failure_values (value int4 PRIMARY KEY)");
+        await using var statement = await connection.PrepareAsync(
+          "INSERT INTO batch_failure_values VALUES ($1::int4)");
+        SqlParameters[] batch =
+        [
+            SqlParameters.Create(1),
+            SqlParameters.Create(2),
+            SqlParameters.Create(1),
+            SqlParameters.Create(3),
+        ];
+
+        var exception = await Assert.ThrowsExactlyAsync<PgException>(
+          () => statement.ExecuteBatchAsync(batch).AsTask());
+
+        Assert.AreEqual("23505", exception.SqlState);
+        var rows = await connection.QueryAsync(
+          "SELECT value FROM batch_failure_values ORDER BY value");
+        CollectionAssert.AreEqual(
+          new[] { 1, 2, 3 },
+          rows.Select(static row => row.GetInt32(0)).ToArray());
+        Assert.AreEqual(42, (await connection.QueryAsync("SELECT 42::int4"))[0].GetInt32(0));
+    }
+
+    [TestMethod]
     public async Task DecodesCustomEnumAsStringInTextFormat()
     {
         var container = _container ??
@@ -781,6 +1152,287 @@ public sealed class PgConnectionIntegrationTests
           () => connection.BeginTransactionAsync().AsTask());
         await transaction.RollbackAsync();
         Assert.AreEqual(1, (await connection.QueryAsync("SELECT 1::int4"))[0].Get<int>(0));
+    }
+
+    [TestMethod]
+    public async Task DeferredConstraintFailureCompletesTransactionAndReusesConnection()
+    {
+        var container = _container ??
+          throw new InvalidOperationException("The PostgreSQL container is not running.");
+        PgConnectOptions options = new()
+        {
+            Host = container.Hostname,
+            Port = container.GetMappedPublicPort(5432),
+            Database = "db",
+            Username = "user",
+            Password = "pass",
+        };
+
+        await using var connection = await PgClient.ConnectAsync(options);
+        await connection.ExecuteAsync(
+          """
+          CREATE TEMP TABLE deferred_parent (name text PRIMARY KEY);
+          CREATE TEMP TABLE deferred_child (
+            name text PRIMARY KEY,
+            parent text REFERENCES deferred_parent(name) DEFERRABLE INITIALLY DEFERRED
+          )
+          """);
+        await using var transaction = await connection.BeginTransactionAsync();
+        await connection.ExecuteAsync(
+          "INSERT INTO deferred_child (name, parent) VALUES ('john', 'mike')");
+
+        var exception = await Assert.ThrowsExactlyAsync<PgException>(
+          () => transaction.CommitAsync().AsTask());
+
+        Assert.AreEqual("23503", exception.SqlState);
+        Assert.IsTrue(transaction.IsCompleted);
+        Assert.AreEqual(
+          42,
+          (await connection.QueryAsync("SELECT 42::int4"))[0].GetInt32(0));
+    }
+
+    [TestMethod]
+    public async Task RollsBackAbortedTransactionAndReusesConnection()
+    {
+        var container = _container ??
+          throw new InvalidOperationException("The PostgreSQL container is not running.");
+        PgConnectOptions options = new()
+        {
+            Host = container.Hostname,
+            Port = container.GetMappedPublicPort(5432),
+            Database = "db",
+            Username = "user",
+            Password = "pass",
+        };
+
+        await using var connection = await PgClient.ConnectAsync(options);
+        await using var transaction = await connection.BeginTransactionAsync();
+        await Assert.ThrowsExactlyAsync<PgException>(
+          () => connection.QueryAsync("SELECT missing_column").AsTask());
+        await Assert.ThrowsExactlyAsync<PgException>(
+          () => connection.QueryAsync("SELECT 1::int4").AsTask());
+
+        await transaction.RollbackAsync();
+
+        Assert.IsTrue(transaction.IsCompleted);
+        Assert.AreEqual(
+          42,
+          (await connection.QueryAsync("SELECT 42::int4"))[0].GetInt32(0));
+    }
+
+    [TestMethod]
+    public async Task DecodesGeometricTypesInTextAndBinaryFormats()
+    {
+        var container = _container ??
+          throw new InvalidOperationException("The PostgreSQL container is not running.");
+        PgConnectOptions options = new()
+        {
+            Host = container.Hostname,
+            Port = container.GetMappedPublicPort(5432),
+            Database = "db",
+            Username = "user",
+            Password = "pass",
+        };
+        const string projection =
+          """
+          point(1, 2) AS point_value,
+          '{1,2,3}'::line AS line_value,
+          '[(1,1),(2,2)]'::lseg AS segment_value,
+          '((2,2),(1,1))'::box AS box_value,
+          '((1,1),(2,1),(2,2))'::path AS closed_path_value,
+          '[(1,1),(2,1),(2,2)]'::path AS open_path_value,
+          '((1,1),(2,2),(3,1))'::polygon AS polygon_value,
+          '<(1,1),3>'::circle AS circle_value
+          """;
+
+        await using var connection = await PgClient.ConnectAsync(options);
+        AssertGeometricValues(
+          (await connection.QueryAsync("SELECT " + projection))[0]);
+        AssertGeometricValues(
+          (await connection.QueryAsync(
+            "SELECT " + projection + ", $1::int4",
+            SqlParameters.Create(42)))[0]);
+    }
+
+    [TestMethod]
+    public async Task EncodesGeometricParameters()
+    {
+        var container = _container ??
+          throw new InvalidOperationException("The PostgreSQL container is not running.");
+        PgConnectOptions options = new()
+        {
+            Host = container.Hostname,
+            Port = container.GetMappedPublicPort(5432),
+            Database = "db",
+            Username = "user",
+            Password = "pass",
+        };
+        PgPoint[] pathPoints =
+        [
+            new PgPoint(1, 1),
+            new PgPoint(2, 1),
+            new PgPoint(2, 2),
+        ];
+
+        await using var connection = await PgClient.ConnectAsync(options);
+        var row = (await connection.QueryAsync(
+          """
+          SELECT
+            $1::point AS point_value,
+            $2::line AS line_value,
+            $3::lseg AS segment_value,
+            $4::box AS box_value,
+            $5::path AS closed_path_value,
+            $6::path AS open_path_value,
+            $7::polygon AS polygon_value,
+            $8::circle AS circle_value
+          """,
+          SqlParameters.Create(
+            SqlValue.From(new PgPoint(1, 2)),
+            SqlValue.From(new PgLine(1, 2, 3)),
+            SqlValue.From(new PgLineSegment(new PgPoint(1, 1), new PgPoint(2, 2))),
+            SqlValue.From(new PgBox(new PgPoint(2, 2), new PgPoint(1, 1))),
+            SqlValue.From(new PgPath(pathPoints, Closed: true)),
+            SqlValue.From(new PgPath(pathPoints, Closed: false)),
+            SqlValue.From(new PgPolygon(
+              [new PgPoint(1, 1), new PgPoint(2, 2), new PgPoint(3, 1)])),
+            SqlValue.From(new PgCircle(new PgPoint(1, 1), 3)))))[0];
+
+        AssertGeometricValues(row);
+    }
+
+    [TestMethod]
+    public async Task EncodesComplexScalarParameters()
+    {
+        var container = _container ??
+          throw new InvalidOperationException("The PostgreSQL container is not running.");
+        PgConnectOptions options = new()
+        {
+            Host = container.Hostname,
+            Port = container.GetMappedPublicPort(5432),
+            Database = "db",
+            Username = "user",
+            Password = "pass",
+        };
+        PgTimeWithTimeZone timeWithTimeZone = new(
+          new TimeOnly(12, 34, 56, 123, 456),
+          TimeSpan.FromHours(2));
+        PgInterval interval = new(1, 2, 3, 4, 5, 6, 123456);
+        PgInet inet = new(System.Net.IPAddress.Parse("192.0.2.1"), 24);
+        PgCidr cidr = new(System.Net.IPAddress.Parse("2001:db8::"), 64);
+        PgMoney money = new(12.34m);
+
+        await using var connection = await PgClient.ConnectAsync(options);
+        var row = (await connection.QueryAsync(
+          "SELECT $1::timetz, $2::interval, $3::inet, $4::cidr, $5::money",
+          SqlParameters.Create(
+            SqlValue.From(timeWithTimeZone),
+            SqlValue.From(interval),
+            SqlValue.From(inet),
+            SqlValue.From(cidr),
+            SqlValue.From(money))))[0];
+
+        Assert.AreEqual(timeWithTimeZone, row.Get<PgTimeWithTimeZone>(0));
+        Assert.AreEqual(interval, row.Get<PgInterval>(1));
+        Assert.AreEqual(inet, row.Get<PgInet>(2));
+        Assert.AreEqual(cidr, row.Get<PgCidr>(3));
+        Assert.AreEqual(money, row.Get<PgMoney>(4));
+    }
+
+    [TestMethod]
+    public async Task DecodesGeometricArraysInTextAndBinaryFormats()
+    {
+        var container = _container ??
+          throw new InvalidOperationException("The PostgreSQL container is not running.");
+        PgConnectOptions options = new()
+        {
+            Host = container.Hostname,
+            Port = container.GetMappedPublicPort(5432),
+            Database = "db",
+            Username = "user",
+            Password = "pass",
+        };
+        const string projection =
+          """
+          ARRAY['(1,1)'::point, '(2,2)'::point] AS point_values,
+          ARRAY['{1,2,3}'::line, '{2,3,4}'::line] AS line_values,
+          ARRAY['[(1,1),(2,2)]'::lseg, '[(2,2),(3,3)]'::lseg] AS segment_values,
+          ARRAY['((2,2),(1,1))'::box, '((3,3),(2,2))'::box] AS box_values,
+          ARRAY['((1,1),(2,1),(2,2))'::path, '[(2,2),(3,2),(3,3)]'::path] AS path_values,
+          ARRAY['((1,1),(2,2),(3,1))'::polygon, '((0,0),(0,1),(1,0))'::polygon] AS polygon_values,
+          ARRAY['<(1,1),1>'::circle, '<(0,0),2>'::circle] AS circle_values
+          """;
+
+        await using var connection = await PgClient.ConnectAsync(options);
+        AssertGeometricArrayValues(
+          (await connection.QueryAsync("SELECT " + projection))[0]);
+        AssertGeometricArrayValues(
+          (await connection.QueryAsync(
+            "SELECT " + projection + ", $1::int4",
+            SqlParameters.Create(42)))[0]);
+    }
+
+    [TestMethod]
+    public async Task EncodesGeometricArrayParameters()
+    {
+        var container = _container ??
+          throw new InvalidOperationException("The PostgreSQL container is not running.");
+        PgConnectOptions options = new()
+        {
+            Host = container.Hostname,
+            Port = container.GetMappedPublicPort(5432),
+            Database = "db",
+            Username = "user",
+            Password = "pass",
+        };
+        PgPath[] paths =
+        [
+            new PgPath(
+              [new PgPoint(1, 1), new PgPoint(2, 1), new PgPoint(2, 2)],
+              Closed: true),
+            new PgPath(
+              [new PgPoint(2, 2), new PgPoint(3, 2), new PgPoint(3, 3)],
+              Closed: false),
+        ];
+
+        await using var connection = await PgClient.ConnectAsync(options);
+        var row = (await connection.QueryAsync(
+          """
+          SELECT
+            $1::point[] AS point_values,
+            $2::line[] AS line_values,
+            $3::lseg[] AS segment_values,
+            $4::box[] AS box_values,
+            $5::path[] AS path_values,
+            $6::polygon[] AS polygon_values,
+            $7::circle[] AS circle_values
+          """,
+          SqlParameters.Create(
+            SqlValue.From(new[] { new PgPoint(1, 1), new PgPoint(2, 2) }),
+            SqlValue.From(new[] { new PgLine(1, 2, 3), new PgLine(2, 3, 4) }),
+            SqlValue.From(new[]
+            {
+                new PgLineSegment(new PgPoint(1, 1), new PgPoint(2, 2)),
+                new PgLineSegment(new PgPoint(2, 2), new PgPoint(3, 3)),
+            }),
+            SqlValue.From(new[]
+            {
+                new PgBox(new PgPoint(2, 2), new PgPoint(1, 1)),
+                new PgBox(new PgPoint(3, 3), new PgPoint(2, 2)),
+            }),
+            SqlValue.From(paths),
+            SqlValue.From(new[]
+            {
+                new PgPolygon([new PgPoint(1, 1), new PgPoint(2, 2), new PgPoint(3, 1)]),
+                new PgPolygon([new PgPoint(0, 0), new PgPoint(0, 1), new PgPoint(1, 0)]),
+            }),
+            SqlValue.From(new[]
+            {
+                new PgCircle(new PgPoint(1, 1), 1),
+                new PgCircle(new PgPoint(0, 0), 2),
+            }))))[0];
+
+        AssertGeometricArrayValues(row);
     }
 
     private static void AssertTypeValues(SqlRow row)
@@ -895,6 +1547,88 @@ public sealed class PgConnectionIntegrationTests
           row.GetArray<int?>("array_value"));
     }
 
+    private static void AssertGeometricValues(SqlRow row)
+    {
+        Assert.AreEqual(new PgPoint(1, 2), row.Get<PgPoint>("point_value"));
+        Assert.AreEqual(new PgLine(1, 2, 3), row.Get<PgLine>("line_value"));
+        Assert.AreEqual(
+          new PgLineSegment(new PgPoint(1, 1), new PgPoint(2, 2)),
+          row.Get<PgLineSegment>("segment_value"));
+        Assert.AreEqual(
+          new PgBox(new PgPoint(2, 2), new PgPoint(1, 1)),
+          row.Get<PgBox>("box_value"));
+
+        var closedPath = row.Get<PgPath>("closed_path_value");
+        Assert.IsTrue(closedPath.Closed);
+        CollectionAssert.AreEqual(
+          new[] { new PgPoint(1, 1), new PgPoint(2, 1), new PgPoint(2, 2) },
+          closedPath.Points.ToArray());
+        var openPath = row.Get<PgPath>("open_path_value");
+        Assert.IsFalse(openPath.Closed);
+        CollectionAssert.AreEqual(
+          new[] { new PgPoint(1, 1), new PgPoint(2, 1), new PgPoint(2, 2) },
+          openPath.Points.ToArray());
+        CollectionAssert.AreEqual(
+          new[] { new PgPoint(1, 1), new PgPoint(2, 2), new PgPoint(3, 1) },
+          row.Get<PgPolygon>("polygon_value").Points.ToArray());
+        Assert.AreEqual(
+          new PgCircle(new PgPoint(1, 1), 3),
+          row.Get<PgCircle>("circle_value"));
+    }
+
+    private static void AssertGeometricArrayValues(SqlRow row)
+    {
+        CollectionAssert.AreEqual(
+          new[] { new PgPoint(1, 1), new PgPoint(2, 2) },
+          row.GetArray<PgPoint>("point_values"));
+        CollectionAssert.AreEqual(
+          new[] { new PgLine(1, 2, 3), new PgLine(2, 3, 4) },
+          row.GetArray<PgLine>("line_values"));
+        CollectionAssert.AreEqual(
+          new[]
+          {
+              new PgLineSegment(new PgPoint(1, 1), new PgPoint(2, 2)),
+              new PgLineSegment(new PgPoint(2, 2), new PgPoint(3, 3)),
+          },
+          row.GetArray<PgLineSegment>("segment_values"));
+        CollectionAssert.AreEqual(
+          new[]
+          {
+              new PgBox(new PgPoint(2, 2), new PgPoint(1, 1)),
+              new PgBox(new PgPoint(3, 3), new PgPoint(2, 2)),
+          },
+          row.GetArray<PgBox>("box_values"));
+
+        var paths = row.GetArray<PgPath>("path_values")!;
+        var closedPath = paths[0] ?? throw new AssertFailedException("Expected a closed path.");
+        var openPath = paths[1] ?? throw new AssertFailedException("Expected an open path.");
+        Assert.IsTrue(closedPath.Closed);
+        Assert.IsFalse(openPath.Closed);
+        CollectionAssert.AreEqual(
+          new[] { new PgPoint(1, 1), new PgPoint(2, 1), new PgPoint(2, 2) },
+          closedPath.Points.ToArray());
+        CollectionAssert.AreEqual(
+          new[] { new PgPoint(2, 2), new PgPoint(3, 2), new PgPoint(3, 3) },
+          openPath.Points.ToArray());
+
+        var polygons = row.GetArray<PgPolygon>("polygon_values")!;
+        var firstPolygon = polygons[0] ?? throw new AssertFailedException("Expected a polygon.");
+        var secondPolygon = polygons[1] ?? throw new AssertFailedException("Expected a polygon.");
+        CollectionAssert.AreEqual(
+          new[] { new PgPoint(1, 1), new PgPoint(2, 2), new PgPoint(3, 1) },
+          firstPolygon.Points.ToArray());
+        CollectionAssert.AreEqual(
+          new[] { new PgPoint(0, 0), new PgPoint(0, 1), new PgPoint(1, 0) },
+          secondPolygon.Points.ToArray());
+        CollectionAssert.AreEqual(
+          new[]
+          {
+              new PgCircle(new PgPoint(1, 1), 1),
+              new PgCircle(new PgPoint(0, 0), 2),
+          },
+          row.GetArray<PgCircle>("circle_values"));
+    }
+
     private static async ValueTask<PgNotification> NextNotificationAsync(
         IAsyncEnumerable<PgNotification> notifications,
         TimeSpan timeout)
@@ -907,4 +1641,18 @@ public sealed class PgConnectionIntegrationTests
 
         throw new InvalidOperationException("The PostgreSQL notification stream completed.");
     }
+
+  private static int ReserveUnusedPort()
+  {
+    System.Net.Sockets.TcpListener listener = new(System.Net.IPAddress.Loopback, 0);
+    listener.Start();
+    try
+    {
+      return ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+    }
+    finally
+    {
+      listener.Stop();
+    }
+  }
 }

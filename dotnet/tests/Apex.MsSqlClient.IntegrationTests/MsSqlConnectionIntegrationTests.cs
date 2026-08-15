@@ -35,6 +35,70 @@ public sealed class MsSqlConnectionIntegrationTests
         Assert.AreEqual("forty-two", parameterized[0].GetString("message"));
     }
 
+      [TestMethod]
+      [DataRow(MsSqlEncryptionMode.Optional)]
+      [DataRow(MsSqlEncryptionMode.Require)]
+      public async Task SupportsEncryptedConnectionModes(MsSqlEncryptionMode mode)
+      {
+        await using var connection = await MsSqlClient.ConnectAsync(
+          MsSqlTestEnvironment.Options with
+          {
+            EncryptionMode = mode,
+            TrustServerCertificate = true,
+          });
+
+        Assert.IsTrue(connection.IsSecure);
+        Assert.AreEqual(1, (await connection.QueryAsync("SELECT 1"))[0].GetInt32(0));
+      }
+
+      [TestMethod]
+      public async Task StrictEncryptionRejectsServerWithoutTds8()
+      {
+        await Assert.ThrowsExactlyAsync<IOException>(
+          () => MsSqlClient.ConnectAsync(
+          MsSqlTestEnvironment.Options with
+          {
+            EncryptionMode = MsSqlEncryptionMode.Strict,
+            TrustServerCertificate = true,
+          }).AsTask());
+      }
+
+      [TestMethod]
+      public async Task RejectsUntrustedServerCertificate()
+      {
+        await Assert.ThrowsExactlyAsync<System.Security.Authentication.AuthenticationException>(
+          () => MsSqlClient.ConnectAsync(
+          MsSqlTestEnvironment.Options with
+          {
+            EncryptionMode = MsSqlEncryptionMode.Require,
+            TrustServerCertificate = false,
+            CertificateValidationCallback = null,
+          }).AsTask());
+      }
+
+      [TestMethod]
+      public async Task CertificateCallbackControlsTrustAndUsesTlsHostName()
+      {
+        System.Net.Security.SslPolicyErrors observedErrors = default;
+        await using var connection = await MsSqlClient.ConnectAsync(
+          MsSqlTestEnvironment.Options with
+          {
+            EncryptionMode = MsSqlEncryptionMode.Require,
+            TrustServerCertificate = false,
+            TlsHostName = "apex-mssql.invalid",
+            CertificateValidationCallback = (_, certificate, _, errors) =>
+            {
+              Assert.IsNotNull(certificate);
+              observedErrors = errors;
+              return true;
+            },
+          });
+
+        Assert.IsTrue(connection.IsSecure);
+        Assert.AreNotEqual(System.Net.Security.SslPolicyErrors.None, observedErrors);
+        Assert.AreEqual(1, (await connection.QueryAsync("SELECT 1"))[0].GetInt32(0));
+      }
+
     [TestMethod]
     public async Task RollsBackTransactionOnDispose()
     {
@@ -78,6 +142,45 @@ public sealed class MsSqlConnectionIntegrationTests
         StringAssert.Contains(exception.Message, "missing_column");
         Assert.IsGreaterThan(0, exception.LineNumber);
     }
+
+    [TestMethod]
+    public async Task RejectsInvalidDatabaseUsernameAndPassword()
+    {
+        var options = MsSqlTestEnvironment.Options;
+        var database = await Assert.ThrowsExactlyAsync<MsSqlException>(
+          () => MsSqlClient.ConnectAsync(
+            options with { Database = "missing_database" }).AsTask());
+        var username = await Assert.ThrowsExactlyAsync<MsSqlException>(
+          () => MsSqlClient.ConnectAsync(
+            options with { Username = "missing_user" }).AsTask());
+        var password = await Assert.ThrowsExactlyAsync<MsSqlException>(
+          () => MsSqlClient.ConnectAsync(
+            options with { Password = "wrong_password" }).AsTask());
+
+        Assert.AreEqual(4060, database.Number);
+        Assert.AreEqual(18456, username.Number);
+        Assert.AreEqual(18456, password.Number);
+    }
+
+      [TestMethod]
+      public async Task ExhaustsConfiguredReconnectAttempts()
+      {
+        var port = ReserveUnusedPort();
+        var options = MsSqlTestEnvironment.Options with
+        {
+          Host = "127.0.0.1",
+          Port = port,
+          ConnectTimeout = TimeSpan.FromMilliseconds(100),
+          ReconnectAttempts = 2,
+          ReconnectInterval = TimeSpan.FromMilliseconds(100),
+        };
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+
+        await Assert.ThrowsAsync<System.Net.Sockets.SocketException>(
+          () => MsSqlClient.ConnectAsync(options).AsTask());
+
+        Assert.IsGreaterThanOrEqualTo(TimeSpan.FromMilliseconds(180), stopwatch.Elapsed);
+      }
 
     [TestMethod]
     public async Task ExecutesPreparedStatementAndBatch()
@@ -140,6 +243,69 @@ public sealed class MsSqlConnectionIntegrationTests
         Assert.AreEqual(
           201,
           (await streamFirst.QueryAsync(SqlParameters.Create(201)))[0].GetInt32(0));
+    }
+
+    [TestMethod]
+    public async Task PreparedBatchFailureKeepsConnectionSynchronized()
+    {
+        await using var connection =
+          await MsSqlClient.ConnectAsync(MsSqlTestEnvironment.Options);
+        await connection.ExecuteAsync(
+          "CREATE TABLE #batch_failure_values (value int PRIMARY KEY)");
+        await using var statement = await connection.PrepareAsync(
+          "INSERT INTO #batch_failure_values VALUES (@P1)");
+        SqlParameters[] batch =
+        [
+            SqlParameters.Create(1),
+            SqlParameters.Create(2),
+            SqlParameters.Create(1),
+            SqlParameters.Create(3),
+        ];
+
+        var exception = await Assert.ThrowsExactlyAsync<MsSqlException>(
+          () => statement.ExecuteBatchAsync(batch).AsTask());
+
+        Assert.IsTrue(exception.Number is 2601 or 2627);
+        var rows = await connection.QueryAsync(
+          "SELECT value FROM #batch_failure_values ORDER BY value");
+        CollectionAssert.AreEqual(
+          new[] { 1, 2, 3 },
+          rows.Select(static row => row.GetInt32(0)).ToArray());
+        Assert.AreEqual(
+          42,
+          (await connection.QueryAsync("SELECT CAST(42 AS int)"))[0].GetInt32(0));
+    }
+
+    [TestMethod]
+    public async Task ReturnsOutputRowsAndStoredProcedureResults()
+    {
+        await using var connection =
+          await MsSqlClient.ConnectAsync(MsSqlTestEnvironment.Options);
+        await connection.ExecuteAsync("CREATE TABLE #output_values (value int NOT NULL)");
+
+        var output = await connection.QueryAsync(
+          "INSERT INTO #output_values OUTPUT inserted.value VALUES (@P1)",
+          SqlParameters.Create(42));
+
+        Assert.HasCount(1, output);
+        Assert.AreEqual(1L, output.AffectedRows);
+        Assert.AreEqual(42, output[0].GetInt32(0));
+
+        var procedure = "apex_result_" + Guid.NewGuid().ToString("N");
+        await connection.ExecuteAsync(
+          $"CREATE PROCEDURE {procedure} @value int AS SELECT @value AS value");
+        try
+        {
+            var rows = await connection.QueryAsync(
+              $"EXEC {procedure} @value = @P1",
+              SqlParameters.Create(43));
+            Assert.HasCount(1, rows);
+            Assert.AreEqual(43, rows[0].GetInt32("value"));
+        }
+        finally
+        {
+            await connection.ExecuteAsync($"DROP PROCEDURE {procedure}");
+        }
     }
 
     [TestMethod]
@@ -374,6 +540,162 @@ public sealed class MsSqlConnectionIntegrationTests
     }
 
     [TestMethod]
+    public async Task DecodesLegacyLobMoneyAndNullableTypes()
+    {
+        await using var connection =
+          await MsSqlClient.ConnectAsync(MsSqlTestEnvironment.Options);
+
+        var row = (await connection.QueryAsync(
+          """
+          SELECT
+            CAST(123456789012345.6789 AS money) AS money_value,
+            CAST(-1234.5678 AS smallmoney) AS smallmoney_value,
+            CAST('2026-01-02T03:04:00' AS smalldatetime) AS smalldatetime_value,
+            CAST('fixed' AS char(8)) AS char_value,
+            CONVERT(text, 'legacy text') AS text_value,
+            CONVERT(ntext, N'legacy unicode 22') AS ntext_value,
+            CONVERT(image, 0x0001FEFF) AS image_value,
+            CAST(7922816251426433759354395.0335 AS decimal(29,4)) AS decimal_value,
+            CAST(NULL AS money) AS null_money,
+            CAST(NULL AS smalldatetime) AS null_datetime,
+            CAST(NULL AS text) AS null_text,
+            CAST(NULL AS image) AS null_image
+          """))[0];
+
+        Assert.AreEqual(123456789012345.6789m, row.Get<decimal>("money_value"));
+        Assert.AreEqual(-1234.5678m, row.Get<decimal>("smallmoney_value"));
+        Assert.AreEqual(
+          new DateTime(2026, 1, 2, 3, 4, 0, DateTimeKind.Unspecified),
+          row.GetDateTime("smalldatetime_value"));
+        Assert.AreEqual("fixed   ", row.GetString("char_value"));
+        Assert.AreEqual("legacy text", row.GetString("text_value"));
+        Assert.AreEqual("legacy unicode 22", row.GetString("ntext_value"));
+        CollectionAssert.AreEqual(
+          new byte[] { 0, 1, 254, 255 },
+          row.GetBytes("image_value"));
+        Assert.AreEqual(
+          7922816251426433759354395.0335m,
+          row.Get<decimal>("decimal_value"));
+        Assert.IsNull(row.Get<decimal?>("null_money"));
+        Assert.IsNull(row.Get<DateTime?>("null_datetime"));
+        Assert.IsNull(row.Get<string?>("null_text"));
+        Assert.IsNull(row.Get<byte[]?>("null_image"));
+    }
+
+    [TestMethod]
+    public async Task DecodesNullableScalarMatrix()
+    {
+        await using var connection =
+          await MsSqlClient.ConnectAsync(MsSqlTestEnvironment.Options);
+        var row = (await connection.QueryAsync(
+          """
+          SELECT
+            CAST(NULL AS bit) AS boolean_value,
+            CAST(NULL AS tinyint) AS byte_value,
+            CAST(NULL AS smallint) AS int16_value,
+            CAST(NULL AS int) AS int32_value,
+            CAST(NULL AS bigint) AS int64_value,
+            CAST(NULL AS real) AS single_value,
+            CAST(NULL AS float) AS double_value,
+            CAST(NULL AS decimal(19,4)) AS decimal_value,
+            CAST(NULL AS uniqueidentifier) AS guid_value,
+            CAST(NULL AS date) AS date_value,
+            CAST(NULL AS time(7)) AS time_value,
+            CAST(NULL AS datetime2(7)) AS datetime_value,
+            CAST(NULL AS datetimeoffset(7)) AS datetimeoffset_value,
+            CAST(NULL AS nvarchar(20)) AS string_value,
+            CAST(NULL AS varbinary(20)) AS bytes_value
+          """))[0];
+
+        Assert.IsNull(row.Get<bool?>("boolean_value"));
+        Assert.IsNull(row.Get<byte?>("byte_value"));
+        Assert.IsNull(row.Get<short?>("int16_value"));
+        Assert.IsNull(row.Get<int?>("int32_value"));
+        Assert.IsNull(row.Get<long?>("int64_value"));
+        Assert.IsNull(row.Get<float?>("single_value"));
+        Assert.IsNull(row.Get<double?>("double_value"));
+        Assert.IsNull(row.Get<decimal?>("decimal_value"));
+        Assert.IsNull(row.Get<Guid?>("guid_value"));
+        Assert.IsNull(row.Get<DateOnly?>("date_value"));
+        Assert.IsNull(row.Get<TimeOnly?>("time_value"));
+        Assert.IsNull(row.Get<DateTime?>("datetime_value"));
+        Assert.IsNull(row.Get<DateTimeOffset?>("datetimeoffset_value"));
+        Assert.IsNull(row.Get<string?>("string_value"));
+        Assert.IsNull(row.Get<byte[]?>("bytes_value"));
+    }
+
+    [TestMethod]
+    public async Task EncodesNullParametersAcrossScalarTypeFamilies()
+    {
+        await using var connection =
+          await MsSqlClient.ConnectAsync(MsSqlTestEnvironment.Options);
+        var parameters = SqlParameters.Create(
+          Enumerable.Repeat(SqlValue.Null, 15).ToArray());
+        var row = (await connection.QueryAsync(
+          """
+          SELECT
+            CAST(@P1 AS bit), CAST(@P2 AS tinyint), CAST(@P3 AS smallint),
+            CAST(@P4 AS int), CAST(@P5 AS bigint), CAST(@P6 AS real),
+            CAST(@P7 AS float), CAST(@P8 AS decimal(19,4)),
+            CAST(@P9 AS uniqueidentifier), CAST(@P10 AS date),
+            CAST(@P11 AS time(7)), CAST(@P12 AS datetime2(7)),
+            CAST(@P13 AS datetimeoffset(7)), CAST(@P14 AS nvarchar(20)),
+            CAST(@P15 AS varbinary(20))
+          """,
+          parameters))[0];
+
+        Assert.AreEqual(15, row.Count);
+        for (var ordinal = 0; ordinal < row.Count; ordinal++)
+        {
+            Assert.IsTrue(row.IsNull(ordinal), $"Column {ordinal} should be NULL.");
+        }
+    }
+
+    [TestMethod]
+    public async Task EncodesParametersAtFixedAndMaxLengthBoundaries()
+    {
+        var fixedText = new string('x', 4000);
+        var maxText = new string('x', 4001);
+        var fixedBytes = new byte[8000];
+        var maxBytes = new byte[8001];
+        await using var connection =
+          await MsSqlClient.ConnectAsync(MsSqlTestEnvironment.Options);
+
+        var row = (await connection.QueryAsync(
+          """
+          SELECT
+            CAST(DATALENGTH(@P1) AS bigint) AS fixed_text_length,
+            CAST(DATALENGTH(@P2) AS bigint) AS max_text_length,
+            CAST(DATALENGTH(@P3) AS bigint) AS fixed_binary_length,
+            CAST(DATALENGTH(@P4) AS bigint) AS max_binary_length
+          """,
+          SqlParameters.Create(fixedText, maxText, fixedBytes, maxBytes)))[0];
+
+        Assert.AreEqual(8000L, row.GetInt64("fixed_text_length"));
+        Assert.AreEqual(8002L, row.GetInt64("max_text_length"));
+        Assert.AreEqual(8000L, row.GetInt64("fixed_binary_length"));
+        Assert.AreEqual(8001L, row.GetInt64("max_binary_length"));
+    }
+
+    [TestMethod]
+    public async Task DecodesXmlAsTextAndPreservesEmptyResultMetadata()
+    {
+        await using var connection =
+          await MsSqlClient.ConnectAsync(MsSqlTestEnvironment.Options);
+        const string xml = "<root><value>apex</value></root>";
+
+        var row = (await connection.QueryAsync(
+          $"SELECT CAST(N'{xml}' AS xml) AS payload"))[0];
+        await using var reader = await connection.ExecuteReaderAsync(
+          "SELECT CAST(NULL AS xml) AS payload WHERE 1 = 0");
+
+        Assert.AreEqual(xml, row.GetString("payload"));
+        Assert.IsFalse(await reader.ReadAsync());
+        Assert.AreEqual(1, reader.FieldCount);
+        Assert.AreEqual("payload", reader.Columns[0].Name);
+    }
+
+    [TestMethod]
     public async Task StreamsMultipleResultSetsWithTheirOwnMetadata()
     {
         await using var connection =
@@ -462,6 +784,25 @@ public sealed class MsSqlConnectionIntegrationTests
     }
 
     [TestMethod]
+    public async Task ServerCloseFailsInFlightCommandAndConnection()
+    {
+        await using var victim =
+          await MsSqlClient.ConnectAsync(MsSqlTestEnvironment.Options);
+        await using var killer =
+          await MsSqlClient.ConnectAsync(MsSqlTestEnvironment.Options);
+        var sessionId = (await victim.QueryAsync(
+          "SELECT CAST(@@SPID AS int)"))[0].GetInt32(0);
+        var pending = victim.QueryAsync(
+          "WAITFOR DELAY '00:00:10'; SELECT CAST(1 AS int)").AsTask();
+        await Task.Delay(200);
+
+        await killer.ExecuteAsync($"KILL {sessionId}");
+        await Assert.ThrowsAsync<Exception>(() => pending);
+        await Assert.ThrowsAsync<Exception>(
+          () => victim.QueryAsync("SELECT CAST(1 AS int)").AsTask());
+    }
+
+    [TestMethod]
     public async Task PoolPinsLeaseUntilBorrowedReaderIsDisposed()
     {
         await using MsSqlPool pool = MsSqlPool.Create(
@@ -491,4 +832,18 @@ public sealed class MsSqlConnectionIntegrationTests
           (await second.QueryAsync("SELECT CAST(1 AS int)"))[0].GetInt32(0));
         Assert.AreEqual(1, pool.Size);
     }
+
+        private static int ReserveUnusedPort()
+        {
+          System.Net.Sockets.TcpListener listener = new(System.Net.IPAddress.Loopback, 0);
+          listener.Start();
+          try
+          {
+            return ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+          }
+          finally
+          {
+            listener.Stop();
+          }
+        }
 }

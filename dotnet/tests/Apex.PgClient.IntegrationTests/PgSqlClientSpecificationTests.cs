@@ -49,6 +49,12 @@ public sealed class PgSqlClientSpecificationTests : SqlClientSpecificationTests
 
     protected override string LongRunningSql => "SELECT pg_sleep(10)";
 
+    protected override string DiagnosticSystemName => "postgresql";
+
+    protected override string ServerHost => Options.Host;
+
+    protected override int ServerPort => Options.Port;
+
     [TestInitialize]
     public async Task StartPostgreSqlAsync()
     {
@@ -74,6 +80,38 @@ public sealed class PgSqlClientSpecificationTests : SqlClientSpecificationTests
         CancellationToken cancellationToken = default) =>
       await PgClient.ConnectAsync(Options, cancellationToken);
 
-    protected override ISqlPool CreatePool() =>
-      PgPool.Create(Options, new SqlPoolOptions { MaximumSize = 4 });
+    protected override async ValueTask<ISqlConnection> OpenConnectionAsync(
+        string host,
+        int port,
+        int reconnectAttempts,
+        TimeSpan reconnectInterval,
+        CancellationToken cancellationToken = default) =>
+      await PgClient.ConnectAsync(
+        Options with
+        {
+            Host = host,
+            Port = port,
+            ReconnectAttempts = reconnectAttempts,
+            ReconnectInterval = reconnectInterval,
+        },
+        cancellationToken);
+
+    protected override ISqlPool CreatePool(int maximumSize = 4) =>
+      PgPool.Create(Options, new SqlPoolOptions { MaximumSize = maximumSize });
+
+    protected override ISqlPool CreatePool(
+        string host,
+        int port,
+        int reconnectAttempts,
+        TimeSpan reconnectInterval,
+        int maximumSize = 4) =>
+      PgPool.Create(
+        Options with
+        {
+            Host = host,
+            Port = port,
+            ReconnectAttempts = reconnectAttempts,
+            ReconnectInterval = reconnectInterval,
+        },
+        new SqlPoolOptions { MaximumSize = maximumSize });
 }

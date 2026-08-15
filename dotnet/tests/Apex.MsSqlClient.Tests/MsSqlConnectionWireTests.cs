@@ -7,7 +7,11 @@
 using System.Buffers;
 using System.Buffers.Binary;
 using System.Net;
+using System.Net.Security;
 using System.Net.Sockets;
+using System.Security.Authentication;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using Apex.MsSqlClient.Internal;
 using Apex.SqlClient;
 
@@ -40,6 +44,35 @@ public sealed class MsSqlConnectionWireTests
             listener.Stop();
         }
     }
+
+      [TestMethod]
+      public async Task StrictEncryptionNegotiatesTds8Alpn()
+      {
+        using var certificate = CreateCertificate();
+        TcpListener listener = new(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        var server = RunStrictTlsQueryServerAsync(listener, certificate);
+        try
+        {
+          await using var connection = await MsSqlClient.ConnectAsync(
+            TestOptions(port) with
+            {
+              EncryptionMode = MsSqlEncryptionMode.Strict,
+              TrustServerCertificate = true,
+            });
+
+          Assert.IsTrue(connection.IsSecure);
+          Assert.AreEqual(
+            7,
+            (await connection.QueryAsync("SELECT 7"))[0].GetInt32(0));
+          await server;
+        }
+        finally
+        {
+          listener.Stop();
+        }
+      }
 
     [TestMethod]
     public async Task AttentionIsSentOnSameConnectionAndDrainedBeforeReuse()
@@ -411,6 +444,50 @@ public sealed class MsSqlConnectionWireTests
           default);
     }
 
+    private static async Task RunStrictTlsQueryServerAsync(
+        TcpListener listener,
+        X509Certificate2 certificate)
+    {
+        using var client = await listener.AcceptTcpClientAsync();
+        await using var network = client.GetStream();
+        await using SslStream tls = new(network, leaveInnerStreamOpen: false);
+        await tls.AuthenticateAsServerAsync(
+          new SslServerAuthenticationOptions
+          {
+              ServerCertificate = certificate,
+              EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
+              ApplicationProtocols = [new SslApplicationProtocol("tds/8.0")],
+          });
+        TdsPacketReader reader = new(tls);
+        var preLogin = await reader.ReadMessageAsync(default);
+        Assert.AreEqual(TdsMessageType.PreLogin, preLogin.Type);
+        using (TdsPacketWriter writer = new(tls, 4096))
+        {
+            await writer.WriteMessageAsync(
+              TdsMessageType.TabularResult,
+              TdsPreLogin.Encode(TdsEncryptionLevel.On),
+              default);
+        }
+
+        var login = await reader.ReadMessageAsync(default);
+        Assert.AreEqual(TdsMessageType.Login7, login.Type);
+        using (TdsPacketWriter writer = new(tls, 4096))
+        {
+            await writer.WriteMessageAsync(
+              TdsMessageType.TabularResult,
+              BuildLoginAck(),
+              default);
+        }
+
+        var query = await reader.ReadMessageAsync(default);
+        Assert.AreEqual(TdsMessageType.SqlBatch, query.Type);
+        using TdsPacketWriter queryWriter = new(tls, 4096);
+        await queryWriter.WriteMessageAsync(
+          TdsMessageType.TabularResult,
+          BuildIntResult(7),
+          default);
+    }
+
     private static async Task RunPreparedLifecycleServerAsync(
         TcpListener listener,
         bool fragmentedFirst)
@@ -697,6 +774,25 @@ public sealed class MsSqlConnectionWireTests
         response.Write(body.WrittenSpan);
         WriteDone(response, 0);
         return response.WrittenMemory.ToArray();
+    }
+
+    private static X509Certificate2 CreateCertificate()
+    {
+        using RSA rsa = RSA.Create(2048);
+        CertificateRequest request = new(
+          "CN=localhost",
+          rsa,
+          HashAlgorithmName.SHA256,
+          RSASignaturePadding.Pkcs1);
+        SubjectAlternativeNameBuilder names = new();
+        names.AddDnsName("localhost");
+        names.AddIpAddress(IPAddress.Loopback);
+        request.CertificateExtensions.Add(names.Build());
+        request.CertificateExtensions.Add(
+          new X509BasicConstraintsExtension(false, false, 0, critical: true));
+        return request.CreateSelfSigned(
+          DateTimeOffset.UtcNow.AddMinutes(-5),
+          DateTimeOffset.UtcNow.AddDays(1));
     }
 
     private static byte[] BuildIntResult(params int[] values)

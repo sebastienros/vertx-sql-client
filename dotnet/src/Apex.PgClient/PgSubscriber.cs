@@ -281,8 +281,16 @@ public sealed class PgSubscriber : IPgSubscriber
     private void ThrowIfDisposed() =>
       ObjectDisposedException.ThrowIf(_disposed != 0, this);
 
-    private static void ValidateChannel(string channel) =>
-      ArgumentException.ThrowIfNullOrWhiteSpace(channel);
+        private static void ValidateChannel(string channel)
+        {
+                ArgumentException.ThrowIfNullOrWhiteSpace(channel);
+                if (System.Text.Encoding.UTF8.GetByteCount(channel) > 63)
+                {
+                        throw new ArgumentException(
+                            "PostgreSQL channel names cannot exceed 63 UTF-8 bytes.",
+                            nameof(channel));
+                }
+        }
 
     private static string QuoteIdentifier(string identifier) =>
       "\"" + identifier.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"";

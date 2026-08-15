@@ -693,6 +693,44 @@ internal static class PgTextCodec
           value.GetRequired<JsonDocument>().RootElement.GetRawText(),
           SqlValueKind.JsonElement =>
           value.Get<JsonElement>().GetRawText(),
+          SqlValueKind.Object when value.ToObject() is PgPoint point =>
+          FormatPoint(point),
+          SqlValueKind.Object when value.ToObject() is PgLine line =>
+          FormatLine(line),
+          SqlValueKind.Object when value.ToObject() is PgLineSegment segment =>
+          FormatLineSegment(segment),
+          SqlValueKind.Object when value.ToObject() is PgBox box =>
+          FormatBox(box),
+          SqlValueKind.Object when value.ToObject() is PgPath path =>
+          FormatPath(path),
+          SqlValueKind.Object when value.ToObject() is PgPolygon polygon =>
+          FormatPolygon(polygon),
+          SqlValueKind.Object when value.ToObject() is PgCircle circle =>
+          FormatCircle(circle),
+          SqlValueKind.Object when value.ToObject() is PgPoint[] points =>
+          FormatArray(points, FormatPoint),
+          SqlValueKind.Object when value.ToObject() is PgLine[] lines =>
+          FormatArray(lines, FormatLine),
+          SqlValueKind.Object when value.ToObject() is PgLineSegment[] segments =>
+          FormatArray(segments, FormatLineSegment),
+          SqlValueKind.Object when value.ToObject() is PgBox[] boxes =>
+          FormatArray(boxes, FormatBox, ';'),
+          SqlValueKind.Object when value.ToObject() is PgPath[] paths =>
+          FormatArray(paths, FormatPath),
+          SqlValueKind.Object when value.ToObject() is PgPolygon[] polygons =>
+          FormatArray(polygons, FormatPolygon),
+          SqlValueKind.Object when value.ToObject() is PgCircle[] circles =>
+          FormatArray(circles, FormatCircle),
+          SqlValueKind.Object when value.ToObject() is PgTimeWithTimeZone timeWithTimeZone =>
+          FormatTimeWithTimeZone(timeWithTimeZone),
+          SqlValueKind.Object when value.ToObject() is PgInterval interval =>
+          FormatInterval(interval),
+          SqlValueKind.Object when value.ToObject() is PgInet inet =>
+          inet.Address + (inet.PrefixLength is { } prefix ? "/" + prefix : string.Empty),
+          SqlValueKind.Object when value.ToObject() is PgCidr cidr =>
+          cidr.Address + "/" + cidr.PrefixLength,
+          SqlValueKind.Object when value.ToObject() is PgMoney money =>
+          money.Value.ToString(CultureInfo.InvariantCulture),
           _ => value.ToObject() is IFormattable formattable
           ? formattable.ToString(
             null,
@@ -701,4 +739,57 @@ internal static class PgTextCodec
             throw new InvalidOperationException(
               "Parameter has no text representation."),
       };
+
+    private static string FormatPoint(PgPoint point) =>
+      FormattableString.Invariant($"({point.X},{point.Y})");
+
+    private static string FormatLine(PgLine line) =>
+      FormattableString.Invariant($"{{{line.A},{line.B},{line.C}}}");
+
+    private static string FormatLineSegment(PgLineSegment segment) =>
+      $"[{FormatPoint(segment.Start)},{FormatPoint(segment.End)}]";
+
+    private static string FormatBox(PgBox box) =>
+      $"({FormatPoint(box.UpperRight)},{FormatPoint(box.LowerLeft)})";
+
+    private static string FormatPath(PgPath path) =>
+      FormatPoints(path.Points, path.Closed ? '(' : '[', path.Closed ? ')' : ']');
+
+    private static string FormatPolygon(PgPolygon polygon) =>
+      FormatPoints(polygon.Points, '(', ')');
+
+    private static string FormatCircle(PgCircle circle) =>
+      FormattableString.Invariant($"<{FormatPoint(circle.Center)},{circle.Radius}>");
+
+    private static string FormatTimeWithTimeZone(PgTimeWithTimeZone value)
+    {
+        var offset = value.Offset;
+        var sign = offset < TimeSpan.Zero ? '-' : '+';
+        offset = offset.Duration();
+        var formattedOffset = offset.Seconds == 0
+          ? FormattableString.Invariant($"{sign}{(int)offset.TotalHours:D2}:{offset.Minutes:D2}")
+          : FormattableString.Invariant(
+            $"{sign}{(int)offset.TotalHours:D2}:{offset.Minutes:D2}:{offset.Seconds:D2}");
+        return value.Time.ToString("HH:mm:ss.fffffff", CultureInfo.InvariantCulture) +
+          formattedOffset;
+    }
+
+    private static string FormatInterval(PgInterval value) =>
+      FormattableString.Invariant(
+        $"{value.Years} years {value.Months} mons {value.Days} days {value.Hours} hours {value.Minutes} mins {value.Seconds}.{Math.Abs(value.Microseconds):D6} secs");
+
+    private static string FormatPoints(
+        IReadOnlyList<PgPoint> points,
+        char opening,
+        char closing) =>
+      opening + string.Join(',', points.Select(FormatPoint)) + closing;
+
+    private static string FormatArray<T>(
+        IReadOnlyList<T> values,
+        Func<T, string> formatter,
+        char delimiter = ',') =>
+      "{" + string.Join(delimiter, values.Select(value =>
+        "\"" + formatter(value)
+          .Replace("\\", "\\\\", StringComparison.Ordinal)
+          .Replace("\"", "\\\"", StringComparison.Ordinal) + "\"")) + "}";
 }

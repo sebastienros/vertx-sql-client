@@ -69,6 +69,71 @@ public sealed class MySqlConnectionIntegrationTests
     }
 
     [TestMethod]
+    public async Task ConnectsQueriesAndBatchesOverUnixDomainSocket()
+    {
+        await using UnixSocketForwarder forwarder = new(Options.Host, Options.Port);
+        var parsed = MySqlConnectOptions.Parse(
+          $"Server=ignored;Unix Socket={forwarder.SocketPath};Database={Options.Database};" +
+          $"User ID={Options.Username};Password={Options.Password};SslMode=Disabled");
+
+        await using var connection = await MySqlClient.ConnectAsync(parsed);
+        Assert.IsFalse(connection.IsSecure);
+        Assert.AreEqual(1, (await connection.QueryAsync("SELECT 1"))[0].GetInt32(0));
+        await connection.ExecuteAsync("CREATE TEMPORARY TABLE unix_batch (value INT)");
+        await using var statement = await connection.PrepareAsync(
+          "INSERT INTO unix_batch VALUES (?)");
+        var results = await statement.ExecuteBatchAsync(
+          [SqlParameters.Create(1), SqlParameters.Create(2)]);
+
+        Assert.HasCount(2, results);
+        Assert.AreEqual(
+          2L,
+          (await connection.QueryAsync("SELECT COUNT(*) FROM unix_batch"))[0].GetInt64(0));
+
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+          () => MySqlClient.ConnectAsync(
+            parsed with { SslMode = MySqlSslMode.Required }).AsTask());
+    }
+
+    [TestMethod]
+    public async Task RejectsInvalidDatabaseUsernameAndPassword()
+    {
+        var database = await Assert.ThrowsExactlyAsync<MySqlException>(
+          () => MySqlClient.ConnectAsync(
+            Options with { Database = "missing_database" }).AsTask());
+        var username = await Assert.ThrowsExactlyAsync<MySqlException>(
+          () => MySqlClient.ConnectAsync(
+            Options with { Username = "missing_user" }).AsTask());
+        var password = await Assert.ThrowsExactlyAsync<MySqlException>(
+          () => MySqlClient.ConnectAsync(
+            Options with { Password = "wrong_password" }).AsTask());
+
+        Assert.IsTrue(database.ErrorNumber is 1044 or 1049);
+        Assert.AreEqual(1045, username.ErrorNumber);
+        Assert.AreEqual(1045, password.ErrorNumber);
+    }
+
+      [TestMethod]
+      public async Task ExhaustsConfiguredReconnectAttempts()
+      {
+        var port = ReserveUnusedPort();
+        var options = Options with
+        {
+          Host = "127.0.0.1",
+          Port = port,
+          ConnectTimeout = TimeSpan.FromMilliseconds(100),
+          ReconnectAttempts = 2,
+          ReconnectInterval = TimeSpan.FromMilliseconds(100),
+        };
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+
+        await Assert.ThrowsAsync<System.Net.Sockets.SocketException>(
+          () => MySqlClient.ConnectAsync(options).AsTask());
+
+        Assert.IsGreaterThanOrEqualTo(TimeSpan.FromMilliseconds(180), stopwatch.Elapsed);
+      }
+
+    [TestMethod]
     [DoNotParallelize]
     public async Task CachingSha2FullAuthenticationRequiresAnExplicitSecurePath()
     {
@@ -135,6 +200,46 @@ public sealed class MySqlConnectionIntegrationTests
         finally
         {
             File.Delete(fileName);
+        }
+    }
+
+    [TestMethod]
+    [DoNotParallelize]
+    public async Task UploadsEmptyAndMultiPacketLocalInfiles()
+    {
+        var emptyFile = Path.GetTempFileName();
+        var largeFile = Path.GetTempFileName();
+        const int payloadLength = (16 * 1024 * 1024) + 1;
+        try
+        {
+            var payload = GC.AllocateUninitializedArray<byte>(payloadLength + 1);
+            payload.AsSpan(0, payloadLength).Fill((byte)'x');
+            payload[^1] = (byte)'\n';
+            await File.WriteAllBytesAsync(largeFile, payload);
+            await using var connection = await MySqlClient.ConnectAsync(
+              Options with { AllowLoadLocalInfile = true });
+            await connection.ExecuteAsync(
+              "CREATE TEMPORARY TABLE local_infile_boundary_probe (payload LONGBLOB)");
+
+            var empty = await connection.ExecuteAsync(
+              $"LOAD DATA LOCAL INFILE '{EscapeLocalInfilePath(emptyFile)}' " +
+              "INTO TABLE local_infile_boundary_probe LINES TERMINATED BY '\\n'");
+            var large = await connection.ExecuteAsync(
+              $"LOAD DATA LOCAL INFILE '{EscapeLocalInfilePath(largeFile)}' " +
+              "INTO TABLE local_infile_boundary_probe LINES TERMINATED BY '\\n'");
+            var rows = await connection.QueryAsync(
+              "SELECT OCTET_LENGTH(payload) AS payload_length " +
+              "FROM local_infile_boundary_probe");
+
+            Assert.AreEqual(0L, empty.AffectedRows);
+            Assert.AreEqual(1L, large.AffectedRows);
+            Assert.HasCount(1, rows);
+            Assert.AreEqual(payloadLength, rows[0].GetInt32("payload_length"));
+        }
+        finally
+        {
+            File.Delete(emptyFile);
+            File.Delete(largeFile);
         }
     }
 
@@ -289,6 +394,237 @@ public sealed class MySqlConnectionIntegrationTests
         CollectionAssert.AreEqual(
           Enumerable.Range(0, 20).ToArray(),
           rows.Select(static row => row.Get<int>("value")).ToArray());
+    }
+
+    [TestMethod]
+    public async Task PreparedBindingFailureLeavesStatementReusable()
+    {
+        await using var connection = await MySqlClient.ConnectAsync(Options);
+        await using var statement = await connection.PrepareAsync("SELECT ? AS value");
+
+        await Assert.ThrowsExactlyAsync<NotSupportedException>(
+          () => statement.QueryAsync(
+            SqlParameters.Create(SqlValue.From(new object()))).AsTask());
+
+        Assert.AreEqual(
+          42,
+          (await statement.QueryAsync(SqlParameters.Create(42)))[0].GetInt32("value"));
+    }
+
+    [TestMethod]
+    public async Task BoundsPreparedCacheUnderConcurrencyAndEviction()
+    {
+        await using var connection = await MySqlClient.ConnectAsync(
+          Options with
+          {
+              CachePreparedStatements = true,
+              PreparedStatementCacheSize = 2,
+              PreparedStatementCacheSqlLengthLimit = 128,
+              PipeliningLimit = 16,
+          });
+        var pending = Enumerable.Range(0, 32)
+          .Select(value => connection.QueryAsync(
+            "SELECT CAST(? AS SIGNED) AS value",
+            SqlParameters.Create(value)).AsTask())
+          .ToArray();
+        var results = await Task.WhenAll(pending);
+        for (var index = 0; index < results.Length; index++)
+        {
+            Assert.AreEqual(index, results[index][0].GetInt32(0));
+        }
+
+        _ = await connection.QueryAsync("SELECT CAST(? AS SIGNED) + 1", SqlParameters.Create(1));
+        _ = await connection.QueryAsync("SELECT CAST(? AS SIGNED) + 2", SqlParameters.Create(1));
+        Assert.AreEqual(
+          42,
+          (await connection.QueryAsync(
+            "SELECT CAST(? AS SIGNED) AS value",
+            SqlParameters.Create(42)))[0].GetInt32(0));
+    }
+
+    [TestMethod]
+    [DoNotParallelize]
+    public async Task BypassesPreparedCacheAboveSqlLengthLimit()
+    {
+        await using var connection = await MySqlClient.ConnectAsync(
+          Options with
+          {
+              CachePreparedStatements = true,
+              PreparedStatementCacheSize = 8,
+              PreparedStatementCacheSqlLengthLimit = 1,
+          });
+        var before = await ReadPreparedStatementCountAsync(connection);
+        Assert.AreEqual(
+          42,
+          (await connection.QueryAsync(
+            "SELECT CAST(? AS SIGNED) AS value",
+            SqlParameters.Create(42)))[0].GetInt32(0));
+        var after = await ReadPreparedStatementCountAsync(connection);
+
+        Assert.AreEqual(before, after);
+
+        static async ValueTask<long> ReadPreparedStatementCountAsync(
+            MySqlConnection connection)
+        {
+            var rows = await connection.QueryAsync(
+              "SHOW GLOBAL STATUS LIKE 'Prepared_stmt_count'");
+            return long.Parse(
+              rows[0].GetString("Value"),
+              System.Globalization.CultureInfo.InvariantCulture);
+        }
+    }
+
+    [TestMethod]
+    public async Task PreparedBatchReportsFailedIndexAndSuccessfulPrefix()
+    {
+        await using var connection = await MySqlClient.ConnectAsync(Options);
+        await connection.ExecuteAsync(
+          "CREATE TEMPORARY TABLE batch_failure_probe (value INT PRIMARY KEY)");
+        await using var statement =
+          await connection.PrepareAsync("INSERT INTO batch_failure_probe VALUES (?)");
+        SqlParameters[] batch =
+        [
+            SqlParameters.Create(1),
+            SqlParameters.Create(2),
+            SqlParameters.Create(1),
+            SqlParameters.Create(3),
+        ];
+
+        var exception = await Assert.ThrowsExactlyAsync<MySqlBatchException>(
+          () => statement.ExecuteBatchAsync(batch).AsTask());
+
+        Assert.AreEqual(2, exception.FailedIndex);
+        Assert.HasCount(2, exception.SuccessfulResults);
+        Assert.IsTrue(exception.SuccessfulResults.All(static result => result.AffectedRows == 1));
+        Assert.AreEqual(42, (await connection.QueryAsync("SELECT 42"))[0].Get<int>(0));
+    }
+
+    [TestMethod]
+    public async Task PingsAndResetsSessionState()
+    {
+        await using var connection = await MySqlClient.ConnectAsync(Options);
+        await connection.PingAsync();
+        await connection.ExecuteAsync("CREATE TEMPORARY TABLE reset_probe (value INT)");
+        await connection.ExecuteAsync("INSERT INTO reset_probe VALUES (1)");
+
+        await connection.ResetAsync();
+
+        await connection.PingAsync();
+        await Assert.ThrowsExactlyAsync<MySqlException>(
+          () => connection.QueryAsync("SELECT * FROM reset_probe").AsTask());
+        Assert.AreEqual(42, (await connection.QueryAsync("SELECT 42"))[0].Get<int>(0));
+    }
+
+    [TestMethod]
+    public async Task UseAffectedRowsDistinguishesChangedFromMatchedRows()
+    {
+        await using var matched = await MySqlClient.ConnectAsync(
+          Options with { UseAffectedRows = false });
+        await matched.ExecuteAsync("CREATE TEMPORARY TABLE affected_probe (value INT)");
+        await matched.ExecuteAsync("INSERT INTO affected_probe VALUES (1)");
+        var matchedResult = await matched.ExecuteAsync(
+          "UPDATE affected_probe SET value = 1 WHERE value = 1");
+
+        await using var changed = await MySqlClient.ConnectAsync(
+          Options with { UseAffectedRows = true });
+        await changed.ExecuteAsync("CREATE TEMPORARY TABLE affected_probe (value INT)");
+        await changed.ExecuteAsync("INSERT INTO affected_probe VALUES (1)");
+        var changedResult = await changed.ExecuteAsync(
+          "UPDATE affected_probe SET value = 1 WHERE value = 1");
+
+        Assert.AreEqual(1L, matchedResult.AffectedRows);
+        Assert.AreEqual(0L, changedResult.AffectedRows);
+    }
+
+    [TestMethod]
+    public async Task DecodesAndEncodesNegativeExtendedTime()
+    {
+        var expected = -new TimeSpan(34, 22, 59, 59, 123, 456);
+        await using var connection = await MySqlClient.ConnectAsync(Options);
+        await connection.ExecuteAsync("CREATE TEMPORARY TABLE time_probe (value TIME(6))");
+        await using (var insert = await connection.PrepareAsync(
+                       "INSERT INTO time_probe VALUES (?)"))
+        {
+            await insert.ExecuteAsync(SqlParameters.Create(SqlValue.From(expected)));
+        }
+
+        var text = (await connection.QueryAsync("SELECT value FROM time_probe"))[0];
+        await using var select = await connection.PrepareAsync("SELECT value FROM time_probe");
+        var binary = (await select.QueryAsync())[0];
+
+        Assert.AreEqual(expected, text.Get<TimeSpan>(0));
+        Assert.AreEqual(expected, binary.Get<TimeSpan>(0));
+    }
+
+    [TestMethod]
+    public async Task AppliesFractionalTemporalColumnPrecision()
+    {
+        var inputTime = new TimeSpan(0, 11, 12, 0, 123, 456);
+        var expectedTime = new TimeSpan(0, 11, 12, 0, 123, 500);
+        var inputDateTime = new DateTime(
+          2026, 1, 2, 3, 4, 5, 123, 456, DateTimeKind.Unspecified);
+        var expectedDateTime = new DateTime(
+          2026, 1, 2, 3, 4, 5, 123, 500, DateTimeKind.Unspecified);
+        await using var connection = await MySqlClient.ConnectAsync(Options);
+        await connection.ExecuteAsync(
+          "CREATE TEMPORARY TABLE temporal_precision_probe " +
+          "(time_value TIME(4), datetime_value DATETIME(4))");
+        await using (var insert = await connection.PrepareAsync(
+                       "INSERT INTO temporal_precision_probe VALUES (?, ?)"))
+        {
+            await insert.ExecuteAsync(SqlParameters.Create(
+              SqlValue.From(inputTime),
+              inputDateTime));
+        }
+
+        var text = (await connection.QueryAsync(
+          "SELECT time_value, datetime_value FROM temporal_precision_probe"))[0];
+        await using var select = await connection.PrepareAsync(
+          "SELECT time_value, datetime_value FROM temporal_precision_probe");
+        var binary = (await select.QueryAsync())[0];
+
+        Assert.AreEqual(expectedTime, text.Get<TimeSpan>("time_value"));
+        Assert.AreEqual(expectedTime, binary.Get<TimeSpan>("time_value"));
+        Assert.AreEqual(expectedDateTime, text.Get<DateTime>("datetime_value"));
+        Assert.AreEqual(expectedDateTime, binary.Get<DateTime>("datetime_value"));
+    }
+
+    [TestMethod]
+    public async Task AppliesAllZeroDateBehaviors()
+    {
+        const string sql = "SELECT value FROM zero_date_probe";
+        await using (var errors = await MySqlClient.ConnectAsync(
+                       Options with { ZeroDateBehavior = MySqlZeroDateBehavior.Error }))
+        {
+            await SeedZeroDateAsync(errors);
+            var row = (await errors.QueryAsync(sql))[0];
+            Assert.ThrowsExactly<FormatException>(() => row.Get<DateOnly>(0));
+        }
+
+        await using (var nulls = await MySqlClient.ConnectAsync(
+                       Options with { ZeroDateBehavior = MySqlZeroDateBehavior.Null }))
+        {
+          await SeedZeroDateAsync(nulls);
+            var row = (await nulls.QueryAsync(sql))[0];
+            Assert.IsTrue(row.IsNull(0));
+            Assert.IsNull(row.Get<DateOnly?>(0));
+        }
+
+        await using (var minimum = await MySqlClient.ConnectAsync(
+                       Options with { ZeroDateBehavior = MySqlZeroDateBehavior.MinValue }))
+        {
+          await SeedZeroDateAsync(minimum);
+            Assert.AreEqual(
+              DateOnly.MinValue,
+              (await minimum.QueryAsync(sql))[0].Get<DateOnly>(0));
+        }
+
+        static async Task SeedZeroDateAsync(MySqlConnection connection)
+        {
+          await connection.ExecuteAsync("SET SESSION sql_mode = 'ALLOW_INVALID_DATES'");
+          await connection.ExecuteAsync("CREATE TEMPORARY TABLE zero_date_probe (value DATE)");
+          await connection.ExecuteAsync("INSERT INTO zero_date_probe VALUES ('0000-00-00')");
+        }
     }
 
     [TestMethod]
@@ -487,6 +823,41 @@ public sealed class MySqlConnectionIntegrationTests
     }
 
     [TestMethod]
+    public async Task AppliesConnectionTableAndColumnCollationsWithEmoji()
+    {
+        const string value = "😀 café 漢字";
+        await using var connection = await MySqlClient.ConnectAsync(Options);
+        var session = (await connection.QueryAsync(
+          "SELECT @@character_set_connection, @@collation_connection"))[0];
+        await connection.ExecuteAsync(
+          """
+          CREATE TEMPORARY TABLE collation_probe (
+            inherited_value VARCHAR(64),
+            binary_value VARCHAR(64) COLLATE utf8mb4_bin
+          ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+          """);
+        await connection.ExecuteAsync(
+          "INSERT INTO collation_probe VALUES (?, ?)",
+          SqlParameters.Create(value, value));
+        var row = (await connection.QueryAsync(
+          """
+          SELECT
+            inherited_value,
+            binary_value,
+            CAST(inherited_value = '😀 CAFÉ 漢字' AS SIGNED) AS inherited_matches,
+            CAST(binary_value = '😀 CAFÉ 漢字' AS SIGNED) AS binary_matches
+          FROM collation_probe
+          """))[0];
+
+        Assert.AreEqual("utf8mb4", session.GetString(0));
+        StringAssert.StartsWith(session.GetString(1), "utf8mb4_");
+        Assert.AreEqual(value, row.GetString("inherited_value"));
+        Assert.AreEqual(value, row.GetString("binary_value"));
+        Assert.AreEqual(1L, row.GetInt64("inherited_matches"));
+        Assert.AreEqual(0L, row.GetInt64("binary_matches"));
+    }
+
+    [TestMethod]
     public async Task DecodesGeometryColumnAsRawBytes()
     {
         await using var connection = await MySqlClient.ConnectAsync(Options);
@@ -665,4 +1036,22 @@ public sealed class MySqlConnectionIntegrationTests
         Assert.AreEqual(1146, exception.ErrorNumber);
         Assert.IsFalse(string.IsNullOrEmpty(exception.SqlState));
     }
+
+      private static int ReserveUnusedPort()
+      {
+        System.Net.Sockets.TcpListener listener = new(System.Net.IPAddress.Loopback, 0);
+        listener.Start();
+        try
+        {
+          return ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+        }
+        finally
+        {
+          listener.Stop();
+        }
+      }
+
+      private static string EscapeLocalInfilePath(string path) =>
+        path.Replace("\\", "\\\\", StringComparison.Ordinal)
+        .Replace("'", "\\'", StringComparison.Ordinal);
 }

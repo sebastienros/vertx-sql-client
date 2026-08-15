@@ -8,12 +8,27 @@ namespace Apex.PgClient;
 
 public static class PgClient
 {
-    public static ValueTask<PgConnection> ConnectAsync(
+    public static async ValueTask<PgConnection> ConnectAsync(
         PgConnectOptions options,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(options);
-        return PgConnection.ConnectAsync(options, cancellationToken);
+        ArgumentOutOfRangeException.ThrowIfNegative(options.ReconnectAttempts);
+        ArgumentOutOfRangeException.ThrowIfLessThan(options.ReconnectInterval, TimeSpan.Zero);
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                return await PgConnection.ConnectAsync(options, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (
+              attempt < options.ReconnectAttempts &&
+              IsTransientConnectError(exception) &&
+              !cancellationToken.IsCancellationRequested)
+            {
+                await Task.Delay(options.ReconnectInterval, cancellationToken).ConfigureAwait(false);
+            }
+        }
     }
 
     public static ValueTask<PgConnection> ConnectAsync(
@@ -26,4 +41,8 @@ public static class PgClient
         Func<int, TimeSpan?>? reconnectPolicy = null,
         CancellationToken cancellationToken = default) =>
       PgSubscriber.ConnectAsync(options, reconnectPolicy, cancellationToken);
+
+        private static bool IsTransientConnectError(Exception exception) =>
+            exception is IOException or System.Net.Sockets.SocketException or
+                PgException { SqlState: "57P03" or "08001" or "08006" };
 }

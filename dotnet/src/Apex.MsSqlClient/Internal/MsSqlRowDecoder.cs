@@ -794,7 +794,7 @@ internal sealed class MsSqlRowDecoder : ISqlRowDecoder
     {
         byte type = checked((byte)column.TypeId);
         int codePage = type == TdsDataType.Json
-          ? 65001
+                    ? IsUtf16LittleEndian(value) ? 1200 : 65001
           : type is
           TdsDataType.NVarChar or
           TdsDataType.NChar or
@@ -815,11 +815,16 @@ internal sealed class MsSqlRowDecoder : ISqlRowDecoder
         ReadOnlyMemory<byte> value,
         SqlColumn column)
     {
-        using var document = column.TypeId == TdsDataType.Json
-          ? JsonDocument.Parse(value)
-          : JsonDocument.Parse(DecodeStringValue(value.Span, column));
+                using var document = JsonDocument.Parse(
+                    DecodeStringValue(value.Span, column));
         return document.RootElement.Clone();
     }
+
+        private static bool IsUtf16LittleEndian(ReadOnlySpan<byte> value) =>
+            value.Length >= 4 &&
+            value.Length % 2 == 0 &&
+            value[1] == 0 &&
+            value[3] == 0;
 
     private static bool IsStringType(byte type) =>
       type is

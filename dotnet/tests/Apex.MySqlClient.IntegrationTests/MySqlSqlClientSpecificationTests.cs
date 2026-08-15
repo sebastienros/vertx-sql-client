@@ -41,10 +41,53 @@ public sealed class MySqlSqlClientSpecificationTests : SqlClientSpecificationTes
 
     protected override string LongRunningSql => "SELECT SLEEP(10)";
 
+    protected override string DiagnosticSystemName => "mysql";
+
+    protected override bool CoercesInvalidIntegerParameters => true;
+
+    protected override string ServerHost => Options.Host;
+
+    protected override int ServerPort => Options.Port;
+
+    protected override string CountRowsSql(string tableName) =>
+      $"SELECT CAST(COUNT(*) AS SIGNED) FROM {tableName}";
+
     protected override async ValueTask<ISqlConnection> OpenConnectionAsync(
         CancellationToken cancellationToken = default) =>
       await MySqlClient.ConnectAsync(Options, cancellationToken);
 
-    protected override ISqlPool CreatePool() =>
-      MySqlPool.Create(Options, new SqlPoolOptions { MaximumSize = 4 });
+    protected override async ValueTask<ISqlConnection> OpenConnectionAsync(
+        string host,
+        int port,
+        int reconnectAttempts,
+        TimeSpan reconnectInterval,
+        CancellationToken cancellationToken = default) =>
+      await MySqlClient.ConnectAsync(
+        Options with
+        {
+            Host = host,
+            Port = port,
+            ReconnectAttempts = reconnectAttempts,
+            ReconnectInterval = reconnectInterval,
+        },
+        cancellationToken);
+
+    protected override ISqlPool CreatePool(int maximumSize = 4) =>
+      MySqlPool.Create(Options, new SqlPoolOptions { MaximumSize = maximumSize });
+
+    protected override ISqlPool CreatePool(
+        string host,
+        int port,
+        int reconnectAttempts,
+        TimeSpan reconnectInterval,
+        int maximumSize = 4) =>
+      MySqlPool.Create(
+        Options with
+        {
+            Host = host,
+            Port = port,
+            ReconnectAttempts = reconnectAttempts,
+            ReconnectInterval = reconnectInterval,
+        },
+        new SqlPoolOptions { MaximumSize = maximumSize });
 }

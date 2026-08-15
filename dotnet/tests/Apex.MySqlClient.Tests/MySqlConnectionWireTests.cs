@@ -6,7 +6,11 @@
 
 using System.Buffers.Binary;
 using System.Net;
+using System.Net.Security;
 using System.Net.Sockets;
+using System.Security.Authentication;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using Apex.MySqlClient.Internal;
 using Apex.SqlClient;
@@ -86,6 +90,98 @@ public sealed class MySqlConnectionWireTests
         await client.DisposeAsync();
         await server;
     }
+
+        [TestMethod]
+        public async Task SendsClearPasswordOnlyOverExplicitlyEnabledTls()
+        {
+                using var certificate = CreateCertificate();
+                await using var harness = await ServerHarness.StartAsync();
+                Task server = Task.Run(async () =>
+                {
+                        await using var connection = await harness.AcceptAsync();
+                        var response = await connection.CompleteTlsHandshakeAsync(
+                            "8.4.2",
+                            certificate,
+                            MySqlProtocol.ClearPasswordPlugin);
+                        CollectionAssert.AreEqual(Encoding.UTF8.GetBytes("pass\0"), response);
+                        await connection.ExpectCommandAsync(MySqlCommand.Quit);
+                });
+
+                await using var client = await MySqlClient.ConnectAsync(
+                    harness.CreateOptions() with
+                    {
+                            SslMode = MySqlSslMode.Required,
+                            AuthenticationPlugin = MySqlAuthenticationPlugin.ClearPassword,
+                            AllowCleartextPassword = true,
+                    });
+
+                Assert.IsTrue(client.IsSecure);
+                await client.DisposeAsync();
+                await server;
+        }
+
+        [TestMethod]
+        public async Task SendsSha256PasswordInClearOnlyOverTls()
+        {
+                using var certificate = CreateCertificate();
+                await using var harness = await ServerHarness.StartAsync();
+                Task server = Task.Run(async () =>
+                {
+                        await using var connection = await harness.AcceptAsync();
+                        var response = await connection.CompleteTlsHandshakeAsync(
+                            "8.4.2",
+                            certificate,
+                            MySqlProtocol.Sha256PasswordPlugin);
+                        CollectionAssert.AreEqual(Encoding.UTF8.GetBytes("pass\0"), response);
+                        await connection.ExpectCommandAsync(MySqlCommand.Quit);
+                });
+
+                await using var client = await MySqlClient.ConnectAsync(
+                    harness.CreateOptions() with
+                    {
+                            SslMode = MySqlSslMode.Required,
+                            AuthenticationPlugin = MySqlAuthenticationPlugin.Sha256Password,
+                    });
+
+                Assert.IsTrue(client.IsSecure);
+                await client.DisposeAsync();
+                await server;
+        }
+
+        [TestMethod]
+        public async Task RetrievesPublicKeyForUnencryptedSha256Password()
+        {
+                using RSA rsa = RSA.Create(2048);
+                var publicKey = rsa.ExportSubjectPublicKeyInfoPem();
+                await using var harness = await ServerHarness.StartAsync();
+                Task server = Task.Run(async () =>
+                {
+                        await using var connection = await harness.AcceptAsync();
+                        var encrypted = await connection.CompleteSha256PublicKeyHandshakeAsync(
+                            "8.4.2",
+                            publicKey);
+                        var clear = rsa.Decrypt(encrypted, RSAEncryptionPadding.OaepSHA1);
+                        for (var index = 0; index < clear.Length; index++)
+                        {
+                                clear[index] ^= s_nonce[index % s_nonce.Length];
+                        }
+
+                        CollectionAssert.AreEqual(Encoding.UTF8.GetBytes("pass\0"), clear);
+                        await connection.ExpectCommandAsync(MySqlCommand.Quit);
+                });
+
+                await using var client = await MySqlClient.ConnectAsync(
+                    harness.CreateOptions() with
+                    {
+                            SslMode = MySqlSslMode.Disabled,
+                            AuthenticationPlugin = MySqlAuthenticationPlugin.Sha256Password,
+                            AllowPublicKeyRetrieval = true,
+                    });
+
+                Assert.IsFalse(client.IsSecure);
+                await client.DisposeAsync();
+                await server;
+        }
 
     [TestMethod]
     public async Task PreparesExecutesAndClosesStatement()
@@ -344,7 +440,7 @@ public sealed class MySqlConnectionWireTests
     private sealed class FakeConnection : IAsyncDisposable
     {
         private readonly TcpClient _client;
-        private readonly NetworkStream _stream;
+        private Stream _stream;
         private byte _sequence;
 
         internal FakeConnection(TcpClient client)
@@ -366,6 +462,50 @@ public sealed class MySqlConnectionWireTests
             _ = await ReadPacketAsync();
             await WriteCommandOkAsync();
         }
+
+                internal async Task<byte[]> CompleteTlsHandshakeAsync(
+                        string serverVersion,
+                        X509Certificate2 certificate,
+                        string authPlugin)
+                {
+                        var handshake = BuildHandshakePacket(
+                            serverVersion,
+                            connectionId: 42,
+                            authPlugin,
+                            supportsTls: true);
+                        await WritePacketAsync(handshake);
+                        _ = await ReadPacketAsync();
+                        SslStream tls = new(_stream, leaveInnerStreamOpen: false);
+                        await tls.AuthenticateAsServerAsync(
+                            certificate,
+                            clientCertificateRequired: false,
+                            enabledSslProtocols: SslProtocols.Tls12 | SslProtocols.Tls13,
+                            checkCertificateRevocation: false);
+                        _stream = tls;
+                        var response = ExtractAuthenticationResponse(await ReadPacketAsync());
+                        await WriteCommandOkAsync();
+                        return response;
+                }
+
+                internal async Task<byte[]> CompleteSha256PublicKeyHandshakeAsync(
+                        string serverVersion,
+                        string publicKey)
+                {
+                        var handshake = BuildHandshakePacket(
+                            serverVersion,
+                            connectionId: 42,
+                            MySqlProtocol.Sha256PasswordPlugin);
+                        await WritePacketAsync(handshake);
+                        var request = ExtractAuthenticationResponse(await ReadPacketAsync());
+                        CollectionAssert.AreEqual(
+                            new byte[] { MySqlProtocol.Sha256PublicKeyRequest },
+                            request);
+                        await WritePacketAsync(
+                            [MySqlProtocol.AuthMoreDataHeader, .. Encoding.UTF8.GetBytes(publicKey), 0]);
+                        var encrypted = await ReadPacketAsync();
+                        await WriteCommandOkAsync();
+                        return encrypted;
+                }
 
         internal async Task<byte[]> ExpectCommandPayloadAsync(MySqlCommand command)
         {
@@ -594,20 +734,27 @@ public sealed class MySqlConnectionWireTests
             }
         }
 
-        private static byte[] BuildHandshakePacket(string serverVersion, uint connectionId, string authPlugin)
+        private static byte[] BuildHandshakePacket(
+            string serverVersion,
+            uint connectionId,
+            string authPlugin,
+            bool supportsTls = false)
         {
             MySqlPayloadWriter writer = new();
             try
             {
+                var capabilities = supportsTls
+                  ? ServerCapabilities | (uint)MySqlCapabilities.Ssl
+                  : ServerCapabilities;
                 writer.WriteByte(10);
                 writer.WriteNullTerminatedString(serverVersion);
                 writer.WriteUInt32(connectionId);
                 writer.WriteBytes(s_nonce.AsSpan(0, 8));
                 writer.WriteByte(0);
-                writer.WriteUInt16((ushort)(ServerCapabilities & 0xFFFF));
+                writer.WriteUInt16((ushort)(capabilities & 0xFFFF));
                 writer.WriteByte(MySqlProtocol.Utf8Mb4Collation);
                 writer.WriteUInt16((ushort)MySqlServerStatus.AutoCommit);
-                writer.WriteUInt16((ushort)((ServerCapabilities >> 16) & 0xFFFF));
+                writer.WriteUInt16((ushort)((capabilities >> 16) & 0xFFFF));
                 writer.WriteByte(21);
                 writer.WriteZero(10);
                 writer.WriteBytes(s_nonce.AsSpan(8, 12));
@@ -619,6 +766,17 @@ public sealed class MySqlConnectionWireTests
             {
                 writer.Release();
             }
+        }
+
+        private static byte[] ExtractAuthenticationResponse(ReadOnlySpan<byte> response)
+        {
+            var position = 4 + 4 + 1 + 23;
+            while (position < response.Length && response[position++] != 0)
+            {
+            }
+
+            var length = response[position++];
+            return response.Slice(position, length).ToArray();
         }
 
         private async Task WritePacketAsync(byte[] payload)
@@ -647,4 +805,23 @@ public sealed class MySqlConnectionWireTests
             _client.Dispose();
         }
     }
+
+        private static X509Certificate2 CreateCertificate()
+        {
+                using RSA rsa = RSA.Create(2048);
+                CertificateRequest request = new(
+                    "CN=localhost",
+                    rsa,
+                    HashAlgorithmName.SHA256,
+                    RSASignaturePadding.Pkcs1);
+                SubjectAlternativeNameBuilder names = new();
+                names.AddDnsName("localhost");
+                names.AddIpAddress(IPAddress.Loopback);
+                request.CertificateExtensions.Add(names.Build());
+                request.CertificateExtensions.Add(
+                    new X509BasicConstraintsExtension(false, false, 0, critical: true));
+                return request.CreateSelfSigned(
+                    DateTimeOffset.UtcNow.AddMinutes(-5),
+                    DateTimeOffset.UtcNow.AddDays(1));
+        }
 }

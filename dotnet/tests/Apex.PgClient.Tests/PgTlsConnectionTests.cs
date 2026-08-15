@@ -117,6 +117,89 @@ public sealed class PgTlsConnectionTests
         listener.Stop();
     }
 
+    [TestMethod]
+    public async Task VerifyCaAcceptsTrustedCertificateWithDifferentHostName()
+    {
+        using var authority = CreateCertificateAuthority();
+        using var certificate = CreateServerCertificate(authority, "database.internal");
+        TcpListener listener = new(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        var server = RunTlsServerAsync(listener, certificate, direct: false);
+
+        await using var connection = await PgClient.ConnectAsync(new PgConnectOptions
+        {
+            Host = "127.0.0.1",
+            Port = port,
+            Username = "user",
+            Password = "pass",
+            Database = "db",
+            SslMode = PgSslMode.VerifyCa,
+            CertificateValidationCallback = (_, remote, _, errors) =>
+              ValidateCertificate(remote, authority, errors, verifyHostName: false),
+        });
+
+        Assert.IsTrue(connection.IsSecure);
+        await connection.DisposeAsync();
+        await server;
+        listener.Stop();
+    }
+
+    [TestMethod]
+    public async Task VerifyFullAcceptsMatchingSubjectAlternativeName()
+    {
+        using var authority = CreateCertificateAuthority();
+        using var certificate = CreateServerCertificate(authority, "localhost");
+        TcpListener listener = new(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        var server = RunTlsServerAsync(listener, certificate, direct: false);
+
+        await using var connection = await PgClient.ConnectAsync(new PgConnectOptions
+        {
+            Host = "localhost",
+            Port = port,
+            Username = "user",
+            Password = "pass",
+            Database = "db",
+            SslMode = PgSslMode.VerifyFull,
+            CertificateValidationCallback = (_, remote, _, errors) =>
+              ValidateCertificate(remote, authority, errors, verifyHostName: true),
+        });
+
+        Assert.IsTrue(connection.IsSecure);
+        await connection.DisposeAsync();
+        await server;
+        listener.Stop();
+    }
+
+    [TestMethod]
+    public async Task VerifyFullRejectsMismatchedSubjectAlternativeName()
+    {
+        using var authority = CreateCertificateAuthority();
+        using var certificate = CreateServerCertificate(authority, "database.internal");
+        TcpListener listener = new(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        var server = RunRejectedTlsServerAsync(listener, certificate);
+
+        await Assert.ThrowsExactlyAsync<AuthenticationException>(
+          () => PgClient.ConnectAsync(new PgConnectOptions
+          {
+              Host = "127.0.0.1",
+              Port = port,
+              Username = "user",
+              Password = "pass",
+              Database = "db",
+              SslMode = PgSslMode.VerifyFull,
+              CertificateValidationCallback = (_, remote, _, errors) =>
+                ValidateCertificate(remote, authority, errors, verifyHostName: true),
+          }).AsTask());
+
+        await server;
+        listener.Stop();
+    }
+
     private static async Task RunTlsServerAsync(
         TcpListener listener,
         X509Certificate2 certificate,
@@ -162,6 +245,29 @@ public sealed class PgTlsConnectionTests
         await WriteStartupCompleteAsync(stream, "16.4");
         (var type, _) = await ReadMessageAsync(stream);
         Assert.AreEqual((byte)'X', type);
+    }
+
+    private static async Task RunRejectedTlsServerAsync(
+        TcpListener listener,
+        X509Certificate2 certificate)
+    {
+        using var client = await listener.AcceptTcpClientAsync();
+        await using var network = client.GetStream();
+        var sslRequest = new byte[8];
+        await network.ReadExactlyAsync(sslRequest);
+        await network.WriteAsync(new byte[] { (byte)'S' });
+        await network.FlushAsync();
+        await using SslStream tls = new(network, leaveInnerStreamOpen: false);
+        try
+        {
+            await tls.AuthenticateAsServerAsync(certificate);
+        }
+        catch (AuthenticationException)
+        {
+        }
+        catch (IOException)
+        {
+        }
     }
 
     private static async Task RunAllowFallbackServerAsync(
@@ -218,6 +324,79 @@ public sealed class PgTlsConnectionTests
           DateTimeOffset.UtcNow.AddMinutes(-5),
           DateTimeOffset.UtcNow.AddDays(1));
     }
+
+        private static X509Certificate2 CreateCertificateAuthority()
+        {
+                using RSA rsa = RSA.Create(2048);
+                CertificateRequest request = new(
+                    "CN=Apex PostgreSQL Test CA",
+                    rsa,
+                    HashAlgorithmName.SHA256,
+                    RSASignaturePadding.Pkcs1);
+                request.CertificateExtensions.Add(
+                    new X509BasicConstraintsExtension(true, false, 0, critical: true));
+                request.CertificateExtensions.Add(
+                    new X509KeyUsageExtension(
+                        X509KeyUsageFlags.KeyCertSign | X509KeyUsageFlags.CrlSign,
+                        critical: true));
+                request.CertificateExtensions.Add(
+                    new X509SubjectKeyIdentifierExtension(request.PublicKey, critical: false));
+                return request.CreateSelfSigned(
+                    DateTimeOffset.UtcNow.AddMinutes(-5),
+                    DateTimeOffset.UtcNow.AddDays(1));
+        }
+
+        private static X509Certificate2 CreateServerCertificate(
+                X509Certificate2 authority,
+                string dnsName)
+        {
+                using RSA rsa = RSA.Create(2048);
+                CertificateRequest request = new(
+                    "CN=" + dnsName,
+                    rsa,
+                    HashAlgorithmName.SHA256,
+                    RSASignaturePadding.Pkcs1);
+                SubjectAlternativeNameBuilder names = new();
+                names.AddDnsName(dnsName);
+                request.CertificateExtensions.Add(names.Build());
+                request.CertificateExtensions.Add(
+                    new X509BasicConstraintsExtension(false, false, 0, critical: true));
+                request.CertificateExtensions.Add(
+                    new X509KeyUsageExtension(
+                        X509KeyUsageFlags.DigitalSignature | X509KeyUsageFlags.KeyEncipherment,
+                        critical: true));
+                request.CertificateExtensions.Add(
+                    new X509EnhancedKeyUsageExtension(
+                        [new Oid("1.3.6.1.5.5.7.3.1")],
+                        critical: true));
+                var serial = RandomNumberGenerator.GetBytes(16);
+                using var issued = request.Create(
+                    authority,
+                    new DateTimeOffset(authority.NotBefore).AddSeconds(1),
+                    new DateTimeOffset(authority.NotAfter).AddSeconds(-1),
+                    serial);
+                return issued.CopyWithPrivateKey(rsa);
+        }
+
+        private static bool ValidateCertificate(
+                X509Certificate? remote,
+                X509Certificate2 authority,
+                SslPolicyErrors errors,
+                bool verifyHostName)
+        {
+                if (remote is null ||
+                        verifyHostName &&
+                        (errors & SslPolicyErrors.RemoteCertificateNameMismatch) != 0)
+                {
+                        return false;
+                }
+
+                using X509Chain chain = new();
+                chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
+                chain.ChainPolicy.CustomTrustStore.Add(authority);
+                chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+                return chain.Build(new X509Certificate2(remote));
+        }
 
     private static async Task ReadStartupAsync(Stream stream)
     {

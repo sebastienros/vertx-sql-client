@@ -171,7 +171,8 @@ internal sealed class MsSqlPreparedStatement : ISqlPreparedStatement
         {
             if (!_preparing ||
                 !returnValue.IsOutput ||
-                returnValue.Name.Length != 0)
+                returnValue.Name.Length != 0 ||
+                returnValue.Value is null)
             {
                 return;
             }

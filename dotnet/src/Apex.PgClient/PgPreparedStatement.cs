@@ -29,7 +29,7 @@ internal sealed class PgPreparedStatement : ISqlPreparedStatement
         CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        return _connection.ExecutePreparedAsync(_name, parameters, cancellationToken);
+        return _connection.ExecutePreparedAsync(_name, Sql, parameters, cancellationToken);
     }
 
     public async ValueTask<SqlCommandResult> ExecuteAsync(
@@ -38,7 +38,7 @@ internal sealed class PgPreparedStatement : ISqlPreparedStatement
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         var rows =
-            await _connection.ExecutePreparedAsync(_name, parameters, cancellationToken).ConfigureAwait(false);
+            await _connection.ExecutePreparedAsync(_name, Sql, parameters, cancellationToken).ConfigureAwait(false);
         return new SqlCommandResult(rows.AffectedRows, rows.CommandTag);
     }
 
