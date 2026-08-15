@@ -183,7 +183,7 @@ public sealed partial class MySqlConnection
     public bool IsNull(int ordinal)
     {
       EnsureCurrent();
-      return _decoder!.IsNull(_current.Span, ordinal);
+      return _decoder!.IsNull(_current.Memory, ordinal);
     }
 
     public int GetOrdinal(string name)
@@ -203,34 +203,91 @@ public sealed partial class MySqlConnection
     public T Get<T>(int ordinal)
     {
       EnsureCurrent();
-      return _decoder!.Decode<T>(_current.Span, ordinal);
+      return SqlRowDecoder.Decode<T>(
+        _decoder!,
+        _current.Memory,
+        ordinal,
+        _columns[ordinal],
+        copyReadOnlyMemory: true);
     }
 
-    public bool GetBoolean(int ordinal) => Get<bool>(ordinal);
+    public bool GetBoolean(int ordinal)
+    {
+      EnsureCurrent();
+      return _decoder!.DecodeBoolean(_current.Memory, ordinal, _columns[ordinal]);
+    }
 
-    public short GetInt16(int ordinal) => Get<short>(ordinal);
+    public short GetInt16(int ordinal)
+    {
+      EnsureCurrent();
+      return _decoder!.DecodeInt16(_current.Memory, ordinal, _columns[ordinal]);
+    }
 
-    public int GetInt32(int ordinal) => Get<int>(ordinal);
+    public int GetInt32(int ordinal)
+    {
+      EnsureCurrent();
+      return _decoder!.DecodeInt32(_current.Memory, ordinal, _columns[ordinal]);
+    }
 
-    public long GetInt64(int ordinal) => Get<long>(ordinal);
+    public long GetInt64(int ordinal)
+    {
+      EnsureCurrent();
+      return _decoder!.DecodeInt64(_current.Memory, ordinal, _columns[ordinal]);
+    }
 
-    public float GetFloat(int ordinal) => Get<float>(ordinal);
+    public float GetFloat(int ordinal)
+    {
+      EnsureCurrent();
+      return _decoder!.DecodeFloat(_current.Memory, ordinal, _columns[ordinal]);
+    }
 
-    public double GetDouble(int ordinal) => Get<double>(ordinal);
+    public double GetDouble(int ordinal)
+    {
+      EnsureCurrent();
+      return _decoder!.DecodeDouble(_current.Memory, ordinal, _columns[ordinal]);
+    }
 
-    public string GetString(int ordinal) => Get<string>(ordinal);
+    public string GetString(int ordinal)
+    {
+      EnsureCurrent();
+      return _decoder!.DecodeString(_current.Memory, ordinal, _columns[ordinal])!;
+    }
 
-    public Guid GetGuid(int ordinal) => Get<Guid>(ordinal);
+    public Guid GetGuid(int ordinal)
+    {
+      EnsureCurrent();
+      return _decoder!.DecodeGuid(_current.Memory, ordinal, _columns[ordinal]);
+    }
 
-    public DateOnly GetDateOnly(int ordinal) => Get<DateOnly>(ordinal);
+    public DateOnly GetDateOnly(int ordinal)
+    {
+      EnsureCurrent();
+      return _decoder!.DecodeDateOnly(_current.Memory, ordinal, _columns[ordinal]);
+    }
 
-    public TimeOnly GetTimeOnly(int ordinal) => Get<TimeOnly>(ordinal);
+    public TimeOnly GetTimeOnly(int ordinal)
+    {
+      EnsureCurrent();
+      return _decoder!.DecodeTimeOnly(_current.Memory, ordinal, _columns[ordinal]);
+    }
 
-    public DateTime GetDateTime(int ordinal) => Get<DateTime>(ordinal);
+    public DateTime GetDateTime(int ordinal)
+    {
+      EnsureCurrent();
+      return _decoder!.DecodeDateTime(_current.Memory, ordinal, _columns[ordinal]);
+    }
 
-    public DateTimeOffset GetDateTimeOffset(int ordinal) => Get<DateTimeOffset>(ordinal);
+    public DateTimeOffset GetDateTimeOffset(int ordinal)
+    {
+      EnsureCurrent();
+      return _decoder!.DecodeDateTimeOffset(_current.Memory, ordinal, _columns[ordinal]);
+    }
 
-    public byte[] GetBytes(int ordinal) => Get<byte[]>(ordinal);
+    public byte[] GetBytes(int ordinal)
+    {
+      EnsureCurrent();
+      return _decoder!.DecodeBytes(_current.Memory, ordinal, _columns[ordinal])!;
+    }
 
     internal void CopyCurrentTo(SqlRowPageBuilder page)
     {

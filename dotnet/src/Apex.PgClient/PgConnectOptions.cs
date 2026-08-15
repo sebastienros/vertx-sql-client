@@ -5,6 +5,7 @@
  */
 
 using Apex.SqlClient;
+using Apex.SqlClient.Internal;
 using Apex.PgClient.Internal;
 using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
@@ -116,7 +117,7 @@ public sealed record PgConnectOptions : SqlConnectOptions
       };
     }
 
-    return Apply(options, PgConnectionStringParser.ParseQuery(uri.Query));
+    return Apply(options, ConnectionStringQueryParser.Parse(uri.Query));
   }
 
   private static PgConnectOptions Apply(

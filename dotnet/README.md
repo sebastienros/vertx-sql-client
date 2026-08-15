@@ -77,6 +77,19 @@ SqlRowSet rows = await pool.QueryAsync(
 `Apex.MySqlClient` supports the active Vert.x matrix: MySQL 8.4 and 9.6, and
 MariaDB 11.8. See [MySQL usage and compatibility](docs/mysql.md).
 
+Like Npgsql 10, Apex exposes both specific typed getters and generic field
+access. Common CLR values have getters such as `GetInt32`, `GetDecimal`,
+and `GetGuid`. `Get<T>` uses the same typed decoder for provider-specific
+PostgreSQL values, JSON, arrays, nullable values, and
+`ReadOnlyMemory<byte>`; it does not route through the object indexer. The
+object indexer remains available when runtime typing is required and may
+box value types.
+
+Binary `ReadOnlyMemory<byte>` from a buffered `SqlRow` can borrow its
+row-owned page without copying. `ISqlRowReader.Get<ReadOnlyMemory<byte>>`
+returns owned memory because reader payloads use pooled buffers that are
+released on the next read.
+
 ## Build and test
 
 Use the repository-approved package feed as an ephemeral restore source; do not commit a NuGet source configuration.

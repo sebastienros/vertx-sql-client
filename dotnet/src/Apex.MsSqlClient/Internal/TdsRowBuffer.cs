@@ -21,6 +21,8 @@ internal sealed class TdsRowBuffer : IBufferWriter<byte>
 
   internal int WrittenCount => _length;
 
+  internal ReadOnlyMemory<byte> WrittenMemory => _buffer.AsMemory(0, _length);
+
   internal ReadOnlySpan<byte> WrittenSpan => _buffer.AsSpan(0, _length);
 
   internal void Clear() => _length = 0;

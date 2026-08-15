@@ -41,6 +41,17 @@ public sealed class MsSqlConnectOptionsTests
   }
 
   [TestMethod]
+  public void ParsesFormEncodedUriQuery()
+  {
+    MsSqlConnectOptions options = MsSqlConnectOptions.Parse(
+      "sqlserver://localhost/app?applicationName=Apex+Driver" +
+      "&workstationId=build%2Bagent");
+
+    Assert.AreEqual("Apex Driver", options.ApplicationName);
+    Assert.AreEqual("build+agent", options.WorkstationId);
+  }
+
+  [TestMethod]
   public void ParsesKeywordConnectionStringAndAliases()
   {
     MsSqlConnectOptions options = MsSqlConnectOptions.Parse(

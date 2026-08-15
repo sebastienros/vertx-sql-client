@@ -29,6 +29,9 @@ internal readonly struct MySqlPacket : IDisposable
   internal ReadOnlySpan<byte> Span =>
     _buffer is null ? ReadOnlySpan<byte>.Empty : _buffer.AsSpan(0, Length);
 
+  internal ReadOnlyMemory<byte> Memory =>
+    _buffer is null ? ReadOnlyMemory<byte>.Empty : _buffer.AsMemory(0, Length);
+
   internal byte Header => Length == 0 ? (byte)0 : _buffer![0];
 
   public void Dispose()
@@ -185,10 +188,14 @@ internal sealed class MySqlPacketReader
       return false;
     }
 
-    Span<byte> header = stackalloc byte[MySqlProtocol.PacketHeaderLength];
-    buffer.Slice(0, MySqlProtocol.PacketHeaderLength).CopyTo(header);
-    int length = header[0] | (header[1] << 8) | (header[2] << 16);
-    byte sequence = header[3];
+    SequenceReader<byte> reader = new(buffer);
+    if (!reader.TryReadLittleEndian(out int header))
+    {
+      return false;
+    }
+
+    int length = header & 0x00FF_FFFF;
+    byte sequence = (byte)((uint)header >> 24);
     long total = MySqlProtocol.PacketHeaderLength + (long)length;
     if (buffer.Length < total)
     {

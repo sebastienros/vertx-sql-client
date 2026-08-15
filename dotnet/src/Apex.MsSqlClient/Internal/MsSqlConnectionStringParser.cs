@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: EPL-2.0 OR Apache-2.0
  */
 
+using Apex.SqlClient.Internal;
+
 namespace Apex.MsSqlClient.Internal;
 
 internal static class MsSqlConnectionStringParser
@@ -40,28 +42,8 @@ internal static class MsSqlConnectionStringParser
     return values;
   }
 
-  internal static IReadOnlyDictionary<string, string> ParseQuery(string query)
-  {
-    Dictionary<string, string> values = new(StringComparer.OrdinalIgnoreCase);
-    ReadOnlySpan<char> text = query.AsSpan().TrimStart('?');
-    foreach (Range range in text.Split('&'))
-    {
-      ReadOnlySpan<char> pair = text[range];
-      if (pair.IsEmpty)
-      {
-        continue;
-      }
-
-      int equals = pair.IndexOf('=');
-      string key = Uri.UnescapeDataString((equals < 0 ? pair : pair[..equals]).ToString());
-      string value = equals < 0
-        ? string.Empty
-        : Uri.UnescapeDataString(pair[(equals + 1)..].ToString());
-      values[key] = value;
-    }
-
-    return values;
-  }
+  internal static IReadOnlyDictionary<string, string> ParseQuery(string query) =>
+    ConnectionStringQueryParser.Parse(query);
 
   private static string ReadValue(string text, ref int position)
   {

@@ -5,6 +5,7 @@
  */
 
 using System.Text;
+using Apex.SqlClient.Internal;
 
 namespace Apex.MySqlClient.Internal;
 
@@ -62,18 +63,7 @@ internal static class MySqlConnectionStringParser
 
   /// <summary>Parses the query component of a <c>mysql://</c> or <c>mariadb://</c> URI.</summary>
   internal static IReadOnlyDictionary<string, string> ParseQuery(string query)
-  {
-    Dictionary<string, string> values = new(StringComparer.OrdinalIgnoreCase);
-    foreach (string part in query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries))
-    {
-      int separator = part.IndexOf('=', StringComparison.Ordinal);
-      string key = separator < 0 ? part : part[..separator];
-      string value = separator < 0 ? string.Empty : part[(separator + 1)..];
-      values[Decode(key)] = Decode(value);
-    }
-
-    return values;
-  }
+    => ConnectionStringQueryParser.Parse(query);
 
   private static string ParseQuoted(ReadOnlySpan<char> input, ref int position)
   {
@@ -137,6 +127,4 @@ internal static class MySqlConnectionStringParser
     }
   }
 
-  private static string Decode(string value) =>
-    Uri.UnescapeDataString(value.Replace("+", " ", StringComparison.Ordinal));
 }

@@ -5,7 +5,6 @@
  */
 
 using System.Buffers.Binary;
-using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Apex.SqlClient;
@@ -91,31 +90,28 @@ internal sealed class MySqlRowDecoder : ISqlRowDecoder
     }
   }
 
-  public int GetFieldCount(ReadOnlySpan<byte> row) => _metadata.Length;
+  public int GetFieldCount(ReadOnlyMemory<byte> row) => _metadata.Length;
 
-  public bool IsNull(ReadOnlySpan<byte> row, int ordinal)
+  internal int GetFieldCount(ReadOnlySpan<byte> row) => _metadata.Length;
+
+  public bool IsNull(ReadOnlyMemory<byte> row, int ordinal)
   {
-    ReadOnlySpan<byte> value = GetField(row, ordinal, out bool isNull);
-    return isNull ||
-      (_zeroDates == MySqlZeroDateBehavior.Null &&
-       IsZeroTemporal(value, _metadata[ordinal].Type));
+    ReadOnlySpan<byte> value = GetField(row.Span, ordinal, out bool isNull);
+    return isNull || IsNullZeroDate(value, ordinal);
   }
 
-  public object? Decode(ReadOnlySpan<byte> row, int ordinal, SqlColumn column) =>
-    DecodeObject(row, ordinal);
-
-  public T Decode<T>(ReadOnlySpan<byte> row, int ordinal, SqlColumn column) =>
-    Decode<T>(row, ordinal);
-
-  internal object? DecodeObject(ReadOnlySpan<byte> row, int ordinal)
+  public object? DecodeObject(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
   {
-    ReadOnlySpan<byte> value = GetField(row, ordinal, out bool isNull);
+    MySqlColumnMetadata metadata = EnsureColumn(row, ordinal, column, typeof(object));
+    ReadOnlySpan<byte> value = GetField(row.Span, ordinal, out bool isNull);
     if (isNull)
     {
       return null;
     }
 
-    MySqlColumnMetadata metadata = _metadata[ordinal];
     bool unsigned = metadata.IsUnsigned;
     switch (metadata.Type)
     {
@@ -176,164 +172,1039 @@ internal sealed class MySqlRowDecoder : ISqlRowDecoder
     }
   }
 
-  internal T Decode<T>(ReadOnlySpan<byte> row, int ordinal)
+  internal object? DecodeObject(ReadOnlyMemory<byte> row, int ordinal) =>
+    DecodeObject(row, ordinal, _columns[ordinal]);
+
+  public bool DecodeBoolean(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
   {
-    ReadOnlySpan<byte> value = GetField(row, ordinal, out bool isNull);
-    if (isNull)
+    MySqlColumnMetadata metadata = EnsureSignedType(
+      row, ordinal, column, typeof(bool), MySqlType.Tiny);
+    return ReadInt64(GetRequiredField(row, ordinal), metadata) != 0;
+  }
+
+  public bool? DecodeNullableBoolean(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    MySqlColumnMetadata metadata = EnsureSignedType(
+      row, ordinal, column, typeof(bool?), MySqlType.Tiny);
+    ReadOnlySpan<byte> value = GetField(row.Span, ordinal, out bool isNull);
+    return isNull ? null : ReadInt64(value, metadata) != 0;
+  }
+
+  public short DecodeInt16(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    MySqlColumnMetadata metadata =
+      EnsureSignedIntegerType(row, ordinal, column, typeof(short));
+    return checked((short)ReadInt64(GetRequiredField(row, ordinal), metadata));
+  }
+
+  public short? DecodeNullableInt16(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    MySqlColumnMetadata metadata =
+      EnsureSignedIntegerType(row, ordinal, column, typeof(short?));
+    ReadOnlySpan<byte> value = GetField(row.Span, ordinal, out bool isNull);
+    return isNull ? null : checked((short)ReadInt64(value, metadata));
+  }
+
+  public int DecodeInt32(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    MySqlColumnMetadata metadata =
+      EnsureSignedIntegerType(row, ordinal, column, typeof(int));
+    return checked((int)ReadInt64(GetRequiredField(row, ordinal), metadata));
+  }
+
+  public int? DecodeNullableInt32(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    MySqlColumnMetadata metadata =
+      EnsureSignedIntegerType(row, ordinal, column, typeof(int?));
+    ReadOnlySpan<byte> value = GetField(row.Span, ordinal, out bool isNull);
+    return isNull ? null : checked((int)ReadInt64(value, metadata));
+  }
+
+  public long DecodeInt64(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    MySqlColumnMetadata metadata =
+      EnsureSignedIntegerType(row, ordinal, column, typeof(long));
+    return ReadInt64(GetRequiredField(row, ordinal), metadata);
+  }
+
+  public long? DecodeNullableInt64(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    MySqlColumnMetadata metadata =
+      EnsureSignedIntegerType(row, ordinal, column, typeof(long?));
+    ReadOnlySpan<byte> value = GetField(row.Span, ordinal, out bool isNull);
+    return isNull ? null : ReadInt64(value, metadata);
+  }
+
+  public float DecodeFloat(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    MySqlColumnMetadata metadata =
+      EnsureNumericType(row, ordinal, column, typeof(float));
+    return (float)ReadDouble(GetRequiredField(row, ordinal), metadata);
+  }
+
+  public float? DecodeNullableFloat(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    MySqlColumnMetadata metadata =
+      EnsureNumericType(row, ordinal, column, typeof(float?));
+    ReadOnlySpan<byte> value = GetField(row.Span, ordinal, out bool isNull);
+    return isNull ? null : (float)ReadDouble(value, metadata);
+  }
+
+  public double DecodeDouble(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    MySqlColumnMetadata metadata =
+      EnsureNumericType(row, ordinal, column, typeof(double));
+    return ReadDouble(GetRequiredField(row, ordinal), metadata);
+  }
+
+  public double? DecodeNullableDouble(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    MySqlColumnMetadata metadata =
+      EnsureNumericType(row, ordinal, column, typeof(double?));
+    ReadOnlySpan<byte> value = GetField(row.Span, ordinal, out bool isNull);
+    return isNull ? null : ReadDouble(value, metadata);
+  }
+
+  public decimal DecodeDecimal(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    MySqlColumnMetadata metadata =
+      EnsureNumericType(row, ordinal, column, typeof(decimal));
+    return ReadDecimal(GetRequiredField(row, ordinal), metadata);
+  }
+
+  public decimal? DecodeNullableDecimal(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    MySqlColumnMetadata metadata =
+      EnsureNumericType(row, ordinal, column, typeof(decimal?));
+    ReadOnlySpan<byte> value = GetField(row.Span, ordinal, out bool isNull);
+    return isNull ? null : ReadDecimal(value, metadata);
+  }
+
+  public string? DecodeString(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    MySqlColumnMetadata metadata = EnsureColumn(row, ordinal, column, typeof(string));
+    EnsureStringType(metadata, column, typeof(string));
+    ReadOnlySpan<byte> value = GetField(row.Span, ordinal, out bool isNull);
+    return isNull ? null : _strings.GetString(value);
+  }
+
+  public byte[]? DecodeBytes(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    MySqlColumnMetadata metadata = EnsureColumn(row, ordinal, column, typeof(byte[]));
+    EnsureBytesType(metadata, column, typeof(byte[]));
+    ReadOnlySpan<byte> value = GetField(row.Span, ordinal, out bool isNull);
+    return isNull ? null : value.ToArray();
+  }
+
+  public ReadOnlyMemory<byte> DecodeReadOnlyMemory(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    MySqlColumnMetadata metadata = EnsureColumn(
+      row, ordinal, column, typeof(ReadOnlyMemory<byte>));
+    EnsureBytesType(metadata, column, typeof(ReadOnlyMemory<byte>));
+    return GetRequiredFieldMemory(row, ordinal);
+  }
+
+  public ReadOnlyMemory<byte>? DecodeNullableReadOnlyMemory(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    MySqlColumnMetadata metadata = EnsureColumn(
+      row, ordinal, column, typeof(ReadOnlyMemory<byte>?));
+    EnsureBytesType(metadata, column, typeof(ReadOnlyMemory<byte>?));
+    ReadOnlyMemory<byte> value = GetFieldMemory(row, ordinal, out bool isNull);
+    return isNull ? null : value;
+  }
+
+  public Guid DecodeGuid(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    MySqlColumnMetadata metadata = EnsureColumn(row, ordinal, column, typeof(Guid));
+    EnsureGuidType(metadata, column, typeof(Guid));
+    return ReadGuid(GetRequiredField(row, ordinal), metadata);
+  }
+
+  public Guid? DecodeNullableGuid(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    MySqlColumnMetadata metadata = EnsureColumn(row, ordinal, column, typeof(Guid?));
+    EnsureGuidType(metadata, column, typeof(Guid?));
+    ReadOnlySpan<byte> value = GetField(row.Span, ordinal, out bool isNull);
+    return isNull ? null : ReadGuid(value, metadata);
+  }
+
+  public DateOnly DecodeDateOnly(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    MySqlColumnMetadata metadata =
+      EnsureDateType(row, ordinal, column, typeof(DateOnly));
+    return ReadDateOnly(GetRequiredField(row, ordinal), metadata);
+  }
+
+  public DateOnly? DecodeNullableDateOnly(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    MySqlColumnMetadata metadata =
+      EnsureDateType(row, ordinal, column, typeof(DateOnly?));
+    ReadOnlySpan<byte> value = GetField(row.Span, ordinal, out bool isNull);
+    return isNull || IsNullZeroDate(value, ordinal) ? null : ReadDateOnly(value, metadata);
+  }
+
+  public TimeOnly DecodeTimeOnly(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    MySqlColumnMetadata metadata =
+      EnsureTimeType(row, ordinal, column, typeof(TimeOnly));
+    return ReadTimeOnly(GetRequiredField(row, ordinal), metadata);
+  }
+
+  public TimeOnly? DecodeNullableTimeOnly(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    MySqlColumnMetadata metadata =
+      EnsureTimeType(row, ordinal, column, typeof(TimeOnly?));
+    ReadOnlySpan<byte> value = GetField(row.Span, ordinal, out bool isNull);
+    return isNull ? null : ReadTimeOnly(value, metadata);
+  }
+
+  public DateTime DecodeDateTime(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    MySqlColumnMetadata metadata =
+      EnsureDateType(row, ordinal, column, typeof(DateTime));
+    return ReadDateTime(GetRequiredField(row, ordinal), metadata);
+  }
+
+  public DateTime? DecodeNullableDateTime(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    MySqlColumnMetadata metadata =
+      EnsureDateType(row, ordinal, column, typeof(DateTime?));
+    ReadOnlySpan<byte> value = GetField(row.Span, ordinal, out bool isNull);
+    return isNull || IsNullZeroDate(value, ordinal) ? null : ReadDateTime(value, metadata);
+  }
+
+  public DateTimeOffset DecodeDateTimeOffset(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    MySqlColumnMetadata metadata =
+      EnsureDateType(row, ordinal, column, typeof(DateTimeOffset));
+    return new DateTimeOffset(ReadDateTime(GetRequiredField(row, ordinal), metadata), TimeSpan.Zero);
+  }
+
+  public DateTimeOffset? DecodeNullableDateTimeOffset(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    MySqlColumnMetadata metadata =
+      EnsureDateType(row, ordinal, column, typeof(DateTimeOffset?));
+    ReadOnlySpan<byte> value = GetField(row.Span, ordinal, out bool isNull);
+    return isNull || IsNullZeroDate(value, ordinal)
+      ? null
+      : new DateTimeOffset(ReadDateTime(value, metadata), TimeSpan.Zero);
+  }
+
+  public JsonElement DecodeJsonElement(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    _ = EnsureType(row, ordinal, column, typeof(JsonElement), MySqlType.Json);
+    return DecodeJson(GetRequiredField(row, ordinal));
+  }
+
+  public JsonElement? DecodeNullableJsonElement(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    _ = EnsureType(row, ordinal, column, typeof(JsonElement?), MySqlType.Json);
+    ReadOnlySpan<byte> value = GetField(row.Span, ordinal, out bool isNull);
+    return isNull ? null : DecodeJson(value);
+  }
+
+  public object?[]? DecodeArray(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    _ = EnsureColumn(row, ordinal, column, typeof(object?[]));
+    throw CannotRead(column, typeof(object?[]));
+  }
+
+  public T Decode<T>(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column,
+    bool copyReadOnlyMemory)
+  {
+    if (IsNull(row, ordinal))
     {
       return default(T) is null
         ? default!
         : throw new InvalidCastException($"Column {ordinal} contains NULL.");
     }
 
-    MySqlColumnMetadata metadata = _metadata[ordinal];
-    if (metadata.Type == MySqlType.Json)
+    if ((MySqlType)column.TypeId == MySqlType.Json &&
+        TypedDecoder<T>.Kind is not (
+          TypedDecoderKind.String or
+          TypedDecoderKind.JsonElement or
+          TypedDecoderKind.NullableJsonElement or
+          TypedDecoderKind.Object))
     {
-      return DecodeJsonValue<T>(value, ordinal);
+      _ = EnsureType(row, ordinal, column, typeof(T), MySqlType.Json);
+      ReadOnlySpan<byte> json = GetRequiredField(row, ordinal);
+      return DecodeJsonValue<T>(json, ordinal);
     }
 
-    if (typeof(T) == typeof(bool))
+    switch (TypedDecoder<T>.Kind)
     {
-      bool result = ReadInt64(value, metadata) != 0;
-      return Unsafe.As<bool, T>(ref result);
+      case TypedDecoderKind.Boolean:
+        return Cast<bool, T>(DecodeBoolean(row, ordinal, column));
+      case TypedDecoderKind.NullableBoolean:
+        return Cast<bool?, T>(DecodeNullableBoolean(row, ordinal, column));
+      case TypedDecoderKind.Int16:
+        return Cast<short, T>(DecodeInt16(row, ordinal, column));
+      case TypedDecoderKind.NullableInt16:
+        return Cast<short?, T>(DecodeNullableInt16(row, ordinal, column));
+      case TypedDecoderKind.Int32:
+        return Cast<int, T>(DecodeInt32(row, ordinal, column));
+      case TypedDecoderKind.NullableInt32:
+        return Cast<int?, T>(DecodeNullableInt32(row, ordinal, column));
+      case TypedDecoderKind.Int64:
+        return Cast<long, T>(DecodeInt64(row, ordinal, column));
+      case TypedDecoderKind.NullableInt64:
+        return Cast<long?, T>(DecodeNullableInt64(row, ordinal, column));
+      case TypedDecoderKind.Float:
+        return Cast<float, T>(DecodeFloat(row, ordinal, column));
+      case TypedDecoderKind.NullableFloat:
+        return Cast<float?, T>(DecodeNullableFloat(row, ordinal, column));
+      case TypedDecoderKind.Double:
+        return Cast<double, T>(DecodeDouble(row, ordinal, column));
+      case TypedDecoderKind.NullableDouble:
+        return Cast<double?, T>(DecodeNullableDouble(row, ordinal, column));
+      case TypedDecoderKind.Decimal:
+        return Cast<decimal, T>(DecodeDecimal(row, ordinal, column));
+      case TypedDecoderKind.NullableDecimal:
+        return Cast<decimal?, T>(DecodeNullableDecimal(row, ordinal, column));
+      case TypedDecoderKind.String:
+        return Cast<string?, T>(DecodeString(row, ordinal, column));
+      case TypedDecoderKind.Bytes:
+        return Cast<byte[]?, T>(DecodeBytes(row, ordinal, column));
+      case TypedDecoderKind.ReadOnlyMemory:
+        {
+          ReadOnlyMemory<byte> value = DecodeReadOnlyMemory(row, ordinal, column);
+          if (copyReadOnlyMemory)
+          {
+            value = value.ToArray();
+          }
+
+          return Cast<ReadOnlyMemory<byte>, T>(value);
+        }
+      case TypedDecoderKind.NullableReadOnlyMemory:
+        {
+          ReadOnlyMemory<byte>? value =
+            DecodeNullableReadOnlyMemory(row, ordinal, column);
+          if (copyReadOnlyMemory && value.HasValue)
+          {
+            value = value.Value.ToArray();
+          }
+
+          return Cast<ReadOnlyMemory<byte>?, T>(value);
+        }
+      case TypedDecoderKind.Guid:
+        return Cast<Guid, T>(DecodeGuid(row, ordinal, column));
+      case TypedDecoderKind.NullableGuid:
+        return Cast<Guid?, T>(DecodeNullableGuid(row, ordinal, column));
+      case TypedDecoderKind.DateOnly:
+        return Cast<DateOnly, T>(DecodeDateOnly(row, ordinal, column));
+      case TypedDecoderKind.NullableDateOnly:
+        return Cast<DateOnly?, T>(DecodeNullableDateOnly(row, ordinal, column));
+      case TypedDecoderKind.TimeOnly:
+        return Cast<TimeOnly, T>(DecodeTimeOnly(row, ordinal, column));
+      case TypedDecoderKind.NullableTimeOnly:
+        return Cast<TimeOnly?, T>(DecodeNullableTimeOnly(row, ordinal, column));
+      case TypedDecoderKind.DateTime:
+        return Cast<DateTime, T>(DecodeDateTime(row, ordinal, column));
+      case TypedDecoderKind.NullableDateTime:
+        return Cast<DateTime?, T>(DecodeNullableDateTime(row, ordinal, column));
+      case TypedDecoderKind.DateTimeOffset:
+        return Cast<DateTimeOffset, T>(DecodeDateTimeOffset(row, ordinal, column));
+      case TypedDecoderKind.NullableDateTimeOffset:
+        return Cast<DateTimeOffset?, T>(DecodeNullableDateTimeOffset(row, ordinal, column));
+      case TypedDecoderKind.JsonElement:
+        return Cast<JsonElement, T>(DecodeJsonElement(row, ordinal, column));
+      case TypedDecoderKind.NullableJsonElement:
+        return Cast<JsonElement?, T>(DecodeNullableJsonElement(row, ordinal, column));
+      case TypedDecoderKind.Object:
+        return (T)DecodeObject(row, ordinal, column)!;
+      case TypedDecoderKind.MySqlDecimal:
+        return Cast<MySqlDecimal, T>(DecodeMySqlDecimal(row, ordinal, column));
+      case TypedDecoderKind.NullableMySqlDecimal:
+        return Cast<MySqlDecimal?, T>(DecodeNullableMySqlDecimal(row, ordinal, column));
+      case TypedDecoderKind.SByte:
+        return Cast<sbyte, T>(DecodeSByte(row, ordinal, column));
+      case TypedDecoderKind.NullableSByte:
+        return Cast<sbyte?, T>(DecodeNullableSByte(row, ordinal, column));
+      case TypedDecoderKind.Byte:
+        return Cast<byte, T>(DecodeByte(row, ordinal, column));
+      case TypedDecoderKind.NullableByte:
+        return Cast<byte?, T>(DecodeNullableByte(row, ordinal, column));
+      case TypedDecoderKind.UInt16:
+        return Cast<ushort, T>(DecodeUInt16(row, ordinal, column));
+      case TypedDecoderKind.NullableUInt16:
+        return Cast<ushort?, T>(DecodeNullableUInt16(row, ordinal, column));
+      case TypedDecoderKind.UInt32:
+        return Cast<uint, T>(DecodeUInt32(row, ordinal, column));
+      case TypedDecoderKind.NullableUInt32:
+        return Cast<uint?, T>(DecodeNullableUInt32(row, ordinal, column));
+      case TypedDecoderKind.UInt64:
+        return Cast<ulong, T>(DecodeUInt64(row, ordinal, column));
+      case TypedDecoderKind.NullableUInt64:
+        return Cast<ulong?, T>(DecodeNullableUInt64(row, ordinal, column));
+      case TypedDecoderKind.TimeSpan:
+        return Cast<TimeSpan, T>(DecodeTimeSpan(row, ordinal, column));
+      case TypedDecoderKind.NullableTimeSpan:
+        return Cast<TimeSpan?, T>(DecodeNullableTimeSpan(row, ordinal, column));
+      default:
+        throw CannotRead(column, typeof(T));
+    }
+  }
+
+  internal T Decode<T>(ReadOnlyMemory<byte> row, int ordinal)
+  {
+    if ((uint)ordinal >= (uint)_columns.Length)
+    {
+      throw new ArgumentOutOfRangeException(nameof(ordinal));
     }
 
-    if (typeof(T) == typeof(sbyte))
+    return Decode<T>(row, ordinal, _columns[ordinal], copyReadOnlyMemory: false);
+  }
+
+  private MySqlDecimal DecodeMySqlDecimal(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    _ = EnsureType(
+      row, ordinal, column, typeof(MySqlDecimal), MySqlType.Decimal, MySqlType.NewDecimal);
+    return MySqlDecimal.Parse(_strings.GetString(GetRequiredField(row, ordinal)));
+  }
+
+  private MySqlDecimal? DecodeNullableMySqlDecimal(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    _ = EnsureType(
+      row, ordinal, column, typeof(MySqlDecimal?), MySqlType.Decimal, MySqlType.NewDecimal);
+    ReadOnlySpan<byte> value = GetField(row.Span, ordinal, out bool isNull);
+    return isNull ? null : MySqlDecimal.Parse(_strings.GetString(value));
+  }
+
+  private sbyte DecodeSByte(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    MySqlColumnMetadata metadata = EnsureSignedType(
+      row, ordinal, column, typeof(sbyte), MySqlType.Tiny);
+    return checked((sbyte)ReadInt64(GetRequiredField(row, ordinal), metadata));
+  }
+
+  private sbyte? DecodeNullableSByte(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    MySqlColumnMetadata metadata = EnsureSignedType(
+      row, ordinal, column, typeof(sbyte?), MySqlType.Tiny);
+    ReadOnlySpan<byte> value = GetField(row.Span, ordinal, out bool isNull);
+    return isNull ? null : checked((sbyte)ReadInt64(value, metadata));
+  }
+
+  private byte DecodeByte(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    MySqlColumnMetadata metadata = EnsureUnsignedType(
+      row, ordinal, column, typeof(byte), MySqlType.Tiny);
+    return checked((byte)ReadUInt64(GetRequiredField(row, ordinal), metadata));
+  }
+
+  private byte? DecodeNullableByte(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    MySqlColumnMetadata metadata = EnsureUnsignedType(
+      row, ordinal, column, typeof(byte?), MySqlType.Tiny);
+    ReadOnlySpan<byte> value = GetField(row.Span, ordinal, out bool isNull);
+    return isNull ? null : checked((byte)ReadUInt64(value, metadata));
+  }
+
+  private ushort DecodeUInt16(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    MySqlColumnMetadata metadata = EnsureUnsignedType(
+      row, ordinal, column, typeof(ushort), MySqlType.Short);
+    return checked((ushort)ReadUInt64(GetRequiredField(row, ordinal), metadata));
+  }
+
+  private ushort? DecodeNullableUInt16(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    MySqlColumnMetadata metadata = EnsureUnsignedType(
+      row, ordinal, column, typeof(ushort?), MySqlType.Short);
+    ReadOnlySpan<byte> value = GetField(row.Span, ordinal, out bool isNull);
+    return isNull ? null : checked((ushort)ReadUInt64(value, metadata));
+  }
+
+  private uint DecodeUInt32(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    MySqlColumnMetadata metadata = EnsureUnsignedType(
+      row, ordinal, column, typeof(uint), MySqlType.Int24, MySqlType.Long);
+    return checked((uint)ReadUInt64(GetRequiredField(row, ordinal), metadata));
+  }
+
+  private uint? DecodeNullableUInt32(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    MySqlColumnMetadata metadata = EnsureUnsignedType(
+      row, ordinal, column, typeof(uint?), MySqlType.Int24, MySqlType.Long);
+    ReadOnlySpan<byte> value = GetField(row.Span, ordinal, out bool isNull);
+    return isNull ? null : checked((uint)ReadUInt64(value, metadata));
+  }
+
+  private ulong DecodeUInt64(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    MySqlColumnMetadata metadata = EnsureColumn(row, ordinal, column, typeof(ulong));
+    if (metadata.Type != MySqlType.Bit &&
+        (metadata.Type != MySqlType.LongLong || !metadata.IsUnsigned))
     {
-      sbyte result = checked((sbyte)ReadInt64(value, metadata));
-      return Unsafe.As<sbyte, T>(ref result);
+      throw CannotRead(column, typeof(ulong));
     }
 
-    if (typeof(T) == typeof(byte))
+    return ReadUInt64(GetRequiredField(row, ordinal), metadata);
+  }
+
+  private ulong? DecodeNullableUInt64(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    MySqlColumnMetadata metadata = EnsureColumn(row, ordinal, column, typeof(ulong?));
+    if (metadata.Type != MySqlType.Bit &&
+        (metadata.Type != MySqlType.LongLong || !metadata.IsUnsigned))
     {
-      byte result = checked((byte)ReadUInt64(value, metadata));
-      return Unsafe.As<byte, T>(ref result);
+      throw CannotRead(column, typeof(ulong?));
     }
 
-    if (typeof(T) == typeof(short))
+    ReadOnlySpan<byte> value = GetField(row.Span, ordinal, out bool isNull);
+    return isNull ? null : ReadUInt64(value, metadata);
+  }
+
+  private TimeSpan DecodeTimeSpan(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    MySqlColumnMetadata metadata = EnsureType(
+      row, ordinal, column, typeof(TimeSpan), MySqlType.Time, MySqlType.Time2);
+    return ReadTimeSpan(GetRequiredField(row, ordinal), metadata);
+  }
+
+  private TimeSpan? DecodeNullableTimeSpan(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    MySqlColumnMetadata metadata = EnsureType(
+      row, ordinal, column, typeof(TimeSpan?), MySqlType.Time, MySqlType.Time2);
+    ReadOnlySpan<byte> value = GetField(row.Span, ordinal, out bool isNull);
+    return isNull ? null : ReadTimeSpan(value, metadata);
+  }
+
+  private ReadOnlySpan<byte> GetRequiredField(ReadOnlyMemory<byte> row, int ordinal)
+  {
+    ReadOnlySpan<byte> value = GetField(row.Span, ordinal, out bool isNull);
+    if (isNull || IsNullZeroDate(value, ordinal))
     {
-      short result = checked((short)ReadInt64(value, metadata));
-      return Unsafe.As<short, T>(ref result);
+      throw new InvalidCastException($"Column {ordinal} contains NULL.");
     }
 
-    if (typeof(T) == typeof(ushort))
+    return value;
+  }
+
+  private ReadOnlyMemory<byte> GetRequiredFieldMemory(ReadOnlyMemory<byte> row, int ordinal)
+  {
+    ReadOnlyMemory<byte> value = GetFieldMemory(row, ordinal, out bool isNull);
+    if (isNull)
     {
-      ushort result = checked((ushort)ReadUInt64(value, metadata));
-      return Unsafe.As<ushort, T>(ref result);
+      throw new InvalidCastException($"Column {ordinal} contains NULL.");
     }
 
-    if (typeof(T) == typeof(int))
+    return value;
+  }
+
+  private ReadOnlyMemory<byte> GetFieldMemory(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    out bool isNull)
+  {
+    if ((uint)ordinal >= (uint)_metadata.Length)
     {
-      int result = checked((int)ReadInt64(value, metadata));
-      return Unsafe.As<int, T>(ref result);
+      throw new ArgumentOutOfRangeException(nameof(ordinal));
     }
 
-    if (typeof(T) == typeof(uint))
+    ReadOnlySpan<byte> payload = row.Span;
+    MySqlPayloadReader reader;
+    if (_binary)
     {
-      uint result = checked((uint)ReadUInt64(value, metadata));
-      return Unsafe.As<uint, T>(ref result);
-    }
-
-    if (typeof(T) == typeof(long))
-    {
-      long result = ReadInt64(value, metadata);
-      return Unsafe.As<long, T>(ref result);
-    }
-
-    if (typeof(T) == typeof(ulong))
-    {
-      ulong result = ReadUInt64(value, metadata);
-      return Unsafe.As<ulong, T>(ref result);
-    }
-
-    if (typeof(T) == typeof(float))
-    {
-      float result = (float)ReadDouble(value, metadata);
-      return Unsafe.As<float, T>(ref result);
-    }
-
-    if (typeof(T) == typeof(double))
-    {
-      double result = ReadDouble(value, metadata);
-      return Unsafe.As<double, T>(ref result);
-    }
-
-    if (typeof(T) == typeof(decimal))
-    {
-      decimal result = ReadDecimal(value, metadata);
-      return Unsafe.As<decimal, T>(ref result);
-    }
-
-    if (typeof(T) == typeof(MySqlDecimal))
-    {
-      if (metadata.Type is not (MySqlType.Decimal or MySqlType.NewDecimal))
+      int baseOffset = 1 + _nullBitmapLength;
+      if (payload.Length < baseOffset || payload[0] != MySqlProtocol.OkHeader)
       {
-        throw new InvalidCastException(
-          $"MySQL type 0x{(byte)metadata.Type:X2} cannot be read as a decimal.");
+        throw new InvalidDataException("MySQL binary row header is invalid.");
       }
 
-      MySqlDecimal result = MySqlDecimal.Parse(_strings.GetString(value));
-      return Unsafe.As<MySqlDecimal, T>(ref result);
+      ReadOnlySpan<byte> bitmap = payload.Slice(1, _nullBitmapLength);
+      if (IsNullInBitmap(bitmap, ordinal))
+      {
+        isNull = true;
+        return default;
+      }
+
+      isNull = false;
+      reader = new MySqlPayloadReader(payload[baseOffset..]);
+      for (int i = 0; i < ordinal; i++)
+      {
+        if (!IsNullInBitmap(bitmap, i))
+        {
+          SkipBinaryValue(ref reader, _metadata[i].Type);
+        }
+      }
+
+      ReadOnlySpan<byte> value = ReadBinaryValue(ref reader, _metadata[ordinal].Type);
+      return row.Slice(baseOffset + reader.Position - value.Length, value.Length);
     }
 
-    if (typeof(T) == typeof(string))
+    reader = new MySqlPayloadReader(payload);
+    for (int i = 0; i < ordinal; i++)
     {
-      string result = ReadString(value, metadata);
-      return Unsafe.As<string, T>(ref result);
+      _ = reader.ReadLengthEncodedSpan(out _);
     }
 
-    if (typeof(T) == typeof(byte[]))
+    ReadOnlySpan<byte> textValue = reader.ReadLengthEncodedSpan(out isNull);
+    if (isNull)
     {
-      byte[] result = ReadBytes(value, metadata);
-      return Unsafe.As<byte[], T>(ref result);
+      return default;
     }
 
-    if (typeof(T) == typeof(DateOnly))
-    {
-      DateOnly result = ReadDateOnly(value, metadata);
-      return Unsafe.As<DateOnly, T>(ref result);
-    }
-
-    if (typeof(T) == typeof(TimeOnly))
-    {
-      TimeOnly result = ReadTimeOnly(value, metadata);
-      return Unsafe.As<TimeOnly, T>(ref result);
-    }
-
-    if (typeof(T) == typeof(TimeSpan))
-    {
-      TimeSpan result = ReadTimeSpan(value, metadata);
-      return Unsafe.As<TimeSpan, T>(ref result);
-    }
-
-    if (typeof(T) == typeof(DateTime))
-    {
-      DateTime result = ReadDateTime(value, metadata);
-      return Unsafe.As<DateTime, T>(ref result);
-    }
-
-    if (typeof(T) == typeof(DateTimeOffset))
-    {
-      DateTimeOffset result = new(ReadDateTime(value, metadata), TimeSpan.Zero);
-      return Unsafe.As<DateTimeOffset, T>(ref result);
-    }
-
-    if (typeof(T) == typeof(Guid))
-    {
-      Guid result = ReadGuid(value, metadata);
-      return Unsafe.As<Guid, T>(ref result);
-    }
-
-    object? decoded = DecodeObject(row, ordinal);
-    if (decoded is T typed)
-    {
-      return typed;
-    }
-
-    throw new InvalidCastException(
-      $"Column {ordinal} contains {decoded?.GetType().FullName ?? "NULL"}, " +
-      $"not {typeof(T).FullName}.");
+    return row.Slice(reader.Position - textValue.Length, textValue.Length);
   }
+
+  private bool IsNullZeroDate(ReadOnlySpan<byte> value, int ordinal) =>
+    _zeroDates == MySqlZeroDateBehavior.Null &&
+    IsZeroTemporal(value, _metadata[ordinal].Type);
+
+  private MySqlColumnMetadata EnsureColumn(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column,
+    Type requestedType)
+  {
+    if ((uint)ordinal >= (uint)_metadata.Length)
+    {
+      throw new ArgumentOutOfRangeException(nameof(ordinal));
+    }
+
+    MySqlColumnMetadata metadata = _metadata[ordinal];
+    if (!Equals(column, _columns[ordinal]))
+    {
+      throw CannotRead(column, requestedType);
+    }
+
+    return metadata;
+  }
+
+  private MySqlColumnMetadata EnsureType(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column,
+    Type requestedType,
+    MySqlType type1) =>
+    EnsureTypeCore(row, ordinal, column, requestedType, type1, type1, type1, type1);
+
+  private MySqlColumnMetadata EnsureType(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column,
+    Type requestedType,
+    MySqlType type1,
+    MySqlType type2) =>
+    EnsureTypeCore(row, ordinal, column, requestedType, type1, type2, type1, type1);
+
+  private MySqlColumnMetadata EnsureType(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column,
+    Type requestedType,
+    MySqlType type1,
+    MySqlType type2,
+    MySqlType type3) =>
+    EnsureTypeCore(row, ordinal, column, requestedType, type1, type2, type3, type1);
+
+  private MySqlColumnMetadata EnsureType(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column,
+    Type requestedType,
+    MySqlType type1,
+    MySqlType type2,
+    MySqlType type3,
+    MySqlType type4) =>
+    EnsureTypeCore(row, ordinal, column, requestedType, type1, type2, type3, type4);
+
+  private MySqlColumnMetadata EnsureTypeCore(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column,
+    Type requestedType,
+    MySqlType type1,
+    MySqlType type2,
+    MySqlType type3,
+    MySqlType type4)
+  {
+    MySqlColumnMetadata metadata = EnsureColumn(row, ordinal, column, requestedType);
+    if (metadata.Type == MySqlType.Null)
+    {
+      return metadata;
+    }
+
+    if (metadata.Type != type1 &&
+        metadata.Type != type2 &&
+        metadata.Type != type3 &&
+        metadata.Type != type4)
+    {
+      throw CannotRead(column, requestedType);
+    }
+
+    return metadata;
+  }
+
+  private MySqlColumnMetadata EnsureSignedType(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column,
+    Type requestedType,
+    MySqlType type1) =>
+    EnsureSignedType(row, ordinal, column, requestedType, type1, type1, type1);
+
+  private MySqlColumnMetadata EnsureSignedType(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column,
+    Type requestedType,
+    MySqlType type1,
+    MySqlType type2) =>
+    EnsureSignedType(row, ordinal, column, requestedType, type1, type2, type1);
+
+  private MySqlColumnMetadata EnsureSignedType(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column,
+    Type requestedType,
+    MySqlType type1,
+    MySqlType type2,
+    MySqlType type3)
+  {
+    MySqlColumnMetadata metadata =
+      EnsureType(row, ordinal, column, requestedType, type1, type2, type3);
+    if (metadata.IsUnsigned)
+    {
+      throw CannotRead(column, requestedType);
+    }
+
+    return metadata;
+  }
+
+  private MySqlColumnMetadata EnsureSignedIntegerType(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column,
+    Type requestedType)
+  {
+    MySqlColumnMetadata metadata =
+      EnsureColumn(row, ordinal, column, requestedType);
+    if (metadata.Type == MySqlType.Null)
+    {
+      return metadata;
+    }
+
+    if (metadata.IsUnsigned && metadata.Type != MySqlType.Year ||
+        metadata.Type is not (
+          MySqlType.Tiny or
+          MySqlType.Short or
+          MySqlType.Int24 or
+          MySqlType.Long or
+          MySqlType.LongLong or
+          MySqlType.Year))
+    {
+      throw CannotRead(column, requestedType);
+    }
+
+    return metadata;
+  }
+
+  private MySqlColumnMetadata EnsureNumericType(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column,
+    Type requestedType)
+  {
+    MySqlColumnMetadata metadata =
+      EnsureColumn(row, ordinal, column, requestedType);
+    if (metadata.Type is not (
+      MySqlType.Null or
+      MySqlType.Tiny or
+      MySqlType.Short or
+      MySqlType.Int24 or
+      MySqlType.Long or
+      MySqlType.LongLong or
+      MySqlType.Year or
+      MySqlType.Bit or
+      MySqlType.Float or
+      MySqlType.Double or
+      MySqlType.Decimal or
+      MySqlType.NewDecimal))
+    {
+      throw CannotRead(column, requestedType);
+    }
+
+    return metadata;
+  }
+
+  private MySqlColumnMetadata EnsureDateType(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column,
+    Type requestedType)
+  {
+    MySqlColumnMetadata metadata =
+      EnsureColumn(row, ordinal, column, requestedType);
+    if (metadata.Type is not (
+      MySqlType.Null or
+      MySqlType.Date or
+      MySqlType.NewDate or
+      MySqlType.DateTime or
+      MySqlType.DateTime2 or
+      MySqlType.Timestamp or
+      MySqlType.Timestamp2))
+    {
+      throw CannotRead(column, requestedType);
+    }
+
+    return metadata;
+  }
+
+  private MySqlColumnMetadata EnsureTimeType(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column,
+    Type requestedType)
+  {
+    MySqlColumnMetadata metadata =
+      EnsureColumn(row, ordinal, column, requestedType);
+    if (metadata.Type is not (
+      MySqlType.Null or
+      MySqlType.Time or
+      MySqlType.Time2 or
+      MySqlType.DateTime or
+      MySqlType.DateTime2 or
+      MySqlType.Timestamp or
+      MySqlType.Timestamp2))
+    {
+      throw CannotRead(column, requestedType);
+    }
+
+    return metadata;
+  }
+
+  private MySqlColumnMetadata EnsureUnsignedType(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column,
+    Type requestedType,
+    MySqlType type1) =>
+    EnsureUnsignedType(row, ordinal, column, requestedType, type1, type1);
+
+  private MySqlColumnMetadata EnsureUnsignedType(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column,
+    Type requestedType,
+    MySqlType type1,
+    MySqlType type2)
+  {
+    MySqlColumnMetadata metadata =
+      EnsureType(row, ordinal, column, requestedType, type1, type2);
+    if (metadata.Type == MySqlType.Null)
+    {
+      return metadata;
+    }
+
+    if (!metadata.IsUnsigned)
+    {
+      throw CannotRead(column, requestedType);
+    }
+
+    return metadata;
+  }
+
+  private static void EnsureStringType(
+    MySqlColumnMetadata metadata,
+    SqlColumn column,
+    Type requestedType)
+  {
+    if (metadata.Type == MySqlType.Null)
+    {
+      return;
+    }
+
+    if (IsBinaryContent(metadata) || metadata.Type is not (
+      MySqlType.VarChar or MySqlType.VarString or MySqlType.String or
+      MySqlType.Enum or MySqlType.Set or MySqlType.Json or
+      MySqlType.TinyBlob or MySqlType.Blob or MySqlType.MediumBlob or MySqlType.LongBlob))
+    {
+      throw CannotRead(column, requestedType);
+    }
+  }
+
+  private static void EnsureBytesType(
+    MySqlColumnMetadata metadata,
+    SqlColumn column,
+    Type requestedType)
+  {
+    if (metadata.Type == MySqlType.Null)
+    {
+      return;
+    }
+
+    if (!IsBinaryContent(metadata) &&
+        metadata.Type is not (MySqlType.Bit or MySqlType.Geometry or MySqlType.Vector))
+    {
+      throw CannotRead(column, requestedType);
+    }
+  }
+
+  private static void EnsureGuidType(
+    MySqlColumnMetadata metadata,
+    SqlColumn column,
+    Type requestedType)
+  {
+    if (metadata.Type == MySqlType.Null)
+    {
+      return;
+    }
+
+    if (!IsBinaryContent(metadata) &&
+        metadata.Type is not (MySqlType.VarChar or MySqlType.VarString or MySqlType.String))
+    {
+      throw CannotRead(column, requestedType);
+    }
+  }
+
+  private static InvalidCastException CannotRead(SqlColumn column, Type requestedType) =>
+    new(
+      $"MySQL type 0x{column.TypeId:X2} ({column.Format}) cannot be read as " +
+      $"{requestedType.FullName}.");
+
+  [MethodImpl(MethodImplOptions.AggressiveInlining)]
+  private static TTo Cast<TFrom, TTo>(TFrom value) =>
+    Unsafe.As<TFrom, TTo>(ref value);
 
   /// <summary>Locates one field inside a row payload of the bound protocol.</summary>
   internal ReadOnlySpan<byte> GetField(ReadOnlySpan<byte> row, int ordinal, out bool isNull)
@@ -619,52 +1490,6 @@ internal sealed class MySqlRowDecoder : ISqlRowDecoder
       _ => metadata.IsUnsigned ? ReadUInt64(value, metadata) : ReadInt64(value, metadata),
     };
 
-  private string ReadString(ReadOnlySpan<byte> value, MySqlColumnMetadata metadata)
-  {
-    if (IsBinaryContent(metadata))
-    {
-      throw new InvalidCastException(
-        $"MySQL type 0x{(byte)metadata.Type:X2} holds binary data and cannot be read as a string.");
-    }
-
-    if (!_binary || IsTextEncoded(metadata.Type))
-    {
-      return _strings.GetString(value);
-    }
-
-    return metadata.Type switch
-    {
-      MySqlType.Tiny or MySqlType.Short or MySqlType.Year or MySqlType.Int24 or
-        MySqlType.Long or MySqlType.LongLong =>
-        metadata.IsUnsigned
-          ? ReadUInt64(value, metadata).ToString(CultureInfo.InvariantCulture)
-          : ReadInt64(value, metadata).ToString(CultureInfo.InvariantCulture),
-      MySqlType.Float or MySqlType.Double =>
-        ReadDouble(value, metadata).ToString(CultureInfo.InvariantCulture),
-      MySqlType.Bit => MySqlValueCodec.ParseBit(value).ToString(CultureInfo.InvariantCulture),
-      MySqlType.Date or MySqlType.NewDate =>
-        ReadDateOnly(value, metadata).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
-      MySqlType.DateTime or MySqlType.DateTime2 or MySqlType.Timestamp or MySqlType.Timestamp2 =>
-        ReadDateTime(value, metadata)
-          .ToString("yyyy-MM-dd HH:mm:ss.FFFFFF", CultureInfo.InvariantCulture),
-      MySqlType.Time or MySqlType.Time2 =>
-        DecodeTime(value).ToString("c", CultureInfo.InvariantCulture),
-      _ => _strings.GetString(value),
-    };
-  }
-
-  private byte[] ReadBytes(ReadOnlySpan<byte> value, MySqlColumnMetadata metadata)
-  {
-    if (!_binary || IsTextEncoded(metadata.Type) ||
-        metadata.Type is MySqlType.Bit or MySqlType.Geometry or MySqlType.Vector)
-    {
-      return value.ToArray();
-    }
-
-    throw new InvalidCastException(
-      $"MySQL type 0x{(byte)metadata.Type:X2} cannot be read as a byte array.");
-  }
-
   private DateOnly ReadDateOnly(ReadOnlySpan<byte> value, MySqlColumnMetadata metadata)
   {
     switch (metadata.Type)
@@ -764,59 +1589,122 @@ internal sealed class MySqlRowDecoder : ISqlRowDecoder
   private static T DecodeJsonValue<T>(ReadOnlySpan<byte> value, int ordinal)
   {
     JsonElement json = DecodeJson(value);
-    object decoded;
-    if (typeof(T) == typeof(JsonElement) || typeof(T) == typeof(object))
+    if (typeof(T) == typeof(JsonElement))
     {
-      decoded = json;
-    }
-    else if (typeof(T) == typeof(bool))
-    {
-      decoded = json.ValueKind is JsonValueKind.True or JsonValueKind.False
-        ? json.GetBoolean()
-        : throw JsonCastException<T>(ordinal);
-    }
-    else if (typeof(T) == typeof(int))
-    {
-      decoded = json.TryGetInt32(out int parsed)
-        ? parsed
-        : throw JsonCastException<T>(ordinal);
-    }
-    else if (typeof(T) == typeof(long))
-    {
-      decoded = json.TryGetInt64(out long parsed)
-        ? parsed
-        : throw JsonCastException<T>(ordinal);
-    }
-    else if (typeof(T) == typeof(float))
-    {
-      decoded = json.TryGetSingle(out float parsed)
-        ? parsed
-        : throw JsonCastException<T>(ordinal);
-    }
-    else if (typeof(T) == typeof(double))
-    {
-      decoded = json.TryGetDouble(out double parsed)
-        ? parsed
-        : throw JsonCastException<T>(ordinal);
-    }
-    else if (typeof(T) == typeof(decimal))
-    {
-      decoded = json.TryGetDecimal(out decimal parsed)
-        ? parsed
-        : throw JsonCastException<T>(ordinal);
-    }
-    else if (typeof(T) == typeof(string))
-    {
-      decoded = json.ValueKind == JsonValueKind.String
-        ? json.GetString()!
-        : json.GetRawText();
-    }
-    else
-    {
-      throw JsonCastException<T>(ordinal);
+      return Cast<JsonElement, T>(json);
     }
 
-    return (T)decoded;
+    if (typeof(T) == typeof(object))
+    {
+      object decoded = json;
+      return (T)decoded;
+    }
+
+    if (typeof(T) == typeof(bool))
+    {
+      bool decoded = json.ValueKind is JsonValueKind.True or JsonValueKind.False
+        ? json.GetBoolean()
+        : throw JsonCastException<T>(ordinal);
+      return Cast<bool, T>(decoded);
+    }
+
+    if (typeof(T) == typeof(bool?))
+    {
+      bool? decoded = json.ValueKind is JsonValueKind.True or JsonValueKind.False
+        ? json.GetBoolean()
+        : throw JsonCastException<T>(ordinal);
+      return Cast<bool?, T>(decoded);
+    }
+
+    if (typeof(T) == typeof(int))
+    {
+      int decoded = json.TryGetInt32(out int parsed)
+        ? parsed
+        : throw JsonCastException<T>(ordinal);
+      return Cast<int, T>(decoded);
+    }
+
+    if (typeof(T) == typeof(int?))
+    {
+      int? decoded = json.TryGetInt32(out int parsed)
+        ? parsed
+        : throw JsonCastException<T>(ordinal);
+      return Cast<int?, T>(decoded);
+    }
+
+    if (typeof(T) == typeof(long))
+    {
+      long decoded = json.TryGetInt64(out long parsed)
+        ? parsed
+        : throw JsonCastException<T>(ordinal);
+      return Cast<long, T>(decoded);
+    }
+
+    if (typeof(T) == typeof(long?))
+    {
+      long? decoded = json.TryGetInt64(out long parsed)
+        ? parsed
+        : throw JsonCastException<T>(ordinal);
+      return Cast<long?, T>(decoded);
+    }
+
+    if (typeof(T) == typeof(float))
+    {
+      float decoded = json.TryGetSingle(out float parsed)
+        ? parsed
+        : throw JsonCastException<T>(ordinal);
+      return Cast<float, T>(decoded);
+    }
+
+    if (typeof(T) == typeof(float?))
+    {
+      float? decoded = json.TryGetSingle(out float parsed)
+        ? parsed
+        : throw JsonCastException<T>(ordinal);
+      return Cast<float?, T>(decoded);
+    }
+
+    if (typeof(T) == typeof(double))
+    {
+      double decoded = json.TryGetDouble(out double parsed)
+        ? parsed
+        : throw JsonCastException<T>(ordinal);
+      return Cast<double, T>(decoded);
+    }
+
+    if (typeof(T) == typeof(double?))
+    {
+      double? decoded = json.TryGetDouble(out double parsed)
+        ? parsed
+        : throw JsonCastException<T>(ordinal);
+      return Cast<double?, T>(decoded);
+    }
+
+    if (typeof(T) == typeof(decimal))
+    {
+      decimal decoded = json.TryGetDecimal(out decimal parsed)
+        ? parsed
+        : throw JsonCastException<T>(ordinal);
+      return Cast<decimal, T>(decoded);
+    }
+
+    if (typeof(T) == typeof(decimal?))
+    {
+      decimal? decoded = json.TryGetDecimal(out decimal parsed)
+        ? parsed
+        : throw JsonCastException<T>(ordinal);
+      return Cast<decimal?, T>(decoded);
+    }
+
+    if (typeof(T) == typeof(string))
+    {
+      string decoded = json.ValueKind == JsonValueKind.String
+        ? json.GetString()!
+        : json.GetRawText();
+      return Cast<string, T>(decoded);
+    }
+
+    throw JsonCastException<T>(ordinal);
   }
 
   private static InvalidCastException JsonCastException<T>(int ordinal) =>
@@ -847,14 +1735,113 @@ internal sealed class MySqlRowDecoder : ISqlRowDecoder
   private static long ReadBinaryInt64(ReadOnlySpan<byte> value) =>
     BinaryPrimitives.ReadInt64LittleEndian(value);
 
-  private static bool IsTextEncoded(MySqlType type) =>
-    type is MySqlType.VarChar or MySqlType.VarString or MySqlType.String or
-      MySqlType.Enum or MySqlType.Set or MySqlType.Json or
-      MySqlType.TinyBlob or MySqlType.Blob or MySqlType.MediumBlob or MySqlType.LongBlob or
-      MySqlType.Decimal or MySqlType.NewDecimal;
-
   private static bool IsBinaryContent(MySqlColumnMetadata metadata) =>
     metadata.Type is MySqlType.Geometry or MySqlType.Vector ||
     (metadata.IsBinary && metadata.Type is not (
       MySqlType.Decimal or MySqlType.NewDecimal or MySqlType.Json));
+
+  private static class TypedDecoder<T>
+  {
+    internal static readonly TypedDecoderKind Kind = ResolveTypedDecoder(typeof(T));
+  }
+
+  private static TypedDecoderKind ResolveTypedDecoder(Type type)
+  {
+    if (type == typeof(bool)) return TypedDecoderKind.Boolean;
+    if (type == typeof(bool?)) return TypedDecoderKind.NullableBoolean;
+    if (type == typeof(short)) return TypedDecoderKind.Int16;
+    if (type == typeof(short?)) return TypedDecoderKind.NullableInt16;
+    if (type == typeof(int)) return TypedDecoderKind.Int32;
+    if (type == typeof(int?)) return TypedDecoderKind.NullableInt32;
+    if (type == typeof(long)) return TypedDecoderKind.Int64;
+    if (type == typeof(long?)) return TypedDecoderKind.NullableInt64;
+    if (type == typeof(float)) return TypedDecoderKind.Float;
+    if (type == typeof(float?)) return TypedDecoderKind.NullableFloat;
+    if (type == typeof(double)) return TypedDecoderKind.Double;
+    if (type == typeof(double?)) return TypedDecoderKind.NullableDouble;
+    if (type == typeof(decimal)) return TypedDecoderKind.Decimal;
+    if (type == typeof(decimal?)) return TypedDecoderKind.NullableDecimal;
+    if (type == typeof(string)) return TypedDecoderKind.String;
+    if (type == typeof(byte[])) return TypedDecoderKind.Bytes;
+    if (type == typeof(ReadOnlyMemory<byte>)) return TypedDecoderKind.ReadOnlyMemory;
+    if (type == typeof(ReadOnlyMemory<byte>?)) return TypedDecoderKind.NullableReadOnlyMemory;
+    if (type == typeof(Guid)) return TypedDecoderKind.Guid;
+    if (type == typeof(Guid?)) return TypedDecoderKind.NullableGuid;
+    if (type == typeof(DateOnly)) return TypedDecoderKind.DateOnly;
+    if (type == typeof(DateOnly?)) return TypedDecoderKind.NullableDateOnly;
+    if (type == typeof(TimeOnly)) return TypedDecoderKind.TimeOnly;
+    if (type == typeof(TimeOnly?)) return TypedDecoderKind.NullableTimeOnly;
+    if (type == typeof(DateTime)) return TypedDecoderKind.DateTime;
+    if (type == typeof(DateTime?)) return TypedDecoderKind.NullableDateTime;
+    if (type == typeof(DateTimeOffset)) return TypedDecoderKind.DateTimeOffset;
+    if (type == typeof(DateTimeOffset?)) return TypedDecoderKind.NullableDateTimeOffset;
+    if (type == typeof(JsonElement)) return TypedDecoderKind.JsonElement;
+    if (type == typeof(JsonElement?)) return TypedDecoderKind.NullableJsonElement;
+    if (type == typeof(object)) return TypedDecoderKind.Object;
+    if (type == typeof(MySqlDecimal)) return TypedDecoderKind.MySqlDecimal;
+    if (type == typeof(MySqlDecimal?)) return TypedDecoderKind.NullableMySqlDecimal;
+    if (type == typeof(sbyte)) return TypedDecoderKind.SByte;
+    if (type == typeof(sbyte?)) return TypedDecoderKind.NullableSByte;
+    if (type == typeof(byte)) return TypedDecoderKind.Byte;
+    if (type == typeof(byte?)) return TypedDecoderKind.NullableByte;
+    if (type == typeof(ushort)) return TypedDecoderKind.UInt16;
+    if (type == typeof(ushort?)) return TypedDecoderKind.NullableUInt16;
+    if (type == typeof(uint)) return TypedDecoderKind.UInt32;
+    if (type == typeof(uint?)) return TypedDecoderKind.NullableUInt32;
+    if (type == typeof(ulong)) return TypedDecoderKind.UInt64;
+    if (type == typeof(ulong?)) return TypedDecoderKind.NullableUInt64;
+    if (type == typeof(TimeSpan)) return TypedDecoderKind.TimeSpan;
+    if (type == typeof(TimeSpan?)) return TypedDecoderKind.NullableTimeSpan;
+    return TypedDecoderKind.Unsupported;
+  }
+
+  private enum TypedDecoderKind : byte
+  {
+    Unsupported,
+    Boolean,
+    NullableBoolean,
+    Int16,
+    NullableInt16,
+    Int32,
+    NullableInt32,
+    Int64,
+    NullableInt64,
+    Float,
+    NullableFloat,
+    Double,
+    NullableDouble,
+    Decimal,
+    NullableDecimal,
+    String,
+    Bytes,
+    ReadOnlyMemory,
+    NullableReadOnlyMemory,
+    Guid,
+    NullableGuid,
+    DateOnly,
+    NullableDateOnly,
+    TimeOnly,
+    NullableTimeOnly,
+    DateTime,
+    NullableDateTime,
+    DateTimeOffset,
+    NullableDateTimeOffset,
+    JsonElement,
+    NullableJsonElement,
+    Object,
+    MySqlDecimal,
+    NullableMySqlDecimal,
+    SByte,
+    NullableSByte,
+    Byte,
+    NullableByte,
+    UInt16,
+    NullableUInt16,
+    UInt32,
+    NullableUInt32,
+    UInt64,
+    NullableUInt64,
+    TimeSpan,
+    NullableTimeSpan,
+  }
 }

@@ -123,3 +123,59 @@ internal sealed class MsSqlStringCache
     internal int CandidateCodePage;
   }
 }
+
+internal static class MsSqlBoxedScalarCache
+{
+  private const int Minimum = -128;
+  private const int Maximum = 255;
+  private static readonly object[] Bytes = CreateBytes();
+  private static readonly object[] Int16Values =
+    Create(static value => (object)(short)value);
+  private static readonly object[] Int32Values =
+    Create(static value => value);
+  private static readonly object[] Int64Values =
+    Create(static value => (object)(long)value);
+  private static readonly object True = true;
+  private static readonly object False = false;
+
+  internal static object Box(bool value) => value ? True : False;
+
+  internal static object Box(byte value) => Bytes[value];
+
+  internal static object Box(short value) =>
+    value is >= Minimum and <= Maximum
+      ? Int16Values[value - Minimum]
+      : value;
+
+  internal static object Box(int value) =>
+    value is >= Minimum and <= Maximum
+      ? Int32Values[value - Minimum]
+      : value;
+
+  internal static object Box(long value) =>
+    value is >= Minimum and <= Maximum
+      ? Int64Values[value - Minimum]
+      : value;
+
+  private static object[] Create(Func<int, object> factory)
+  {
+    object[] values = new object[Maximum - Minimum + 1];
+    for (int i = 0; i < values.Length; i++)
+    {
+      values[i] = factory(i + Minimum);
+    }
+
+    return values;
+  }
+
+  private static object[] CreateBytes()
+  {
+    object[] values = new object[byte.MaxValue + 1];
+    for (int i = 0; i < values.Length; i++)
+    {
+      values[i] = (byte)i;
+    }
+
+    return values;
+  }
+}

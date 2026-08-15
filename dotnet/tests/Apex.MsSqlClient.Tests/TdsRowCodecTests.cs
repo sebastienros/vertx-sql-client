@@ -7,6 +7,7 @@
 using System.Buffers;
 using System.Buffers.Binary;
 using System.Text;
+using System.Text.Json;
 using Apex.MsSqlClient.Internal;
 using Apex.SqlClient;
 
@@ -242,10 +243,10 @@ public sealed class TdsRowCodecTests
   }
 
   [TestMethod]
-  public void DecodesNativeJsonPlpAsUtf16()
+  public void DecodesNativeJsonPlpAsUtf8()
   {
     const string json = """{"name":"apex","values":[1,2]}""";
-    byte[] bytes = Encoding.Unicode.GetBytes(json);
+    byte[] bytes = Encoding.UTF8.GetBytes(json);
     ArrayBufferWriter<byte> response = new();
     response.WriteByte(TdsTokenType.ColumnMetadata);
     response.WriteUInt16LittleEndian(1);
@@ -262,6 +263,10 @@ public sealed class TdsRowCodecTests
       .Rows[0];
 
     Assert.AreEqual(json, row.GetString(0));
+    Assert.AreEqual("apex", row.Get<JsonElement>(0).GetProperty("name").GetString());
+    Assert.AreEqual(
+      2,
+      row.Get<JsonElement?>(0)!.Value.GetProperty("values").GetArrayLength());
   }
 
   [TestMethod]
@@ -299,17 +304,112 @@ public sealed class TdsRowCodecTests
       .Parse(response.WrittenMemory)
       .Rows[0];
     _ = row.GetInt32(0);
+    _ = row.Get<int?>(0);
 
     long before = GC.GetAllocatedBytesForCurrentThread();
     int sum = 0;
     for (int i = 0; i < 1000; i++)
     {
       sum += row.GetInt32(0);
+      sum += row.Get<int?>(0)!.Value;
     }
 
     long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
-    Assert.AreEqual(42_000, sum);
+    Assert.AreEqual(84_000, sum);
     Assert.AreEqual(0, allocated);
+  }
+
+  [TestMethod]
+  public void EnforcesTypedCompatibilityAndNullableSemantics()
+  {
+    MsSqlRowDecoder decoder = new();
+    SqlColumn column = new(
+      "value",
+      TdsDataType.Int4,
+      sizeof(int),
+      0,
+      SqlDataFormat.Binary);
+    byte[] value = new byte[sizeof(int)];
+    BinaryPrimitives.WriteInt32LittleEndian(value, 42);
+    byte[] row = CreateDecoderRow(value);
+
+    Assert.AreEqual(42, decoder.DecodeInt32(row, 0, column));
+    Assert.AreEqual(42, decoder.DecodeNullableInt32(row, 0, column));
+    Assert.ThrowsExactly<InvalidCastException>(
+      () => decoder.DecodeInt64(row, 0, column));
+    Assert.ThrowsExactly<InvalidCastException>(
+      () => decoder.DecodeString(row, 0, column));
+
+    object first = decoder.DecodeObject(row, 0, column)!;
+    object second = decoder.DecodeObject(row, 0, column)!;
+    Assert.AreEqual(42, first);
+    Assert.AreSame(first, second);
+
+    byte[] nullRow = CreateDecoderRow(null);
+    Assert.IsNull(decoder.DecodeNullableInt32(nullRow, 0, column));
+    Assert.IsNull(decoder.DecodeObject(nullRow, 0, column));
+    Assert.ThrowsExactly<InvalidCastException>(
+      () => decoder.DecodeInt32(nullRow, 0, column));
+  }
+
+  [TestMethod]
+  public void ReadOnlyMemoryBorrowsBufferedRowsAndCopiesBorrowedRows()
+  {
+    MsSqlRowDecoder decoder = new();
+    SqlColumn column = new(
+      "value",
+      TdsDataType.BigVarBinary,
+      3,
+      0,
+      SqlDataFormat.Binary);
+    byte[] row = CreateDecoderRow([1, 2, 3]);
+
+    ReadOnlyMemory<byte> borrowed =
+      decoder.Decode<ReadOnlyMemory<byte>>(
+        row,
+        0,
+        column,
+        copyReadOnlyMemory: false);
+    ReadOnlyMemory<byte> copied =
+      decoder.Decode<ReadOnlyMemory<byte>>(
+        row,
+        0,
+        column,
+        copyReadOnlyMemory: true);
+
+    row[^1] = 9;
+    CollectionAssert.AreEqual(new byte[] { 1, 2, 9 }, borrowed.ToArray());
+    CollectionAssert.AreEqual(new byte[] { 1, 2, 3 }, copied.ToArray());
+  }
+
+  [TestMethod]
+  public void DecodesZeroExtendedDecimalMagnitudeWidths()
+  {
+    MsSqlRowDecoder decoder = new();
+    SqlColumn column = new(
+      "value",
+      TdsDataType.DecimalN,
+      17,
+      0,
+      SqlDataFormat.Binary);
+
+    Assert.AreEqual(
+      3_351_057m,
+      decoder.DecodeDecimal(
+        CreateDecoderRow([1, 0x11, 0x22, 0x33]),
+        0,
+        column));
+    Assert.AreEqual(
+      new decimal(1, 2, 3, isNegative: false, scale: 0),
+      decoder.DecodeDecimal(
+        CreateDecoderRow([
+          1,
+          1, 0, 0, 0,
+          2, 0, 0, 0,
+          3, 0, 0, 0,
+        ]),
+        0,
+        column));
   }
 
   private static void WriteColumn(
@@ -355,5 +455,19 @@ public sealed class TdsRowCodecTests
     response.WriteUInt16LittleEndian(0);
     response.WriteUInt16LittleEndian(0);
     response.WriteInt64LittleEndian(0);
+  }
+
+  private static byte[] CreateDecoderRow(byte[]? value)
+  {
+    byte[] row = new byte[
+      sizeof(ushort) +
+      sizeof(int) +
+      (value?.Length ?? 0)];
+    BinaryPrimitives.WriteUInt16LittleEndian(row, 1);
+    BinaryPrimitives.WriteInt32LittleEndian(
+      row.AsSpan(sizeof(ushort)),
+      value?.Length ?? -1);
+    value?.CopyTo(row, sizeof(ushort) + sizeof(int));
+    return row;
   }
 }

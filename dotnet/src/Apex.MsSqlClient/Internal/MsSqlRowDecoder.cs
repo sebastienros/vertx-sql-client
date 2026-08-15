@@ -7,6 +7,7 @@
 using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
 using System.Text;
+using System.Text.Json;
 using Apex.SqlClient;
 using Apex.SqlClient.Internal;
 
@@ -25,200 +26,44 @@ internal sealed class MsSqlRowDecoder : ISqlRowDecoder
       stringCacheMaximumByteLength);
   }
 
-  public int GetFieldCount(ReadOnlySpan<byte> row)
+  public int GetFieldCount(ReadOnlyMemory<byte> row) =>
+    GetFieldCount(row.Span);
+
+  internal int GetFieldCount(ReadOnlySpan<byte> row)
   {
     Ensure(row, 0, sizeof(ushort));
     return BinaryPrimitives.ReadUInt16LittleEndian(row);
   }
 
-  public bool IsNull(ReadOnlySpan<byte> row, int ordinal) =>
+  public bool IsNull(ReadOnlyMemory<byte> row, int ordinal) =>
     GetField(row, ordinal).IsNull;
 
-  public object? Decode(
-    ReadOnlySpan<byte> row,
+  public object? DecodeObject(
+    ReadOnlyMemory<byte> row,
     int ordinal,
     SqlColumn column)
   {
-    Field field = GetField(row, ordinal);
-    return field.IsNull ? null : DecodeValue(field.Value, column);
-  }
-
-  public T Decode<T>(
-    ReadOnlySpan<byte> row,
-    int ordinal,
-    SqlColumn column)
-  {
+    EnsureFormat(column, typeof(object));
     Field field = GetField(row, ordinal);
     if (field.IsNull)
     {
-      if (default(T) is null)
-      {
-        return default!;
-      }
-
-      throw new InvalidCastException($"Column {ordinal} contains NULL.");
+      return null;
     }
 
-    byte type = checked((byte)column.TypeId);
-    ReadOnlySpan<byte> value = field.Value;
-    if (typeof(T) == typeof(bool))
-    {
-      EnsureType(type is TdsDataType.Bit or TdsDataType.BitN, type, typeof(T));
-      EnsureExact(value, 1);
-      bool decoded = value[0] != 0;
-      return Unsafe.As<bool, T>(ref decoded);
-    }
-
-    if (typeof(T) == typeof(byte))
-    {
-      EnsureType(
-        type == TdsDataType.Int1 ||
-        type == TdsDataType.IntN && value.Length == 1,
-        type,
-        typeof(T));
-      EnsureExact(value, 1);
-      byte decoded = value[0];
-      return Unsafe.As<byte, T>(ref decoded);
-    }
-
-    if (typeof(T) == typeof(short))
-    {
-      EnsureType(
-        type == TdsDataType.Int2 ||
-        type == TdsDataType.IntN && value.Length == 2,
-        type,
-        typeof(T));
-      short decoded = ReadInt16(value);
-      return Unsafe.As<short, T>(ref decoded);
-    }
-
-    if (typeof(T) == typeof(int))
-    {
-      EnsureType(
-        type == TdsDataType.Int4 ||
-        type == TdsDataType.IntN && value.Length == 4,
-        type,
-        typeof(T));
-      int decoded = ReadInt32(value);
-      return Unsafe.As<int, T>(ref decoded);
-    }
-
-    if (typeof(T) == typeof(long))
-    {
-      EnsureType(
-        type == TdsDataType.Int8 ||
-        type == TdsDataType.IntN && value.Length == 8,
-        type,
-        typeof(T));
-      long decoded = ReadInt64(value);
-      return Unsafe.As<long, T>(ref decoded);
-    }
-
-    if (typeof(T) == typeof(float))
-    {
-      EnsureType(
-        type == TdsDataType.Float4 ||
-        type == TdsDataType.FloatN && value.Length == 4,
-        type,
-        typeof(T));
-      float decoded = ReadSingle(value);
-      return Unsafe.As<float, T>(ref decoded);
-    }
-
-    if (typeof(T) == typeof(double))
-    {
-      EnsureType(
-        type == TdsDataType.Float8 ||
-        type == TdsDataType.FloatN && value.Length == 8,
-        type,
-        typeof(T));
-      double decoded = ReadDouble(value);
-      return Unsafe.As<double, T>(ref decoded);
-    }
-
-    if (typeof(T) == typeof(decimal))
-    {
-      decimal decoded = DecodeDecimalValue(value, type, (byte)column.TypeModifier);
-      return Unsafe.As<decimal, T>(ref decoded);
-    }
-
-    if (typeof(T) == typeof(Guid))
-    {
-      EnsureType(type == TdsDataType.Guid, type, typeof(T));
-      Guid decoded = new(value);
-      return Unsafe.As<Guid, T>(ref decoded);
-    }
-
-    if (typeof(T) == typeof(DateOnly))
-    {
-      EnsureType(type == TdsDataType.Date, type, typeof(T));
-      DateOnly decoded = DecodeDate(value);
-      return Unsafe.As<DateOnly, T>(ref decoded);
-    }
-
-    if (typeof(T) == typeof(TimeOnly))
-    {
-      EnsureType(type == TdsDataType.Time, type, typeof(T));
-      TimeOnly decoded = DecodeTime(value, (byte)column.TypeModifier);
-      return Unsafe.As<TimeOnly, T>(ref decoded);
-    }
-
-    if (typeof(T) == typeof(DateTime))
-    {
-      DateTime decoded = DecodeDateTimeValue(
-        value,
-        type,
-        (byte)column.TypeModifier);
-      return Unsafe.As<DateTime, T>(ref decoded);
-    }
-
-    if (typeof(T) == typeof(DateTimeOffset))
-    {
-      EnsureType(type == TdsDataType.DateTimeOffset, type, typeof(T));
-      DateTimeOffset decoded = DecodeDateTimeOffset(
-        value,
-        (byte)column.TypeModifier);
-      return Unsafe.As<DateTimeOffset, T>(ref decoded);
-    }
-
-    if (typeof(T) == typeof(string))
-    {
-      EnsureType(IsStringType(type), type, typeof(T));
-      string decoded = DecodeString(value, column);
-      return Unsafe.As<string, T>(ref decoded);
-    }
-
-    if (typeof(T) == typeof(byte[]))
-    {
-      EnsureType(IsBinaryType(type), type, typeof(T));
-      byte[] decoded = value.ToArray();
-      return Unsafe.As<byte[], T>(ref decoded);
-    }
-
-    object decodedValue = DecodeValue(value, column);
-    if (decodedValue is T typed)
-    {
-      return typed;
-    }
-
-    throw new InvalidCastException(
-      $"Column {ordinal} contains {decodedValue.GetType().FullName}, " +
-      $"not {typeof(T).FullName}.");
-  }
-
-  internal void DisableCache() => _strings.Disable();
-
-  private object DecodeValue(ReadOnlySpan<byte> value, SqlColumn column)
-  {
+    ReadOnlySpan<byte> value = field.Value.Span;
     byte type = checked((byte)column.TypeId);
     byte scale = (byte)column.TypeModifier;
     return type switch
     {
-      TdsDataType.Int1 => value[0],
-      TdsDataType.Bit or TdsDataType.BitN => value[0] != 0,
-      TdsDataType.Int2 => ReadInt16(value),
-      TdsDataType.Int4 => ReadInt32(value),
-      TdsDataType.Int8 => ReadInt64(value),
+      TdsDataType.Int1 => MsSqlBoxedScalarCache.Box(ReadByte(value)),
+      TdsDataType.Bit or TdsDataType.BitN =>
+        MsSqlBoxedScalarCache.Box(ReadByte(value) != 0),
+      TdsDataType.Int2 =>
+        MsSqlBoxedScalarCache.Box(ReadInt16(value)),
+      TdsDataType.Int4 =>
+        MsSqlBoxedScalarCache.Box(ReadInt32(value)),
+      TdsDataType.Int8 =>
+        MsSqlBoxedScalarCache.Box(ReadInt64(value)),
       TdsDataType.IntN => DecodeIntN(value),
       TdsDataType.Float4 => ReadSingle(value),
       TdsDataType.Float8 => ReadDouble(value),
@@ -226,8 +71,9 @@ internal sealed class MsSqlRowDecoder : ISqlRowDecoder
       TdsDataType.Decimal or
       TdsDataType.Numeric or
       TdsDataType.DecimalN or
-      TdsDataType.NumericN => DecodeDecimal(value, scale),
-      TdsDataType.Money or TdsDataType.MoneyN when value.Length == 8 =>
+      TdsDataType.NumericN => DecodeDecimalValue(value, type, scale),
+      TdsDataType.Money or
+      TdsDataType.MoneyN when value.Length == 8 =>
         DecodeMoney(value),
       TdsDataType.Money4 or TdsDataType.MoneyN =>
         ReadInt32(value) / 10000m,
@@ -235,31 +81,549 @@ internal sealed class MsSqlRowDecoder : ISqlRowDecoder
       TdsDataType.Date => DecodeDate(value),
       TdsDataType.Time => DecodeTime(value, scale),
       TdsDataType.DateTime2 => DecodeDateTime2(value, scale),
-      TdsDataType.DateTimeOffset => DecodeDateTimeOffset(value, scale),
+      TdsDataType.DateTimeOffset => DecodeDateTimeOffsetValue(value, scale),
       TdsDataType.DateTime => DecodeLegacyDateTime(value),
       TdsDataType.DateTime4 => DecodeSmallDateTime(value),
       TdsDataType.DateTimeN when value.Length == 8 => DecodeLegacyDateTime(value),
       TdsDataType.DateTimeN => DecodeSmallDateTime(value),
-      TdsDataType.NVarChar or
-      TdsDataType.NChar or
-      TdsDataType.NText or
-      TdsDataType.Xml or
-      TdsDataType.Json or
-      TdsDataType.Char or
-      TdsDataType.VarChar or
-      TdsDataType.BigChar or
-      TdsDataType.BigVarChar or
-      TdsDataType.Text => DecodeString(value, column),
-      TdsDataType.Binary or
-      TdsDataType.VarBinary or
-      TdsDataType.BigBinary or
-      TdsDataType.BigVarBinary or
-      TdsDataType.Image or
-      TdsDataType.Udt => value.ToArray(),
+      _ when IsStringType(type) => DecodeStringValue(value, column),
+      _ when IsBinaryType(type) => value.ToArray(),
       _ => throw new NotSupportedException(
         $"Cannot decode SQL Server TDS data type 0x{type:X2}."),
     };
   }
+
+  public bool DecodeBoolean(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    byte type = checked((byte)column.TypeId);
+    EnsureType(
+      column,
+      type is TdsDataType.Bit or TdsDataType.BitN,
+      typeof(bool));
+    ReadOnlySpan<byte> value = GetRequiredField(row, ordinal).Span;
+    EnsureExact(value, 1);
+    return value[0] != 0;
+  }
+
+  public bool? DecodeNullableBoolean(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    byte type = checked((byte)column.TypeId);
+    EnsureType(
+      column,
+      type is TdsDataType.Bit or TdsDataType.BitN,
+      typeof(bool?));
+    Field field = GetField(row, ordinal);
+    if (field.IsNull)
+    {
+      return null;
+    }
+
+    EnsureExact(field.Value.Span, 1);
+    return field.Value.Span[0] != 0;
+  }
+
+  public short DecodeInt16(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    byte type = checked((byte)column.TypeId);
+    EnsureType(column, type == TdsDataType.Int2 ||
+      type == TdsDataType.IntN && column.TypeSize == 2, typeof(short));
+    return ReadInt16(GetRequiredField(row, ordinal).Span);
+  }
+
+  public short? DecodeNullableInt16(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    byte type = checked((byte)column.TypeId);
+    EnsureType(column, type == TdsDataType.Int2 ||
+      type == TdsDataType.IntN && column.TypeSize == 2, typeof(short?));
+    Field field = GetField(row, ordinal);
+    return field.IsNull ? null : ReadInt16(field.Value.Span);
+  }
+
+  public int DecodeInt32(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    byte type = checked((byte)column.TypeId);
+    EnsureType(column, type == TdsDataType.Int4 ||
+      type == TdsDataType.IntN && column.TypeSize == 4, typeof(int));
+    return ReadInt32(GetRequiredField(row, ordinal).Span);
+  }
+
+  public int? DecodeNullableInt32(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    byte type = checked((byte)column.TypeId);
+    EnsureType(column, type == TdsDataType.Int4 ||
+      type == TdsDataType.IntN && column.TypeSize == 4, typeof(int?));
+    Field field = GetField(row, ordinal);
+    return field.IsNull ? null : ReadInt32(field.Value.Span);
+  }
+
+  public long DecodeInt64(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    byte type = checked((byte)column.TypeId);
+    EnsureType(column, type == TdsDataType.Int8 ||
+      type == TdsDataType.IntN && column.TypeSize == 8, typeof(long));
+    return ReadInt64(GetRequiredField(row, ordinal).Span);
+  }
+
+  public long? DecodeNullableInt64(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    byte type = checked((byte)column.TypeId);
+    EnsureType(column, type == TdsDataType.Int8 ||
+      type == TdsDataType.IntN && column.TypeSize == 8, typeof(long?));
+    Field field = GetField(row, ordinal);
+    return field.IsNull ? null : ReadInt64(field.Value.Span);
+  }
+
+  public float DecodeFloat(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    byte type = checked((byte)column.TypeId);
+    EnsureType(column, type == TdsDataType.Float4 ||
+      type == TdsDataType.FloatN && column.TypeSize == 4, typeof(float));
+    return ReadSingle(GetRequiredField(row, ordinal).Span);
+  }
+
+  public float? DecodeNullableFloat(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    byte type = checked((byte)column.TypeId);
+    EnsureType(column, type == TdsDataType.Float4 ||
+      type == TdsDataType.FloatN && column.TypeSize == 4, typeof(float?));
+    Field field = GetField(row, ordinal);
+    return field.IsNull ? null : ReadSingle(field.Value.Span);
+  }
+
+  public double DecodeDouble(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    byte type = checked((byte)column.TypeId);
+    EnsureType(column, type == TdsDataType.Float8 ||
+      type == TdsDataType.FloatN && column.TypeSize == 8, typeof(double));
+    return ReadDouble(GetRequiredField(row, ordinal).Span);
+  }
+
+  public double? DecodeNullableDouble(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    byte type = checked((byte)column.TypeId);
+    EnsureType(column, type == TdsDataType.Float8 ||
+      type == TdsDataType.FloatN && column.TypeSize == 8, typeof(double?));
+    Field field = GetField(row, ordinal);
+    return field.IsNull ? null : ReadDouble(field.Value.Span);
+  }
+
+  public decimal DecodeDecimal(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    EnsureDecimalType(column, typeof(decimal));
+    return DecodeDecimalValue(
+      GetRequiredField(row, ordinal).Span,
+      checked((byte)column.TypeId),
+      (byte)column.TypeModifier);
+  }
+
+  public decimal? DecodeNullableDecimal(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    EnsureDecimalType(column, typeof(decimal?));
+    Field field = GetField(row, ordinal);
+    return field.IsNull
+      ? null
+      : DecodeDecimalValue(
+        field.Value.Span,
+        checked((byte)column.TypeId),
+        (byte)column.TypeModifier);
+  }
+
+  public string? DecodeString(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    byte type = checked((byte)column.TypeId);
+    EnsureType(column, IsStringType(type), typeof(string));
+    Field field = GetField(row, ordinal);
+    return field.IsNull ? null : DecodeStringValue(field.Value.Span, column);
+  }
+
+  public byte[]? DecodeBytes(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    byte type = checked((byte)column.TypeId);
+    EnsureType(column, IsBinaryType(type), typeof(byte[]));
+    Field field = GetField(row, ordinal);
+    return field.IsNull ? null : field.Value.ToArray();
+  }
+
+  public ReadOnlyMemory<byte> DecodeReadOnlyMemory(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    byte type = checked((byte)column.TypeId);
+    EnsureType(column, IsBinaryType(type), typeof(ReadOnlyMemory<byte>));
+    return GetRequiredField(row, ordinal);
+  }
+
+  public ReadOnlyMemory<byte>? DecodeNullableReadOnlyMemory(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    byte type = checked((byte)column.TypeId);
+    EnsureType(column, IsBinaryType(type), typeof(ReadOnlyMemory<byte>?));
+    Field field = GetField(row, ordinal);
+    return field.IsNull ? null : field.Value;
+  }
+
+  public Guid DecodeGuid(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    EnsureType(
+      column,
+      column.TypeId == TdsDataType.Guid,
+      typeof(Guid));
+    return new Guid(GetRequiredField(row, ordinal).Span);
+  }
+
+  public Guid? DecodeNullableGuid(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    EnsureType(
+      column,
+      column.TypeId == TdsDataType.Guid,
+      typeof(Guid?));
+    Field field = GetField(row, ordinal);
+    return field.IsNull ? null : new Guid(field.Value.Span);
+  }
+
+  public DateOnly DecodeDateOnly(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    EnsureType(
+      column,
+      column.TypeId == TdsDataType.Date,
+      typeof(DateOnly));
+    return DecodeDate(GetRequiredField(row, ordinal).Span);
+  }
+
+  public DateOnly? DecodeNullableDateOnly(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    EnsureType(
+      column,
+      column.TypeId == TdsDataType.Date,
+      typeof(DateOnly?));
+    Field field = GetField(row, ordinal);
+    return field.IsNull ? null : DecodeDate(field.Value.Span);
+  }
+
+  public TimeOnly DecodeTimeOnly(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    EnsureType(
+      column,
+      column.TypeId == TdsDataType.Time,
+      typeof(TimeOnly));
+    return DecodeTime(
+      GetRequiredField(row, ordinal).Span,
+      (byte)column.TypeModifier);
+  }
+
+  public TimeOnly? DecodeNullableTimeOnly(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    EnsureType(
+      column,
+      column.TypeId == TdsDataType.Time,
+      typeof(TimeOnly?));
+    Field field = GetField(row, ordinal);
+    return field.IsNull
+      ? null
+      : DecodeTime(field.Value.Span, (byte)column.TypeModifier);
+  }
+
+  public DateTime DecodeDateTime(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    EnsureDateTimeType(column, typeof(DateTime));
+    return DecodeDateTimeValue(
+      GetRequiredField(row, ordinal).Span,
+      checked((byte)column.TypeId),
+      (byte)column.TypeModifier);
+  }
+
+  public DateTime? DecodeNullableDateTime(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    EnsureDateTimeType(column, typeof(DateTime?));
+    Field field = GetField(row, ordinal);
+    return field.IsNull
+      ? null
+      : DecodeDateTimeValue(
+        field.Value.Span,
+        checked((byte)column.TypeId),
+        (byte)column.TypeModifier);
+  }
+
+  public DateTimeOffset DecodeDateTimeOffset(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    EnsureType(
+      column,
+      column.TypeId == TdsDataType.DateTimeOffset,
+      typeof(DateTimeOffset));
+    return DecodeDateTimeOffsetValue(
+      GetRequiredField(row, ordinal).Span,
+      (byte)column.TypeModifier);
+  }
+
+  public DateTimeOffset? DecodeNullableDateTimeOffset(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    EnsureType(
+      column,
+      column.TypeId == TdsDataType.DateTimeOffset,
+      typeof(DateTimeOffset?));
+    Field field = GetField(row, ordinal);
+    return field.IsNull
+      ? null
+      : DecodeDateTimeOffsetValue(
+        field.Value.Span,
+        (byte)column.TypeModifier);
+  }
+
+  public JsonElement DecodeJsonElement(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    EnsureType(
+      column,
+      column.TypeId == TdsDataType.Json,
+      typeof(JsonElement));
+    return DecodeJson(GetRequiredField(row, ordinal), column);
+  }
+
+  public JsonElement? DecodeNullableJsonElement(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    EnsureType(
+      column,
+      column.TypeId == TdsDataType.Json,
+      typeof(JsonElement?));
+    Field field = GetField(row, ordinal);
+    return field.IsNull ? null : DecodeJson(field.Value, column);
+  }
+
+  public object?[]? DecodeArray(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    EnsureFormat(column, typeof(object?[]));
+    _ = GetField(row, ordinal);
+    throw CreateInvalidCast(
+      checked((byte)column.TypeId),
+      typeof(object?[]));
+  }
+
+  public T Decode<T>(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column,
+    bool copyReadOnlyMemory)
+  {
+    switch (TypedDecoder<T>.Kind)
+    {
+      case TypedDecoderKind.Boolean:
+        return Cast<bool, T>(DecodeBoolean(row, ordinal, column));
+      case TypedDecoderKind.NullableBoolean:
+        return Cast<bool?, T>(DecodeNullableBoolean(row, ordinal, column));
+      case TypedDecoderKind.Int16:
+        return Cast<short, T>(DecodeInt16(row, ordinal, column));
+      case TypedDecoderKind.NullableInt16:
+        return Cast<short?, T>(DecodeNullableInt16(row, ordinal, column));
+      case TypedDecoderKind.Int32:
+        return Cast<int, T>(DecodeInt32(row, ordinal, column));
+      case TypedDecoderKind.NullableInt32:
+        return Cast<int?, T>(DecodeNullableInt32(row, ordinal, column));
+      case TypedDecoderKind.Int64:
+        return Cast<long, T>(DecodeInt64(row, ordinal, column));
+      case TypedDecoderKind.NullableInt64:
+        return Cast<long?, T>(DecodeNullableInt64(row, ordinal, column));
+      case TypedDecoderKind.Float:
+        return Cast<float, T>(DecodeFloat(row, ordinal, column));
+      case TypedDecoderKind.NullableFloat:
+        return Cast<float?, T>(DecodeNullableFloat(row, ordinal, column));
+      case TypedDecoderKind.Double:
+        return Cast<double, T>(DecodeDouble(row, ordinal, column));
+      case TypedDecoderKind.NullableDouble:
+        return Cast<double?, T>(DecodeNullableDouble(row, ordinal, column));
+      case TypedDecoderKind.Decimal:
+        return Cast<decimal, T>(DecodeDecimal(row, ordinal, column));
+      case TypedDecoderKind.NullableDecimal:
+        return Cast<decimal?, T>(DecodeNullableDecimal(row, ordinal, column));
+      case TypedDecoderKind.String:
+        return Cast<string?, T>(DecodeString(row, ordinal, column));
+      case TypedDecoderKind.Bytes:
+        return Cast<byte[]?, T>(DecodeBytes(row, ordinal, column));
+      case TypedDecoderKind.ReadOnlyMemory:
+        {
+          ReadOnlyMemory<byte> value =
+            DecodeReadOnlyMemory(row, ordinal, column);
+          if (copyReadOnlyMemory)
+          {
+            value = value.ToArray();
+          }
+
+          return Cast<ReadOnlyMemory<byte>, T>(value);
+        }
+      case TypedDecoderKind.NullableReadOnlyMemory:
+        {
+          ReadOnlyMemory<byte>? value =
+            DecodeNullableReadOnlyMemory(row, ordinal, column);
+          if (copyReadOnlyMemory && value.HasValue)
+          {
+            value = value.Value.ToArray();
+          }
+
+          return Cast<ReadOnlyMemory<byte>?, T>(value);
+        }
+      case TypedDecoderKind.Guid:
+        return Cast<Guid, T>(DecodeGuid(row, ordinal, column));
+      case TypedDecoderKind.NullableGuid:
+        return Cast<Guid?, T>(DecodeNullableGuid(row, ordinal, column));
+      case TypedDecoderKind.DateOnly:
+        return Cast<DateOnly, T>(DecodeDateOnly(row, ordinal, column));
+      case TypedDecoderKind.NullableDateOnly:
+        return Cast<DateOnly?, T>(DecodeNullableDateOnly(row, ordinal, column));
+      case TypedDecoderKind.TimeOnly:
+        return Cast<TimeOnly, T>(DecodeTimeOnly(row, ordinal, column));
+      case TypedDecoderKind.NullableTimeOnly:
+        return Cast<TimeOnly?, T>(DecodeNullableTimeOnly(row, ordinal, column));
+      case TypedDecoderKind.DateTime:
+        return Cast<DateTime, T>(DecodeDateTime(row, ordinal, column));
+      case TypedDecoderKind.NullableDateTime:
+        return Cast<DateTime?, T>(DecodeNullableDateTime(row, ordinal, column));
+      case TypedDecoderKind.DateTimeOffset:
+        return Cast<DateTimeOffset, T>(
+          DecodeDateTimeOffset(row, ordinal, column));
+      case TypedDecoderKind.NullableDateTimeOffset:
+        return Cast<DateTimeOffset?, T>(
+          DecodeNullableDateTimeOffset(row, ordinal, column));
+      case TypedDecoderKind.JsonElement:
+        return Cast<JsonElement, T>(
+          DecodeJsonElement(row, ordinal, column));
+      case TypedDecoderKind.NullableJsonElement:
+        return Cast<JsonElement?, T>(
+          DecodeNullableJsonElement(row, ordinal, column));
+      case TypedDecoderKind.Object:
+        return (T)DecodeObject(row, ordinal, column)!;
+      case TypedDecoderKind.Array:
+        return Cast<object?[]?, T>(DecodeArray(row, ordinal, column));
+      case TypedDecoderKind.Byte:
+        return Cast<byte, T>(DecodeByte(row, ordinal, column));
+      case TypedDecoderKind.NullableByte:
+        return Cast<byte?, T>(DecodeNullableByte(row, ordinal, column));
+      default:
+        throw CreateInvalidCast(
+          checked((byte)column.TypeId),
+          typeof(T));
+    }
+  }
+
+  private byte DecodeByte(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    byte type = checked((byte)column.TypeId);
+    EnsureType(column, type == TdsDataType.Int1 ||
+      type == TdsDataType.IntN && column.TypeSize == 1, typeof(byte));
+    ReadOnlySpan<byte> value = GetRequiredField(row, ordinal).Span;
+    EnsureExact(value, 1);
+    return value[0];
+  }
+
+  private byte? DecodeNullableByte(
+    ReadOnlyMemory<byte> row,
+    int ordinal,
+    SqlColumn column)
+  {
+    byte type = checked((byte)column.TypeId);
+    EnsureType(column, type == TdsDataType.Int1 ||
+      type == TdsDataType.IntN && column.TypeSize == 1, typeof(byte?));
+    Field field = GetField(row, ordinal);
+    if (field.IsNull)
+    {
+      return null;
+    }
+
+    EnsureExact(field.Value.Span, 1);
+    return field.Value.Span[0];
+  }
+
+  internal void DisableCache() => _strings.Disable();
 
   private static decimal DecodeDecimalValue(
     ReadOnlySpan<byte> value,
@@ -295,10 +659,10 @@ internal sealed class MsSqlRowDecoder : ISqlRowDecoder
   private static object DecodeIntN(ReadOnlySpan<byte> value) =>
     value.Length switch
     {
-      1 => (object)value[0],
-      2 => ReadInt16(value),
-      4 => ReadInt32(value),
-      8 => ReadInt64(value),
+      1 => MsSqlBoxedScalarCache.Box(value[0]),
+      2 => MsSqlBoxedScalarCache.Box(ReadInt16(value)),
+      4 => MsSqlBoxedScalarCache.Box(ReadInt32(value)),
+      8 => MsSqlBoxedScalarCache.Box(ReadInt64(value)),
       _ => throw new InvalidDataException($"Invalid SQL Server INTN length {value.Length}."),
     };
 
@@ -323,13 +687,25 @@ internal sealed class MsSqlRowDecoder : ISqlRowDecoder
       throw new OverflowException("SQL Server decimal value cannot be represented by System.Decimal.");
     }
 
-    Span<byte> bits = stackalloc byte[12];
-    magnitude[..Math.Min(magnitude.Length, bits.Length)].CopyTo(bits);
-    int low = BinaryPrimitives.ReadInt32LittleEndian(bits);
-    int middle = BinaryPrimitives.ReadInt32LittleEndian(bits[4..]);
-    int high = BinaryPrimitives.ReadInt32LittleEndian(bits[8..]);
+    int low = ReadDecimalPart(magnitude);
+    int middle = magnitude.Length > 4
+      ? ReadDecimalPart(magnitude[4..])
+      : 0;
+    int high = magnitude.Length > 8
+      ? ReadDecimalPart(magnitude[8..])
+      : 0;
     return new decimal(low, middle, high, value[0] == 0, scale);
   }
+
+  private static int ReadDecimalPart(ReadOnlySpan<byte> value) =>
+    value.Length switch
+    {
+      >= 4 => BinaryPrimitives.ReadInt32LittleEndian(value),
+      3 => value[0] | value[1] << 8 | value[2] << 16,
+      2 => value[0] | value[1] << 8,
+      1 => value[0],
+      _ => 0,
+    };
 
   private static decimal DecodeMoney(ReadOnlySpan<byte> value)
   {
@@ -370,7 +746,9 @@ internal sealed class MsSqlRowDecoder : ISqlRowDecoder
     return date.ToDateTime(time, DateTimeKind.Unspecified);
   }
 
-  private static DateTimeOffset DecodeDateTimeOffset(ReadOnlySpan<byte> value, byte scale)
+  private static DateTimeOffset DecodeDateTimeOffsetValue(
+    ReadOnlySpan<byte> value,
+    byte scale)
   {
     int timeLength = value.Length - 5;
     if (timeLength is < 3 or > 5)
@@ -415,15 +793,16 @@ internal sealed class MsSqlRowDecoder : ISqlRowDecoder
     return new DateTime(1900, 1, 1).AddDays(days).AddMinutes(minutes);
   }
 
-  private string DecodeString(ReadOnlySpan<byte> value, SqlColumn column)
+  private string DecodeStringValue(ReadOnlySpan<byte> value, SqlColumn column)
   {
     byte type = checked((byte)column.TypeId);
-    int codePage = type is
+    int codePage = type == TdsDataType.Json
+      ? 65001
+      : type is
       TdsDataType.NVarChar or
       TdsDataType.NChar or
       TdsDataType.NText or
-      TdsDataType.Xml or
-      TdsDataType.Json
+      TdsDataType.Xml
         ? 1200
         : (int)(unchecked((uint)column.TypeModifier) >> 16);
     if (codePage == 0)
@@ -433,6 +812,16 @@ internal sealed class MsSqlRowDecoder : ISqlRowDecoder
     }
 
     return _strings.GetString(value, codePage);
+  }
+
+  private JsonElement DecodeJson(
+    ReadOnlyMemory<byte> value,
+    SqlColumn column)
+  {
+    using JsonDocument document = column.TypeId == TdsDataType.Json
+      ? JsonDocument.Parse(value)
+      : JsonDocument.Parse(DecodeStringValue(value.Span, column));
+    return document.RootElement.Clone();
   }
 
   private static bool IsStringType(byte type) =>
@@ -457,11 +846,55 @@ internal sealed class MsSqlRowDecoder : ISqlRowDecoder
       TdsDataType.Image or
       TdsDataType.Udt;
 
-  private static void EnsureType(bool matches, byte type, Type requestedType)
+  private static void EnsureDecimalType(SqlColumn column, Type requestedType)
   {
-    if (!matches)
+    byte type = checked((byte)column.TypeId);
+    EnsureType(
+      column,
+      type is
+        TdsDataType.Decimal or
+        TdsDataType.Numeric or
+        TdsDataType.DecimalN or
+        TdsDataType.NumericN or
+        TdsDataType.Money or
+        TdsDataType.Money4 or
+        TdsDataType.MoneyN,
+      requestedType);
+  }
+
+  private static void EnsureDateTimeType(SqlColumn column, Type requestedType)
+  {
+    byte type = checked((byte)column.TypeId);
+    EnsureType(
+      column,
+      type is
+        TdsDataType.DateTime2 or
+        TdsDataType.DateTime or
+        TdsDataType.DateTime4 or
+        TdsDataType.DateTimeN,
+      requestedType);
+  }
+
+  private static void EnsureType(
+    SqlColumn column,
+    bool matches,
+    Type requestedType)
+  {
+    if (!matches || column.Format != SqlDataFormat.Binary)
     {
-      throw CreateInvalidCast(type, requestedType);
+      throw CreateInvalidCast(
+        checked((byte)column.TypeId),
+        requestedType);
+    }
+  }
+
+  private static void EnsureFormat(SqlColumn column, Type requestedType)
+  {
+    if (column.Format != SqlDataFormat.Binary)
+    {
+      throw CreateInvalidCast(
+        checked((byte)column.TypeId),
+        requestedType);
     }
   }
 
@@ -474,6 +907,12 @@ internal sealed class MsSqlRowDecoder : ISqlRowDecoder
   {
     EnsureExact(value, sizeof(short));
     return BinaryPrimitives.ReadInt16LittleEndian(value);
+  }
+
+  private static byte ReadByte(ReadOnlySpan<byte> value)
+  {
+    EnsureExact(value, sizeof(byte));
+    return value[0];
   }
 
   private static int ReadInt32(ReadOnlySpan<byte> value)
@@ -526,10 +965,24 @@ internal sealed class MsSqlRowDecoder : ISqlRowDecoder
     return result;
   }
 
-  private static Field GetField(ReadOnlySpan<byte> row, int ordinal)
+  private static ReadOnlyMemory<byte> GetRequiredField(
+    ReadOnlyMemory<byte> row,
+    int ordinal)
   {
-    Ensure(row, 0, sizeof(ushort));
-    int count = BinaryPrimitives.ReadUInt16LittleEndian(row);
+    Field field = GetField(row, ordinal);
+    if (field.IsNull)
+    {
+      throw new InvalidCastException($"Column {ordinal} contains NULL.");
+    }
+
+    return field.Value;
+  }
+
+  private static Field GetField(ReadOnlyMemory<byte> row, int ordinal)
+  {
+    ReadOnlySpan<byte> span = row.Span;
+    Ensure(span, 0, sizeof(ushort));
+    int count = BinaryPrimitives.ReadUInt16LittleEndian(span);
     if ((uint)ordinal >= (uint)count)
     {
       throw new ArgumentOutOfRangeException(nameof(ordinal));
@@ -538,8 +991,8 @@ internal sealed class MsSqlRowDecoder : ISqlRowDecoder
     int position = sizeof(ushort);
     for (int i = 0; i < count; i++)
     {
-      Ensure(row, position, sizeof(int));
-      int length = BinaryPrimitives.ReadInt32LittleEndian(row[position..]);
+      Ensure(span, position, sizeof(int));
+      int length = BinaryPrimitives.ReadInt32LittleEndian(span[position..]);
       position += sizeof(int);
       if (length < 0)
       {
@@ -551,7 +1004,7 @@ internal sealed class MsSqlRowDecoder : ISqlRowDecoder
         continue;
       }
 
-      Ensure(row, position, length);
+      Ensure(span, position, length);
       if (i == ordinal)
       {
         return new Field(row.Slice(position, length), IsNull: false);
@@ -593,10 +1046,97 @@ internal sealed class MsSqlRowDecoder : ISqlRowDecoder
     }
   }
 
-  private readonly ref struct Field(ReadOnlySpan<byte> value, bool IsNull)
-  {
-    internal ReadOnlySpan<byte> Value { get; } = value;
+  [MethodImpl(MethodImplOptions.AggressiveInlining)]
+  private static TTo Cast<TFrom, TTo>(TFrom value) =>
+    Unsafe.As<TFrom, TTo>(ref value);
 
-    internal bool IsNull { get; } = IsNull;
+  private static class TypedDecoder<T>
+  {
+    internal static readonly TypedDecoderKind Kind = ResolveTypedDecoder<T>();
+  }
+
+  private static TypedDecoderKind ResolveTypedDecoder<T>()
+  {
+    Type type = typeof(T);
+    if (type == typeof(bool)) return TypedDecoderKind.Boolean;
+    if (type == typeof(bool?)) return TypedDecoderKind.NullableBoolean;
+    if (type == typeof(short)) return TypedDecoderKind.Int16;
+    if (type == typeof(short?)) return TypedDecoderKind.NullableInt16;
+    if (type == typeof(int)) return TypedDecoderKind.Int32;
+    if (type == typeof(int?)) return TypedDecoderKind.NullableInt32;
+    if (type == typeof(long)) return TypedDecoderKind.Int64;
+    if (type == typeof(long?)) return TypedDecoderKind.NullableInt64;
+    if (type == typeof(float)) return TypedDecoderKind.Float;
+    if (type == typeof(float?)) return TypedDecoderKind.NullableFloat;
+    if (type == typeof(double)) return TypedDecoderKind.Double;
+    if (type == typeof(double?)) return TypedDecoderKind.NullableDouble;
+    if (type == typeof(decimal)) return TypedDecoderKind.Decimal;
+    if (type == typeof(decimal?)) return TypedDecoderKind.NullableDecimal;
+    if (type == typeof(string)) return TypedDecoderKind.String;
+    if (type == typeof(byte[])) return TypedDecoderKind.Bytes;
+    if (type == typeof(ReadOnlyMemory<byte>)) return TypedDecoderKind.ReadOnlyMemory;
+    if (type == typeof(ReadOnlyMemory<byte>?)) return TypedDecoderKind.NullableReadOnlyMemory;
+    if (type == typeof(Guid)) return TypedDecoderKind.Guid;
+    if (type == typeof(Guid?)) return TypedDecoderKind.NullableGuid;
+    if (type == typeof(DateOnly)) return TypedDecoderKind.DateOnly;
+    if (type == typeof(DateOnly?)) return TypedDecoderKind.NullableDateOnly;
+    if (type == typeof(TimeOnly)) return TypedDecoderKind.TimeOnly;
+    if (type == typeof(TimeOnly?)) return TypedDecoderKind.NullableTimeOnly;
+    if (type == typeof(DateTime)) return TypedDecoderKind.DateTime;
+    if (type == typeof(DateTime?)) return TypedDecoderKind.NullableDateTime;
+    if (type == typeof(DateTimeOffset)) return TypedDecoderKind.DateTimeOffset;
+    if (type == typeof(DateTimeOffset?)) return TypedDecoderKind.NullableDateTimeOffset;
+    if (type == typeof(JsonElement)) return TypedDecoderKind.JsonElement;
+    if (type == typeof(JsonElement?)) return TypedDecoderKind.NullableJsonElement;
+    if (type == typeof(object)) return TypedDecoderKind.Object;
+    if (type == typeof(object?[])) return TypedDecoderKind.Array;
+    if (type == typeof(byte)) return TypedDecoderKind.Byte;
+    if (type == typeof(byte?)) return TypedDecoderKind.NullableByte;
+    return TypedDecoderKind.Unsupported;
+  }
+
+  private enum TypedDecoderKind : byte
+  {
+    Unsupported,
+    Boolean,
+    NullableBoolean,
+    Int16,
+    NullableInt16,
+    Int32,
+    NullableInt32,
+    Int64,
+    NullableInt64,
+    Float,
+    NullableFloat,
+    Double,
+    NullableDouble,
+    Decimal,
+    NullableDecimal,
+    String,
+    Bytes,
+    ReadOnlyMemory,
+    NullableReadOnlyMemory,
+    Guid,
+    NullableGuid,
+    DateOnly,
+    NullableDateOnly,
+    TimeOnly,
+    NullableTimeOnly,
+    DateTime,
+    NullableDateTime,
+    DateTimeOffset,
+    NullableDateTimeOffset,
+    JsonElement,
+    NullableJsonElement,
+    Object,
+    Array,
+    Byte,
+    NullableByte,
+  }
+
+  private readonly record struct Field(
+    ReadOnlyMemory<byte> Value,
+    bool IsNull)
+  {
   }
 }

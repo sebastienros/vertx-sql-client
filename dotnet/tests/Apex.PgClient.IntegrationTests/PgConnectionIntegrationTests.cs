@@ -537,6 +537,41 @@ public sealed class PgConnectionIntegrationTests
   }
 
   [TestMethod]
+  public async Task BorrowedReaderReturnsOwnedByteMemory()
+  {
+    PostgreSqlContainer container = _container ??
+      throw new InvalidOperationException(
+        "The PostgreSQL container is not running.");
+    PgConnectOptions options = new()
+    {
+      Host = container.Hostname,
+      Port = container.GetMappedPublicPort(5432),
+      Database = "db",
+      Username = "user",
+      Password = "pass",
+    };
+
+    await using PgConnection connection =
+      await PgClient.ConnectAsync(options);
+    await using ISqlRowReader reader =
+      await connection.ExecuteReaderAsync(
+        """
+        SELECT decode('01', 'hex')
+        UNION ALL
+        SELECT decode('02', 'hex')
+        """);
+    Assert.IsTrue(await reader.ReadAsync());
+    ReadOnlyMemory<byte> first =
+      reader.Get<ReadOnlyMemory<byte>>(0);
+    Assert.IsTrue(await reader.ReadAsync());
+    ReadOnlyMemory<byte> second =
+      reader.Get<ReadOnlyMemory<byte>>(0);
+
+    CollectionAssert.AreEqual(new byte[] { 1 }, first.ToArray());
+    CollectionAssert.AreEqual(new byte[] { 2 }, second.ToArray());
+  }
+
+  [TestMethod]
   public async Task RepreparesInvalidatedCachedStatement()
   {
     PostgreSqlContainer container = _container ??
@@ -743,27 +778,106 @@ public sealed class PgConnectionIntegrationTests
 
   private static void AssertTypeValues(SqlRow row)
   {
+    Assert.IsTrue(row.GetBoolean("boolean_value"));
     Assert.IsTrue(row.Get<bool>("boolean_value"));
+    Assert.AreEqual((short)2, row.GetInt16("int2_value"));
     Assert.AreEqual((short)2, row.Get<short>("int2_value"));
+    Assert.AreEqual(3, row.GetInt32("int4_value"));
     Assert.AreEqual(3, row.Get<int>("int4_value"));
+    Assert.AreEqual(4L, row.GetInt64("int8_value"));
     Assert.AreEqual(4L, row.Get<long>("int8_value"));
+    Assert.AreEqual(1.5f, row.GetFloat("float4_value"));
     Assert.AreEqual(1.5f, row.Get<float>("float4_value"));
+    Assert.AreEqual(2.5d, row.GetDouble("float8_value"));
     Assert.AreEqual(2.5d, row.Get<double>("float8_value"));
+    Assert.AreEqual(
+      12345678901234567890.1234m,
+      row.GetDecimal("numeric_value"));
+    Assert.AreEqual(
+      12345678901234567890.1234m,
+      row.Get<decimal>("numeric_value"));
     Assert.AreEqual(
       "12345678901234567890.1234",
       row.Get<PgNumeric>("numeric_value").ToString());
     Assert.AreEqual(
       Guid.Parse("12345678-1234-5678-9012-123456789abc"),
+      row.GetGuid("uuid_value"));
+    Assert.AreEqual(
+      Guid.Parse("12345678-1234-5678-9012-123456789abc"),
       row.Get<Guid>("uuid_value"));
-    Assert.AreEqual(new DateOnly(2026, 8, 14), row.Get<DateOnly>("date_value"));
-    Assert.AreEqual(new TimeOnly(12, 34, 56, 123, 456), row.Get<TimeOnly>("time_value"));
+    Assert.AreEqual(
+      new DateOnly(2026, 8, 14),
+      row.GetDateOnly("date_value"));
+    Assert.AreEqual(
+      new DateOnly(2026, 8, 14),
+      row.Get<DateOnly>("date_value"));
+    Assert.AreEqual(
+      new TimeOnly(12, 34, 56, 123, 456),
+      row.GetTimeOnly("time_value"));
+    Assert.AreEqual(
+      new TimeOnly(12, 34, 56, 123, 456),
+      row.Get<TimeOnly>("time_value"));
+    Assert.AreEqual(
+      new DateTime(
+        2026,
+        8,
+        14,
+        12,
+        34,
+        56,
+        123,
+        456,
+        DateTimeKind.Unspecified),
+      row.GetDateTime("timestamp_value"));
+    Assert.AreEqual(
+      new DateTime(
+        2026,
+        8,
+        14,
+        12,
+        34,
+        56,
+        123,
+        456,
+        DateTimeKind.Unspecified),
+      row.Get<DateTime>("timestamp_value"));
+    Assert.AreEqual(
+      new DateTimeOffset(
+        2026,
+        8,
+        14,
+        12,
+        34,
+        56,
+        123,
+        456,
+        TimeSpan.Zero),
+      row.GetDateTimeOffset("timestamptz_value"));
+    Assert.AreEqual(
+      new DateTimeOffset(
+        2026,
+        8,
+        14,
+        12,
+        34,
+        56,
+        123,
+        456,
+        TimeSpan.Zero),
+      row.Get<DateTimeOffset>("timestamptz_value"));
     Assert.AreEqual(TimeSpan.FromHours(2), row.Get<PgTimeWithTimeZone>("timetz_value").Offset);
     Assert.AreEqual(
       new PgInterval(1, 2, 3, 4, 5, 6, 123456),
       row.Get<PgInterval>("interval_value"));
     CollectionAssert.AreEqual(
       new byte[] { 0, 1, 254, 255 },
+      row.GetBytes("bytea_value"));
+    CollectionAssert.AreEqual(
+      new byte[] { 0, 1, 254, 255 },
       row.Get<byte[]>("bytea_value"));
+    CollectionAssert.AreEqual(
+      new byte[] { 0, 1, 254, 255 },
+      row.Get<ReadOnlyMemory<byte>>("bytea_value").ToArray());
     Assert.IsTrue(row.Get<System.Text.Json.JsonElement>("json_value").GetProperty("ok").GetBoolean());
     Assert.AreEqual(new PgPoint(1.5, -2.25), row.Get<PgPoint>("point_value"));
     Assert.AreEqual(24, row.Get<PgInet>("inet_value").PrefixLength);

@@ -474,6 +474,36 @@ Vert.x JMH measured 3,093, 1,385, 614, and 216 batches/second at depths 1, 16, 6
 
 The next Apex pipelining optimization is a first-class reusable batch API that emits one protocol batch and returns compact batch results, instead of constructing one task, row set, and command lifecycle per query.
 
+### Typed field decoding
+
+BenchmarkDotNet ShortRun on the same Apple M4 Pro and .NET 10 environment measured the exact typed row decoder paths after separating them from object decoding:
+
+| Workload | Mean | Allocated |
+|---|---:|---:|
+| Binary `int4` to `Int32` | 2.914 ns | 0 B |
+| Binary `uuid` to `Guid` | 3.508 ns | 0 B |
+
+Allocation-focused unit tests also repeat specific and generic typed scalar getters 10,000 times after warmup and require zero thread allocations. Object-indexer access remains a separate path with scalar boxing caches.
+
+The follow-up generic dispatch pass resolves the target CLR type once per
+closed `T`, keeps common reference types on a short shared path, and uses
+driver-local typed decoding for PostgreSQL-specific values. A two-launch
+BenchmarkDotNet run with 5 warmups and 10 250-ms measurements compared the
+original page-backed implementation with the optimized dispatch:
+
+| Generic getter | Original | Optimized | Original allocation | Optimized allocation |
+|---|---:|---:|---:|---:|
+| Text `int4` to `Int32` | 15.73 ns | 8.255 ns | 0 B | 0 B |
+| Binary `int4` to `Int32` | 14.75 ns | 6.184 ns | 0 B | 0 B |
+| Text `uuid` to `Guid` | 34.98 ns | 20.966 ns | 152 B | 0 B |
+| Binary `uuid` to `Guid` | 16.87 ns | 8.550 ns | 32 B | 0 B |
+| Text `point` to `PgPoint` | 297.44 ns | 291.655 ns | 824 B | 768 B |
+| Binary `point` to `PgPoint` | 11.02 ns | 9.202 ns | 32 B | 0 B |
+
+The optimized generic binary paths retain a small dispatch cost versus
+specific getters: 6.184 ns versus 3.525 ns for `Int32`, and 8.550 ns
+versus 4.574 ns for `Guid`.
+
 ### Vert.x JMH
 
 JMH 1.37 used 3 warmups, 5 measurements, 2-second measurement iterations, and 2 forks:

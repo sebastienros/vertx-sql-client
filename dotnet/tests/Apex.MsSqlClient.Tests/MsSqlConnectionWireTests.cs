@@ -123,6 +123,39 @@ public sealed class MsSqlConnectionWireTests
   }
 
   [TestMethod]
+  public async Task BorrowedReaderCopiesReadOnlyMemoryValues()
+  {
+    TcpListener listener = new(IPAddress.Loopback, 0);
+    listener.Start();
+    int port = ((IPEndPoint)listener.LocalEndpoint).Port;
+    Task server = RunBinaryRowsServerAsync(
+      listener,
+      [1, 2, 3],
+      [4, 5, 6]);
+    try
+    {
+      await using MsSqlConnection connection = await MsSqlClient.ConnectAsync(
+        TestOptions(port));
+      await using ISqlRowReader reader =
+        await connection.ExecuteReaderAsync("SELECT value");
+
+      Assert.IsTrue(await reader.ReadAsync());
+      ReadOnlyMemory<byte> first = reader.Get<ReadOnlyMemory<byte>>(0);
+      Assert.IsTrue(await reader.ReadAsync());
+      ReadOnlyMemory<byte> second = reader.Get<ReadOnlyMemory<byte>>(0);
+
+      CollectionAssert.AreEqual(new byte[] { 1, 2, 3 }, first.ToArray());
+      CollectionAssert.AreEqual(new byte[] { 4, 5, 6 }, second.ToArray());
+      Assert.IsFalse(await reader.ReadAsync());
+      await server;
+    }
+    finally
+    {
+      listener.Stop();
+    }
+  }
+
+  [TestMethod]
   public async Task ConnectTimeoutIncludesStalledLoginResponse()
   {
     TcpListener listener = new(IPAddress.Loopback, 0);
@@ -494,6 +527,22 @@ public sealed class MsSqlConnectionWireTests
       default);
   }
 
+  private static async Task RunBinaryRowsServerAsync(
+    TcpListener listener,
+    params byte[][] values)
+  {
+    using TcpClient client = await listener.AcceptTcpClientAsync();
+    await using NetworkStream stream = client.GetStream();
+    await LoginAsync(stream);
+    TdsMessage query = await new TdsPacketReader(stream).ReadMessageAsync(default);
+    Assert.AreEqual(TdsMessageType.SqlBatch, query.Type);
+    using TdsPacketWriter writer = new(stream, 4096);
+    await writer.WriteMessageAsync(
+      TdsMessageType.TabularResult,
+      BuildBinaryResult(values),
+      default);
+  }
+
   private static async Task RunStalledLoginServerAsync(
     TcpListener listener,
     TaskCompletionSource loginReceived,
@@ -668,6 +717,27 @@ public sealed class MsSqlConnectionWireTests
     return response.WrittenMemory.ToArray();
   }
 
+  private static byte[] BuildBinaryResult(params byte[][] values)
+  {
+    ArrayBufferWriter<byte> response = new();
+    response.WriteByte(TdsTokenType.ColumnMetadata);
+    response.WriteUInt16LittleEndian(1);
+    response.WriteUInt32LittleEndian(0);
+    response.WriteUInt16LittleEndian(0);
+    response.WriteByte(TdsDataType.BigVarBinary);
+    response.WriteUInt16LittleEndian(8000);
+    response.WriteBVarChar("value");
+    foreach (byte[] value in values)
+    {
+      response.WriteByte(TdsTokenType.Row);
+      response.WriteUInt16LittleEndian(checked((ushort)value.Length));
+      response.Write(value);
+    }
+
+    WriteDone(response, 0);
+    return response.WrittenMemory.ToArray();
+  }
+
   private static byte[] BuildPreparedIntResult(
     int value,
     int? preparedHandle)
@@ -817,7 +887,7 @@ public sealed class MsSqlConnectionWireTests
 
   private static byte[] BuildJsonResult(string json)
   {
-    byte[] value = System.Text.Encoding.Unicode.GetBytes(json);
+    byte[] value = System.Text.Encoding.UTF8.GetBytes(json);
     ArrayBufferWriter<byte> response = new();
     response.WriteByte(TdsTokenType.ColumnMetadata);
     response.WriteUInt16LittleEndian(1);

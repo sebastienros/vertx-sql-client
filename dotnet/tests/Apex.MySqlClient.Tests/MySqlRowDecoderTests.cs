@@ -269,7 +269,7 @@ public sealed class MySqlRowDecoderTests
   }
 
   [TestMethod]
-  public void UnsignedOverflowThrowsWhenReadAsSignedType()
+  public void UnsignedMetadataCannotBeReadAsSignedType()
   {
     MySqlColumnMetadata[] columns = [Column("value", MySqlType.Short, unsigned: true)];
     MySqlRowDecoder decoder = CreateDecoder(columns, binary: true);
@@ -277,12 +277,12 @@ public sealed class MySqlRowDecoderTests
     builder.WriteInt16(0, unchecked((short)50_000));
     byte[] row = builder.Build();
 
-    Assert.ThrowsExactly<OverflowException>(() => decoder.Decode<short>(row, 0));
+    Assert.ThrowsExactly<InvalidCastException>(() => decoder.Decode<short>(row, 0));
     Assert.AreEqual((ushort)50_000, decoder.Decode<ushort>(row, 0));
   }
 
   [TestMethod]
-  public void UnsignedLongLongAboveInt64MaxThrowsWhenReadAsSignedLong()
+  public void UnsignedLongLongCannotBeReadAsSignedLong()
   {
     MySqlColumnMetadata[] columns = [Column("value", MySqlType.LongLong, unsigned: true)];
     MySqlRowDecoder decoder = CreateDecoder(columns, binary: true);
@@ -290,7 +290,7 @@ public sealed class MySqlRowDecoderTests
     builder.WriteInt64(0, unchecked((long)ulong.MaxValue));
     byte[] row = builder.Build();
 
-    Assert.ThrowsExactly<OverflowException>(() => decoder.Decode<long>(row, 0));
+    Assert.ThrowsExactly<InvalidCastException>(() => decoder.Decode<long>(row, 0));
     Assert.AreEqual(ulong.MaxValue, decoder.Decode<ulong>(row, 0));
   }
 
@@ -376,7 +376,9 @@ public sealed class MySqlRowDecoderTests
     Assert.AreEqual(1, json.GetProperty("a").GetInt32());
     Assert.IsInstanceOfType<JsonElement>(decoder.DecodeObject(row, 0));
     Assert.IsTrue(decoder.Decode<bool>(row, 1));
+    Assert.IsTrue(decoder.Decode<bool?>(row, 1));
     Assert.AreEqual(42, decoder.Decode<int>(row, 2));
+    Assert.AreEqual(42, decoder.Decode<int?>(row, 2));
   }
 
   [TestMethod]
@@ -413,6 +415,161 @@ public sealed class MySqlRowDecoderTests
     Assert.AreSame(firstValue, secondValue);
   }
 
+  [TestMethod]
+  public void CommonTypedDecodersRequireCompatibleMetadata()
+  {
+    MySqlColumnMetadata[] columns =
+    [
+      Column("signed", MySqlType.Long),
+      Column("unsigned", MySqlType.Long, unsigned: true),
+      Column("text", MySqlType.VarString),
+    ];
+    MySqlRowDecoder decoder = CreateDecoder(columns, binary: false);
+    byte[] row = BuildTextRow("42", "42", "42");
+
+    Assert.AreEqual(42, decoder.DecodeInt32(row, 0, decoder.Columns[0]));
+    Assert.AreEqual(42L, decoder.DecodeInt64(row, 0, decoder.Columns[0]));
+    Assert.ThrowsExactly<InvalidCastException>(
+      () => decoder.DecodeInt32(row, 1, decoder.Columns[1]));
+    Assert.ThrowsExactly<InvalidCastException>(
+      () => decoder.DecodeInt32(row, 2, decoder.Columns[2]));
+
+    SqlColumn wrongFormat = decoder.Columns[0] with { Format = SqlDataFormat.Binary };
+    Assert.ThrowsExactly<InvalidCastException>(
+      () => decoder.DecodeInt32(row, 0, wrongFormat));
+  }
+
+  [TestMethod]
+  public void TypedDecodersPreserveCompatibleNumericAndTemporalConversions()
+  {
+    MySqlColumnMetadata[] columns =
+    [
+      Column("float", MySqlType.Float),
+      Column("datetime", MySqlType.DateTime),
+      Column("date", MySqlType.Date),
+    ];
+    MySqlRowDecoder decoder = CreateDecoder(columns, binary: false);
+    byte[] row = BuildTextRow("1.5", "2026-08-14 12:34:56", "2026-08-14");
+
+    Assert.AreEqual(1.5d, decoder.DecodeDouble(row, 0, decoder.Columns[0]));
+    Assert.AreEqual(
+      new DateOnly(2026, 8, 14),
+      decoder.DecodeDateOnly(row, 1, decoder.Columns[1]));
+    Assert.AreEqual(
+      new TimeOnly(12, 34, 56),
+      decoder.DecodeTimeOnly(row, 1, decoder.Columns[1]));
+    Assert.AreEqual(
+      new DateTime(2026, 8, 14),
+      decoder.DecodeDateTime(row, 2, decoder.Columns[2]));
+  }
+
+  [TestMethod]
+  public void NullableAndObjectDecodersHandleNullWithoutScalarBoxing()
+  {
+    MySqlColumnMetadata[] columns =
+    [
+      Column("number", MySqlType.Long),
+      Column("text", MySqlType.VarString),
+    ];
+    MySqlRowDecoder decoder = CreateDecoder(columns, binary: false);
+    byte[] row = BuildTextRowRaw([null, null]);
+
+    Assert.IsNull(decoder.DecodeNullableInt32(row, 0, decoder.Columns[0]));
+    Assert.IsNull(decoder.DecodeString(row, 1, decoder.Columns[1]));
+    Assert.IsNull(decoder.DecodeObject(row, 0, decoder.Columns[0]));
+    Assert.ThrowsExactly<InvalidCastException>(
+      () => decoder.DecodeInt32(row, 0, decoder.Columns[0]));
+  }
+
+  [TestMethod]
+  public void GenericNullableDecodersAcceptPhysicalAndNullTypedValues()
+  {
+    MySqlColumnMetadata[] columns =
+    [
+      Column("null_type", MySqlType.Null),
+      Column("json", MySqlType.Json),
+    ];
+    MySqlRowDecoder decoder = CreateDecoder(columns, binary: false);
+    byte[] row = BuildTextRowRaw([null, null]);
+
+    Assert.IsNull(decoder.Decode<int?>(
+      row, 0, decoder.Columns[0], copyReadOnlyMemory: false));
+    Assert.IsNull(decoder.Decode<string>(
+      row, 0, decoder.Columns[0], copyReadOnlyMemory: false));
+    Assert.IsNull(decoder.Decode<int?>(
+      row, 1, decoder.Columns[1], copyReadOnlyMemory: false));
+  }
+
+  [TestMethod]
+  public void ReadOnlyMemoryCanBorrowBufferedRowsOrCopyBorrowedRows()
+  {
+    MySqlColumnMetadata[] columns = [BinaryColumn("value", MySqlType.Blob)];
+    MySqlRowDecoder decoder = CreateDecoder(columns, binary: false);
+    byte[] row = BuildTextRowRaw([[1, 2, 3]]);
+    SqlColumn column = decoder.Columns[0];
+
+    ReadOnlyMemory<byte> borrowed =
+      decoder.Decode<ReadOnlyMemory<byte>>(row, 0, column, copyReadOnlyMemory: false);
+    ReadOnlyMemory<byte> copied =
+      decoder.Decode<ReadOnlyMemory<byte>>(row, 0, column, copyReadOnlyMemory: true);
+
+    row[^1] = 9;
+    CollectionAssert.AreEqual(new byte[] { 1, 2, 9 }, borrowed.ToArray());
+    CollectionAssert.AreEqual(new byte[] { 1, 2, 3 }, copied.ToArray());
+  }
+
+  [TestMethod]
+  public void CommonScalarDecodeDoesNotAllocateAfterSetup()
+  {
+    MySqlColumnMetadata[] columns = [Column("value", MySqlType.Long)];
+    MySqlRowDecoder decoder = CreateDecoder(columns, binary: false);
+    byte[] row = BuildTextRow("42");
+    SqlColumn column = decoder.Columns[0];
+    _ = decoder.Decode<int>(row, 0, column, copyReadOnlyMemory: false);
+
+    long before = GC.GetAllocatedBytesForCurrentThread();
+    int result = 0;
+    for (int i = 0; i < 1_000; i++)
+    {
+      result += decoder.Decode<int>(row, 0, column, copyReadOnlyMemory: false);
+    }
+
+    long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+    Assert.AreEqual(42_000, result);
+    Assert.AreEqual(0L, allocated);
+  }
+
+  [TestMethod]
+  public void GenericDispatchPreservesProviderSpecificTypes()
+  {
+    const string text =
+      "12345678901234567890123456789012345.123456789012345678901234567890";
+    MySqlColumnMetadata[] columns =
+    [
+      Column("decimal", MySqlType.NewDecimal),
+      Column("duration", MySqlType.Time),
+      Column("bits", MySqlType.Bit),
+    ];
+    MySqlRowDecoder decoder = CreateDecoder(columns, binary: false);
+    byte[] row = BuildTextRowRaw(
+      [
+        Encoding.UTF8.GetBytes(text),
+        "25:00:00"u8.ToArray(),
+        [0x01, 0x02],
+      ]);
+
+    MySqlDecimal decimalValue =
+      decoder.Decode<MySqlDecimal>(row, 0, decoder.Columns[0], copyReadOnlyMemory: false);
+    TimeSpan duration =
+      decoder.Decode<TimeSpan>(row, 1, decoder.Columns[1], copyReadOnlyMemory: false);
+    ulong bits =
+      decoder.Decode<ulong>(row, 2, decoder.Columns[2], copyReadOnlyMemory: false);
+
+    Assert.AreEqual(text, decimalValue.ToString());
+    Assert.AreEqual(TimeSpan.FromHours(25), duration);
+    Assert.AreEqual(0x0102ul, bits);
+  }
+
   private static MySqlRowDecoder CreateDecoder(
     MySqlColumnMetadata[] columns,
     bool binary,
@@ -434,6 +591,19 @@ public sealed class MySqlRowDecoderTests
       type,
       unsigned ? MySqlColumnFlags.Unsigned : MySqlColumnFlags.None,
       MySqlProtocol.Utf8Mb4Collation,
+      0,
+      0);
+
+  private static MySqlColumnMetadata BinaryColumn(string name, MySqlType type) =>
+    new(
+      name,
+      name,
+      string.Empty,
+      string.Empty,
+      string.Empty,
+      type,
+      MySqlColumnFlags.Binary,
+      MySqlProtocol.BinaryCollation,
       0,
       0);
 

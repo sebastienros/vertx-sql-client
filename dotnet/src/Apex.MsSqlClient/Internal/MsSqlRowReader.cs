@@ -185,7 +185,7 @@ internal sealed class MsSqlRowReader : ISqlRowReader, IValueTaskSource<bool>
   public bool IsNull(int ordinal)
   {
     EnsureCurrent();
-    return _connection.RowDecoder.IsNull(_current.WrittenSpan, ordinal);
+    return _connection.RowDecoder.IsNull(_current.WrittenMemory, ordinal);
   }
 
   public int GetOrdinal(string name)
@@ -205,38 +205,130 @@ internal sealed class MsSqlRowReader : ISqlRowReader, IValueTaskSource<bool>
   public T Get<T>(int ordinal)
   {
     EnsureCurrent();
-    return _connection.RowDecoder.Decode<T>(
-      _current.WrittenSpan,
+    return SqlRowDecoder.Decode<T>(
+      _connection.RowDecoder,
+      _current.WrittenMemory,
+      ordinal,
+      _columns[ordinal],
+      copyReadOnlyMemory: true);
+  }
+
+  public bool GetBoolean(int ordinal)
+  {
+    EnsureCurrent();
+    return _connection.RowDecoder.DecodeBoolean(
+      _current.WrittenMemory,
       ordinal,
       _columns[ordinal]);
   }
 
-  public bool GetBoolean(int ordinal) => Get<bool>(ordinal);
+  public short GetInt16(int ordinal)
+  {
+    EnsureCurrent();
+    return _connection.RowDecoder.DecodeInt16(
+      _current.WrittenMemory,
+      ordinal,
+      _columns[ordinal]);
+  }
 
-  public short GetInt16(int ordinal) => Get<short>(ordinal);
+  public int GetInt32(int ordinal)
+  {
+    EnsureCurrent();
+    return _connection.RowDecoder.DecodeInt32(
+      _current.WrittenMemory,
+      ordinal,
+      _columns[ordinal]);
+  }
 
-  public int GetInt32(int ordinal) => Get<int>(ordinal);
+  public long GetInt64(int ordinal)
+  {
+    EnsureCurrent();
+    return _connection.RowDecoder.DecodeInt64(
+      _current.WrittenMemory,
+      ordinal,
+      _columns[ordinal]);
+  }
 
-  public long GetInt64(int ordinal) => Get<long>(ordinal);
+  public float GetFloat(int ordinal)
+  {
+    EnsureCurrent();
+    return _connection.RowDecoder.DecodeFloat(
+      _current.WrittenMemory,
+      ordinal,
+      _columns[ordinal]);
+  }
 
-  public float GetFloat(int ordinal) => Get<float>(ordinal);
+  public double GetDouble(int ordinal)
+  {
+    EnsureCurrent();
+    return _connection.RowDecoder.DecodeDouble(
+      _current.WrittenMemory,
+      ordinal,
+      _columns[ordinal]);
+  }
 
-  public double GetDouble(int ordinal) => Get<double>(ordinal);
+  public string GetString(int ordinal)
+  {
+    EnsureCurrent();
+    return _connection.RowDecoder.DecodeString(
+      _current.WrittenMemory,
+      ordinal,
+      _columns[ordinal])!;
+  }
 
-  public string GetString(int ordinal) => Get<string>(ordinal);
+  public Guid GetGuid(int ordinal)
+  {
+    EnsureCurrent();
+    return _connection.RowDecoder.DecodeGuid(
+      _current.WrittenMemory,
+      ordinal,
+      _columns[ordinal]);
+  }
 
-  public Guid GetGuid(int ordinal) => Get<Guid>(ordinal);
+  public DateOnly GetDateOnly(int ordinal)
+  {
+    EnsureCurrent();
+    return _connection.RowDecoder.DecodeDateOnly(
+      _current.WrittenMemory,
+      ordinal,
+      _columns[ordinal]);
+  }
 
-  public DateOnly GetDateOnly(int ordinal) => Get<DateOnly>(ordinal);
+  public TimeOnly GetTimeOnly(int ordinal)
+  {
+    EnsureCurrent();
+    return _connection.RowDecoder.DecodeTimeOnly(
+      _current.WrittenMemory,
+      ordinal,
+      _columns[ordinal]);
+  }
 
-  public TimeOnly GetTimeOnly(int ordinal) => Get<TimeOnly>(ordinal);
+  public DateTime GetDateTime(int ordinal)
+  {
+    EnsureCurrent();
+    return _connection.RowDecoder.DecodeDateTime(
+      _current.WrittenMemory,
+      ordinal,
+      _columns[ordinal]);
+  }
 
-  public DateTime GetDateTime(int ordinal) => Get<DateTime>(ordinal);
+  public DateTimeOffset GetDateTimeOffset(int ordinal)
+  {
+    EnsureCurrent();
+    return _connection.RowDecoder.DecodeDateTimeOffset(
+      _current.WrittenMemory,
+      ordinal,
+      _columns[ordinal]);
+  }
 
-  public DateTimeOffset GetDateTimeOffset(int ordinal) =>
-    Get<DateTimeOffset>(ordinal);
-
-  public byte[] GetBytes(int ordinal) => Get<byte[]>(ordinal);
+  public byte[] GetBytes(int ordinal)
+  {
+    EnsureCurrent();
+    return _connection.RowDecoder.DecodeBytes(
+      _current.WrittenMemory,
+      ordinal,
+      _columns[ordinal])!;
+  }
 
   public async ValueTask DisposeAsync()
   {

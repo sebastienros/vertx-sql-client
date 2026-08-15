@@ -97,6 +97,16 @@ public sealed class MySqlConnectOptionsTests
   }
 
   [TestMethod]
+  public void UriQueryUsesSharedDecodingWhileRetainingMySqlAliases()
+  {
+    MySqlConnectOptions options = MySqlConnectOptions.Parse(
+      "mysql://root@db/app?usefoundrows=true&application+name=Apex%20MySQL");
+
+    Assert.IsFalse(options.UseAffectedRows);
+    Assert.AreEqual("Apex MySQL", options.ConnectionAttributes["application name"]);
+  }
+
+  [TestMethod]
   public void ParsesKeywordConnectionString()
   {
     // MySqlConnectionStringParser uses SQL-style quote doubling to escape an embedded quote,

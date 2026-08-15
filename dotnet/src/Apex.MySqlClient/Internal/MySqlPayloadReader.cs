@@ -23,6 +23,8 @@ internal ref struct MySqlPayloadReader
 
   internal readonly int Remaining => _payload.Length - _position;
 
+  internal readonly int Position => _position;
+
   internal byte ReadByte()
   {
     Ensure(sizeof(byte));
