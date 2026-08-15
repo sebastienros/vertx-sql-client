@@ -38,6 +38,16 @@
           "System.Security.Cryptography.Pkcs": "9.0.13"
         }
       },
+      "MySqlConnector": {
+        "type": "Direct",
+        "requested": "[2.6.1, )",
+        "resolved": "2.6.1",
+        "contentHash": "MzNSfnHWBc0Mo3zVbYxG+556zuex9obs8NYtwcPCwFahel40e49stH+osjX4k/doEHp4LT/zTtGdax4nlGWhcw==",
+        "dependencies": {
+          "Microsoft.Extensions.DependencyInjection.Abstractions": "8.0.2",
+          "Microsoft.Extensions.Logging.Abstractions": "8.0.2"
+        }
+      },
       "Npgsql": {
         "type": "Direct",
         "requested": "[10.0.3, )",
@@ -325,6 +335,12 @@
         "contentHash": "t8S9IDpjJKsLpLkeBdW8cWtcPyYqrGu93Dej1RO6WwuL/lkFSqWlan3rMJfortqz1mRIh+sys2AFsSA6jWJ3Jg=="
       },
       "apex.mssqlclient": {
+        "type": "Project",
+        "dependencies": {
+          "Apex.SqlClient": "[0.1.0-preview.1, )"
+        }
+      },
+      "apex.mysqlclient": {
         "type": "Project",
         "dependencies": {
           "Apex.SqlClient": "[0.1.0-preview.1, )"

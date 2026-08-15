@@ -11,9 +11,29 @@ using Apex.MsSqlClient;
 using Apex.PgClient;
 using Apex.SqlClient;
 using Microsoft.Data.SqlClient;
+using MySqlConnector;
 using Npgsql;
+using ApexMySql = Apex.MySqlClient;
 
-string driver = args.ElementAtOrDefault(0) ?? "apex";
+string? requestedDatabase = Environment.GetEnvironmentVariable("APEX_BENCH_DATABASE");
+string driver = args.ElementAtOrDefault(0) ??
+  (requestedDatabase?.ToLowerInvariant() switch
+  {
+    "mysql" => "apex-mysql",
+    "mssql" or "sqlserver" => "apex-mssql",
+    _ => "apex",
+  });
+string database = requestedDatabase?.ToLowerInvariant() switch
+{
+  "sqlserver" => "mssql",
+  { } selected => selected,
+  _ => driver.ToLowerInvariant() switch
+  {
+    "apex-mysql" or "mysqlconnector" => "mysql",
+    "apex-mssql" or "microsoft-data-sqlclient" => "mssql",
+    _ => "postgres",
+  },
+};
 string workload =
   Environment.GetEnvironmentVariable("APEX_BENCH_WORKLOAD") ?? "query";
 if (workload is not ("query" or "stream100" or "borrowed100" or "pipeline" or "batch" or "string100"))
@@ -33,11 +53,14 @@ TimeSpan warmup = TimeSpan.FromSeconds(double.Parse(
   Environment.GetEnvironmentVariable("APEX_BENCH_WARMUP_SECONDS") ?? "2"));
 TimeSpan duration = TimeSpan.FromSeconds(double.Parse(
   Environment.GetEnvironmentVariable("APEX_BENCH_DURATION_SECONDS") ?? "10"));
-bool sqlServer = driver.Equals("apex-mssql", StringComparison.OrdinalIgnoreCase) ||
-  driver.Equals("microsoft-data-sqlclient", StringComparison.OrdinalIgnoreCase);
-string connectionVariable = sqlServer
-  ? "APEX_MSSQL_CONNECTION_STRING"
-  : "APEX_PG_CONNECTION_STRING";
+string connectionVariable = database switch
+{
+  "postgres" => "APEX_PG_CONNECTION_STRING",
+  "mysql" => "APEX_MYSQL_CONNECTION_STRING",
+  "mssql" or "sqlserver" => "APEX_MSSQL_CONNECTION_STRING",
+  _ => throw new ArgumentException(
+    $"Unknown database '{database}'. Use 'postgres', 'mysql', or 'mssql'."),
+};
 string connectionString =
   Environment.GetEnvironmentVariable(connectionVariable) ??
   throw new InvalidOperationException($"Set {connectionVariable}.");
@@ -45,6 +68,7 @@ string connectionString =
 IQueryRunner[] runners = await Task.WhenAll(
   Enumerable.Range(0, concurrency)
     .Select(_ => CreateRunnerAsync(
+      database,
       driver,
       workload,
       fetchSize,
@@ -144,37 +168,50 @@ static async Task RunWorkerAsync(
 }
 
 static ValueTask<IQueryRunner> CreateRunnerAsync(
+  string database,
   string driver,
   string workload,
   int fetchSize,
   int rowCount,
   int pipelineDepth,
   string connectionString) =>
-  driver.ToLowerInvariant() switch
+  (database, driver.ToLowerInvariant()) switch
   {
-    "apex" => WrapAsync(ApexQueryRunner.CreateAsync(
+    ("postgres", "apex") => WrapAsync(ApexQueryRunner.CreateAsync(
       workload,
       fetchSize,
       rowCount,
       pipelineDepth,
       connectionString)),
-    "npgsql" => WrapAsync(NpgsqlQueryRunner.CreateAsync(
+    ("postgres", "npgsql") => WrapAsync(NpgsqlQueryRunner.CreateAsync(
       workload,
       rowCount,
       pipelineDepth,
       connectionString)),
-    "apex-mssql" => WrapAsync(ApexMsSqlQueryRunner.CreateAsync(
+    ("mysql", "apex-mysql") => WrapAsync(ApexMySqlQueryRunner.CreateAsync(
       workload,
       fetchSize,
       rowCount,
       pipelineDepth,
       connectionString)),
-    "microsoft-data-sqlclient" => WrapAsync(MicrosoftMsSqlQueryRunner.CreateAsync(
+    ("mysql", "mysqlconnector") => WrapAsync(MySqlConnectorQueryRunner.CreateAsync(
       workload,
       rowCount,
       pipelineDepth,
       connectionString)),
-    _ => throw new ArgumentException($"Unknown driver '{driver}'."),
+    ("mssql", "apex-mssql") => WrapAsync(ApexMsSqlQueryRunner.CreateAsync(
+      workload,
+      fetchSize,
+      rowCount,
+      pipelineDepth,
+      connectionString)),
+    ("mssql", "microsoft-data-sqlclient") => WrapAsync(MicrosoftMsSqlQueryRunner.CreateAsync(
+      workload,
+      rowCount,
+      pipelineDepth,
+      connectionString)),
+    _ => throw new ArgumentException(
+      $"Unknown driver '{driver}' for database '{database}'."),
   };
 
 static async ValueTask<IQueryRunner> WrapAsync<T>(ValueTask<T> runner)
@@ -740,6 +777,291 @@ internal sealed class MicrosoftMsSqlQueryRunner(
     await batchCommand.DisposeAsync();
     await connection.DisposeAsync();
   }
+}
+
+internal sealed class ApexMySqlQueryRunner(
+  ApexMySql.MySqlConnection connection,
+  string workload,
+  int fetchSize,
+  string streamSql,
+  int rowCount,
+  long expectedSum,
+  int pipelineDepth,
+  ISqlPreparedStatement? pipelineStatement) : IQueryRunner
+{
+  public static async ValueTask<ApexMySqlQueryRunner> CreateAsync(
+    string workload,
+    int fetchSize,
+    int rowCount,
+    int pipelineDepth,
+    string connectionString)
+  {
+    MySqlConnectionStringBuilder builder = new(connectionString);
+    string username = string.IsNullOrEmpty(builder.UserID)
+      ? throw new InvalidOperationException("Connection string requires UserID.")
+      : builder.UserID;
+    int stringCacheCapacity = int.Parse(
+      Environment.GetEnvironmentVariable("APEX_BENCH_STRING_CACHE_CAPACITY") ??
+      "1024");
+    ApexMySql.MySqlConnection connection = await ApexMySql.MySqlClient.ConnectAsync(
+      new ApexMySql.MySqlConnectOptions
+      {
+        Host = string.IsNullOrEmpty(builder.Server)
+          ? throw new InvalidOperationException("Connection string requires Server.")
+          : builder.Server,
+        Port = (int)builder.Port,
+        Database = builder.Database,
+        Username = username,
+        Password = builder.Password,
+        PipeliningLimit = 256,
+        StringCacheCapacity = stringCacheCapacity,
+      });
+    ISqlPreparedStatement? pipelineStatement = workload is "pipeline" or "batch"
+      ? await connection.PrepareAsync("SELECT CAST(1 AS SIGNED)")
+      : null;
+    return new ApexMySqlQueryRunner(
+      connection,
+      workload,
+      fetchSize,
+      BuildSequenceSql(rowCount, asString: workload == "string100"),
+      rowCount,
+      checked((long)rowCount * (rowCount + 1) / 2),
+      pipelineDepth,
+      pipelineStatement);
+  }
+
+  public int OperationsPerInvocation =>
+    workload is "pipeline" or "batch" ? pipelineDepth : 1;
+
+  public async ValueTask QueryAsync(CancellationToken cancellationToken)
+  {
+    if (workload is "pipeline" or "batch")
+    {
+      Task<SqlRowSet>[] pending = new Task<SqlRowSet>[pipelineDepth];
+      for (int i = 0; i < pending.Length; i++)
+      {
+        pending[i] = pipelineStatement!.QueryAsync(
+          cancellationToken: CancellationToken.None).AsTask();
+      }
+
+      SqlRowSet[] results = await Task.WhenAll(pending);
+      if (results.Any(static rows => rows[0].Get<long>(0) != 1L))
+      {
+        throw new InvalidOperationException("Unexpected Apex pipeline result.");
+      }
+    }
+    else if (workload == "borrowed100")
+    {
+      long sum = 0;
+      await using ISqlRowReader reader =
+        await connection.ExecuteReaderAsync(streamSql, cancellationToken: cancellationToken);
+      while (await reader.ReadAsync(cancellationToken))
+      {
+        sum += reader.GetInt64(0);
+      }
+
+      if (sum != expectedSum)
+      {
+        throw new InvalidOperationException($"Unexpected borrowed-reader sum {sum}.");
+      }
+    }
+    else if (workload == "stream100")
+    {
+      long sum = 0;
+      await foreach (SqlRow row in connection.StreamAsync(
+                       streamSql,
+                       fetchSize: fetchSize,
+                       cancellationToken: cancellationToken))
+      {
+        sum += row.GetInt64(0);
+      }
+
+      if (sum != expectedSum)
+      {
+        throw new InvalidOperationException($"Unexpected stream sum {sum}.");
+      }
+    }
+    else if (workload == "string100")
+    {
+      int count = 0;
+      await foreach (SqlRow row in connection.StreamAsync(
+                       streamSql,
+                       fetchSize: fetchSize,
+                       cancellationToken: cancellationToken))
+      {
+        if (row.GetString(0) != "repeated-value")
+        {
+          throw new InvalidOperationException("Unexpected string value.");
+        }
+
+        count++;
+      }
+
+      if (count != rowCount)
+      {
+        throw new InvalidOperationException($"Unexpected row count {count}.");
+      }
+    }
+    else
+    {
+      _ = await connection.QueryAsync("SELECT CAST(1 AS SIGNED)", cancellationToken);
+    }
+  }
+
+  public async ValueTask DisposeAsync()
+  {
+    if (pipelineStatement is not null)
+    {
+      await pipelineStatement.DisposeAsync();
+    }
+
+    await connection.DisposeAsync();
+  }
+
+  private static string BuildSequenceSql(int rowCount, bool asString) =>
+    asString
+      ? $"WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < {rowCount}) " +
+        "SELECT 'repeated-value' FROM seq"
+      : $"WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < {rowCount}) " +
+        "SELECT CAST(n AS SIGNED) FROM seq";
+}
+
+/// <summary>
+/// Runs the shared workload set against MySqlConnector. MySqlConnector does not permit
+/// concurrent commands on one connection, so its closest supported equivalent to pipelining is
+/// one reusable <see cref="MySqlBatch"/> containing the same number of prepared commands,
+/// matching the PostgreSQL/Npgsql comparison.
+/// </summary>
+internal sealed class MySqlConnectorQueryRunner(
+  MySqlConnection connection,
+  string workload,
+  string streamSql,
+  int rowCount,
+  long expectedSum,
+  int pipelineDepth,
+  MySqlBatch? pipelineBatch) : IQueryRunner
+{
+  public static async ValueTask<MySqlConnectorQueryRunner> CreateAsync(
+    string workload,
+    int rowCount,
+    int pipelineDepth,
+    string connectionString)
+  {
+    MySqlConnection connection = new(connectionString);
+    await connection.OpenAsync();
+    MySqlBatch? pipelineBatch = null;
+    if (workload is "pipeline" or "batch")
+    {
+      pipelineBatch = new MySqlBatch(connection);
+      for (int i = 0; i < pipelineDepth; i++)
+      {
+        pipelineBatch.BatchCommands.Add(
+          new MySqlBatchCommand("SELECT CAST(1 AS SIGNED)"));
+      }
+
+      await pipelineBatch.PrepareAsync();
+    }
+
+    return new MySqlConnectorQueryRunner(
+      connection,
+      workload,
+      BuildSequenceSql(rowCount, asString: workload == "string100"),
+      rowCount,
+      checked((long)rowCount * (rowCount + 1) / 2),
+      pipelineDepth,
+      pipelineBatch);
+  }
+
+  public int OperationsPerInvocation =>
+    workload is "pipeline" or "batch" ? pipelineDepth : 1;
+
+  public async ValueTask QueryAsync(CancellationToken cancellationToken)
+  {
+    if (workload is "pipeline" or "batch")
+    {
+      await using MySqlDataReader reader =
+        await pipelineBatch!.ExecuteReaderAsync(CancellationToken.None);
+      int count = 0;
+      do
+      {
+        if (!await reader.ReadAsync(CancellationToken.None) ||
+            reader.GetInt64(0) != 1L)
+        {
+          throw new InvalidOperationException("Unexpected MySqlConnector pipeline result.");
+        }
+
+        count++;
+      }
+      while (await reader.NextResultAsync(CancellationToken.None));
+
+      if (count != pipelineDepth)
+      {
+        throw new InvalidOperationException(
+          $"Expected {pipelineDepth} MySqlConnector results but received {count}.");
+      }
+    }
+    else if (workload is "stream100" or "borrowed100")
+    {
+      await using MySqlCommand command =
+        new(streamSql, connection);
+      await using MySqlDataReader reader =
+        await command.ExecuteReaderAsync(cancellationToken);
+      long sum = 0;
+      while (await reader.ReadAsync(cancellationToken))
+      {
+        sum += reader.GetInt64(0);
+      }
+
+      if (sum != expectedSum)
+      {
+        throw new InvalidOperationException($"Unexpected stream sum {sum}.");
+      }
+    }
+    else if (workload == "string100")
+    {
+      await using MySqlCommand command =
+        new(streamSql, connection);
+      await using MySqlDataReader reader =
+        await command.ExecuteReaderAsync(cancellationToken);
+      int count = 0;
+      while (await reader.ReadAsync(cancellationToken))
+      {
+        if (reader.GetString(0) != "repeated-value")
+        {
+          throw new InvalidOperationException("Unexpected string value.");
+        }
+
+        count++;
+      }
+
+      if (count != rowCount)
+      {
+        throw new InvalidOperationException($"Unexpected row count {count}.");
+      }
+    }
+    else
+    {
+      await using MySqlCommand command = new("SELECT CAST(1 AS SIGNED)", connection);
+      _ = await command.ExecuteScalarAsync(cancellationToken);
+    }
+  }
+
+  public async ValueTask DisposeAsync()
+  {
+    if (pipelineBatch is not null)
+    {
+      await pipelineBatch.DisposeAsync();
+    }
+
+    await connection.DisposeAsync();
+  }
+
+  private static string BuildSequenceSql(int rowCount, bool asString) =>
+    asString
+      ? $"WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < {rowCount}) " +
+        "SELECT 'repeated-value' FROM seq"
+      : $"WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < {rowCount}) " +
+        "SELECT CAST(n AS SIGNED) FROM seq";
 }
 
 internal sealed record HarnessResult(

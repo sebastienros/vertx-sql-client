@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Apex.MsSqlClient\Apex.MsSqlClient.csproj" />
+    <ProjectReference Include="..\..\src\Apex.MySqlClient\Apex.MySqlClient.csproj" />
     <ProjectReference Include="..\..\src\Apex.PgClient\Apex.PgClient.csproj" />
   </ItemGroup>
 

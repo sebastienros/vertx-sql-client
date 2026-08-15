@@ -3,12 +3,14 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Apex.MsSqlClient\Apex.MsSqlClient.csproj" />
     <ProjectReference Include="..\..\src\Apex.PgClient\Apex.PgClient.csproj" />
+    <ProjectReference Include="..\..\src\Apex.MySqlClient\Apex.MySqlClient.csproj" />
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="BenchmarkDotNet" />
     <PackageReference Include="Microsoft.Data.SqlClient" />
     <PackageReference Include="Npgsql" />
+    <PackageReference Include="MySqlConnector" />
   </ItemGroup>
 
   <PropertyGroup>

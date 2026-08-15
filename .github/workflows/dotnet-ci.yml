@@ -41,8 +41,9 @@ jobs:
         run: dotnet build dotnet/Apex.SqlClient.slnx -c Release --no-restore
       - name: Unit tests
         run: |
-          dotnet test dotnet/tests/Apex.SqlClient.Tests/Apex.SqlClient.Tests.csproj -c Release --no-build --no-restore
-          dotnet test dotnet/tests/Apex.PgClient.Tests/Apex.PgClient.Tests.csproj -c Release --no-build --no-restore
+          dotnet test --project dotnet/tests/Apex.SqlClient.Tests/Apex.SqlClient.Tests.csproj -c Release --no-build --no-restore --minimum-expected-tests 1
+          dotnet test --project dotnet/tests/Apex.PgClient.Tests/Apex.PgClient.Tests.csproj -c Release --no-build --no-restore --minimum-expected-tests 1
+          dotnet test --project dotnet/tests/Apex.MySqlClient.Tests/Apex.MySqlClient.Tests.csproj -c Release --no-build --no-restore --minimum-expected-tests 1
       - name: Verify formatting
         run: dotnet format dotnet/Apex.SqlClient.slnx --no-restore --verify-no-changes
       - name: NativeAOT smoke
@@ -53,8 +54,10 @@ jobs:
         run: |
           dotnet pack dotnet/src/Apex.SqlClient/Apex.SqlClient.csproj -c Release --no-build --no-restore -o artifacts/packages
           dotnet pack dotnet/src/Apex.PgClient/Apex.PgClient.csproj -c Release --no-build --no-restore -o artifacts/packages
+          dotnet pack dotnet/src/Apex.MySqlClient/Apex.MySqlClient.csproj -c Release --no-build --no-restore -o artifacts/packages
           strings dotnet/src/Apex.SqlClient/bin/Release/net10.0/Apex.SqlClient.pdb | grep raw.githubusercontent.com
           strings dotnet/src/Apex.PgClient/bin/Release/net10.0/Apex.PgClient.pdb | grep raw.githubusercontent.com
+          strings dotnet/src/Apex.MySqlClient/bin/Release/net10.0/Apex.MySqlClient.pdb | grep raw.githubusercontent.com
       - name: Upload packages
         uses: actions/upload-artifact@v6
         with:
@@ -88,9 +91,47 @@ jobs:
       - name: Integration tests
         run: >
           dotnet test
-          dotnet/tests/Apex.PgClient.IntegrationTests/Apex.PgClient.IntegrationTests.csproj
+          --project dotnet/tests/Apex.PgClient.IntegrationTests/Apex.PgClient.IntegrationTests.csproj
           -c Release
           --no-restore
+          --minimum-expected-tests 1
+
+  mysql:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: MySQL 8.4
+            image: mysql:8.4
+          - name: MySQL 9.6
+            image: mysql:9.6
+          - name: MariaDB 11.8
+            image: mariadb:11.8
+    env:
+      MYSQL_IMAGE: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+      - name: Require package feed
+        shell: bash
+        run: test -n "$NUGET_SOURCE"
+      - name: Restore
+        run: >
+          dotnet restore
+          dotnet/tests/Apex.MySqlClient.IntegrationTests/Apex.MySqlClient.IntegrationTests.csproj
+          --source "$NUGET_SOURCE"
+          --locked-mode
+      - name: Integration tests
+        run: >
+          dotnet test
+          --project dotnet/tests/Apex.MySqlClient.IntegrationTests/Apex.MySqlClient.IntegrationTests.csproj
+          -c Release
+          --no-restore
+          --minimum-expected-tests 1
 
   full:
     name: Scheduled stress and benchmark compile
@@ -111,11 +152,12 @@ jobs:
         shell: bash
         run: |
           for iteration in $(seq 1 10); do
-            dotnet test dotnet/tests/Apex.SqlClient.Tests/Apex.SqlClient.Tests.csproj -c Release --no-restore
-            dotnet test dotnet/tests/Apex.PgClient.Tests/Apex.PgClient.Tests.csproj -c Release --no-restore
+            dotnet test --project dotnet/tests/Apex.SqlClient.Tests/Apex.SqlClient.Tests.csproj -c Release --no-restore --minimum-expected-tests 1
+            dotnet test --project dotnet/tests/Apex.PgClient.Tests/Apex.PgClient.Tests.csproj -c Release --no-restore --minimum-expected-tests 1
+            dotnet test --project dotnet/tests/Apex.MySqlClient.Tests/Apex.MySqlClient.Tests.csproj -c Release --no-restore --minimum-expected-tests 1
           done
       - name: Compile benchmark harnesses
         run: |
           dotnet build dotnet/benchmarks/Apex.DriverBenchmarks/Apex.DriverBenchmarks.csproj -c Release --no-restore
-          mvn -q -DskipTests install -pl vertx-pg-client -am
+          mvn -q -DskipTests install -pl vertx-pg-client,vertx-mysql-client -am
           mvn -q -f dotnet/benchmarks/java/pom.xml -DskipTests package

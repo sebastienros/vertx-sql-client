@@ -38,4 +38,19 @@ public sealed class LruCacheTests
     Assert.AreEqual(1, removed);
     Assert.IsFalse(cache.TryGet("one", out _));
   }
+
+  [TestMethod]
+  public void DrainsValuesAndClearsCache()
+  {
+    LruCache<string, int> cache = new(2, StringComparer.Ordinal);
+    cache.Add("one", 1, out _);
+    cache.Add("two", 2, out _);
+
+    int[] values = cache.DrainValues();
+
+    CollectionAssert.AreEquivalent(new[] { 1, 2 }, values);
+    Assert.AreEqual(0, cache.Count);
+    Assert.IsFalse(cache.TryGet("one", out _));
+    Assert.IsFalse(cache.TryGet("two", out _));
+  }
 }

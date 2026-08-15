@@ -75,5 +75,19 @@ internal sealed class LruCache<TKey, TValue>
     return true;
   }
 
+  public TValue[] DrainValues()
+  {
+    TValue[] values = new TValue[_entries.Count];
+    int index = 0;
+    foreach (Entry entry in _usage)
+    {
+      values[index++] = entry.Value;
+    }
+
+    _entries.Clear();
+    _usage.Clear();
+    return values;
+  }
+
   private readonly record struct Entry(TKey Key, TValue Value);
 }

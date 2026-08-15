@@ -28,6 +28,10 @@
   connection. Apex continues reading until the server's attention
   acknowledgement and final `DONE` token are drained. Only then can the
   connection be reused; an invalid or timed-out drain breaks the connection.
+- Cancellation after MySQL submission issues `KILL QUERY` from a short-lived authenticated
+  connection by default. If the kill cannot be delivered, the physical command connection is
+  closed and cannot return to a pool. Disabling active cancellation waits for and drains the
+  response before reporting cancellation.
 - Commit and rollback use cancellation only before submission. Once sent, they complete deterministically to avoid reporting cancellation after a transaction may already have committed.
 
 ## Query results
@@ -38,16 +42,26 @@
   lower-allocation borrowed `ISqlRowReader`; its current row is valid only until
   the next `ReadAsync` or disposal.
 - `SqlParameters` stores ordered `SqlValue` instances. Common scalar `SqlValue` conversions avoid boxing at parameter construction.
-- PostgreSQL uses `$1` placeholders and SQL Server uses `@P1`, `@P2`, and so on.
-  SQL Server parameters are sent with `sp_executesql`, not interpolated into SQL.
+- PostgreSQL uses `$1` placeholders, MySQL uses `?`, and SQL Server uses `@P1`,
+  `@P2`, and so on. SQL Server parameters are sent with `sp_executesql`, not
+  interpolated into SQL.
 - Column lookup is ordinal and case-sensitive.
 - Mapping and collection helpers execute user delegates synchronously for each buffered or streamed row.
+- MySQL affected rows use matched-row semantics by default. `UseAffectedRows` switches to changed
+  rows. `SqlCommandResult` carries the last insert identifier, status flags, and warning count;
+  `MySqlConnection.LastCommandInfo` additionally exposes the server information string.
 
 ## Errors and diagnostics
 
-- Database errors derive from `SqlClientException`; PostgreSQL errors expose SQLSTATE and structured server fields through `PgException`, while SQL Server errors expose number, state, class, server, procedure, and line through `MsSqlException`.
+- Database errors derive from `SqlClientException`; PostgreSQL errors expose
+  SQLSTATE and structured server fields through `PgException`, MySQL errors
+  expose the numeric server code and SQLSTATE through `MySqlException`, and SQL
+  Server errors expose number, state, class, server, procedure, and line through
+  `MsSqlException`.
 - Activities and metrics never include passwords or parameter values.
 - A physical connection is never returned to a pool while PostgreSQL reports an active or failed transaction.
+- A physical MySQL connection is never returned while a transaction is active,
+  autocommit is disabled, or cancellation left the session unsynchronized.
 - A SQL Server physical connection is not returned while a transaction,
   response, or `ATTENTION` drain is active.
 

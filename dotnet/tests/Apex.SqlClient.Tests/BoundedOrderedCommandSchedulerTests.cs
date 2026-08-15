@@ -205,6 +205,24 @@ public sealed class BoundedOrderedCommandSchedulerTests
   }
 
   [TestMethod]
+  public async Task ExplicitFaultStopsFutureCommands()
+  {
+    BoundedOrderedCommandScheduler scheduler = new(1, 1);
+    FatalTestException fatal = new();
+
+    scheduler.Fault(fatal);
+
+    Assert.IsTrue(scheduler.IsStopped);
+    Assert.AreSame(
+      fatal,
+      await AssertValueTaskThrowsExactlyAsync<FatalTestException, int>(
+        scheduler.ExecuteAsync(
+          static _ => ValueTask.CompletedTask,
+          static _ => ValueTask.FromResult(1))));
+    await scheduler.DisposeAsync();
+  }
+
+  [TestMethod]
   public async Task NonfatalErrorAllowsLaterCommandsToComplete()
   {
     await using BoundedOrderedCommandScheduler scheduler =

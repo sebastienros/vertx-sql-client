@@ -12,6 +12,8 @@ import io.vertx.core.net.ClientSSLOptions;
 import io.vertx.mssqlclient.EncryptionMode;
 import io.vertx.mssqlclient.MSSQLConnectOptions;
 import io.vertx.mssqlclient.MSSQLConnection;
+import io.vertx.mysqlclient.MySQLConnectOptions;
+import io.vertx.mysqlclient.MySQLConnection;
 import io.vertx.pgclient.PgConnectOptions;
 import io.vertx.pgclient.PgConnection;
 import io.vertx.sqlclient.PreparedQuery;
@@ -35,13 +37,32 @@ import java.util.concurrent.atomic.LongAdder;
 public final class ComparisonHarness {
 
   public static void main(String[] args) throws Exception {
-    String driver = args.length == 0 ? "vertx" : args[0].toLowerCase(Locale.ROOT);
+    String requestedDatabase = System.getenv("APEX_BENCH_DATABASE");
+    String driver = args.length == 0
+      ? switch (requestedDatabase == null ? "postgres" : requestedDatabase.toLowerCase(Locale.ROOT)) {
+        case "mysql" -> "vertx-mysql";
+        case "mssql", "sqlserver" -> "vertx-mssql";
+        default -> "vertx";
+      }
+      : args[0].toLowerCase(Locale.ROOT);
     boolean msSql = driver.equals("vertx-mssql");
-    if (!msSql && !driver.equals("vertx")) {
+    boolean mySql = driver.equals("vertx-mysql");
+    if (!msSql && !mySql && !driver.equals("vertx")) {
       throw new IllegalArgumentException("Unknown Java driver '" + driver + "'.");
     }
+    String database = requestedDatabase == null || requestedDatabase.isBlank()
+      ? (msSql ? "mssql" : mySql ? "mysql" : "postgres")
+      : requestedDatabase.toLowerCase(Locale.ROOT);
+    boolean databaseMatches = (database.equals("postgres") && driver.equals("vertx")) ||
+      (database.equals("mysql") && mySql) ||
+      ((database.equals("mssql") || database.equals("sqlserver")) && msSql);
+    if (!databaseMatches) {
+      throw new IllegalArgumentException(
+        "Driver '" + driver + "' does not support database '" + database + "'.");
+    }
     String workload = environment("APEX_BENCH_WORKLOAD", "query");
-    if (!List.of("query", "stream100", "pipeline", "batch", "string100").contains(workload)) {
+    if (!List.of("query", "stream100", "borrowed100", "pipeline", "batch", "string100")
+        .contains(workload)) {
       throw new IllegalArgumentException("Unknown workload '" + workload + "'.");
     }
     int concurrency = Integer.parseInt(environment("APEX_BENCH_CONCURRENCY", "16"));
@@ -56,7 +77,9 @@ public final class ComparisonHarness {
       for (int i = 0; i < concurrency; i++) {
         runners.add(msSql
           ? Runner.msSql(vertx, workload, fetchSize, rowCount, pipelineDepth)
-          : Runner.postgreSql(vertx, workload, fetchSize, rowCount, pipelineDepth));
+          : mySql
+            ? Runner.mySql(vertx, workload, fetchSize, rowCount, pipelineDepth)
+            : Runner.postgreSql(vertx, workload, fetchSize, rowCount, pipelineDepth));
       }
 
       run(driver, runners, warmupSeconds, false);
@@ -124,8 +147,9 @@ public final class ComparisonHarness {
     private final SqlConnection connection;
     private final String workload;
     private final boolean msSql;
+    private final boolean mySql;
     private final int rowCount;
-    private final int expectedSum;
+    private final long expectedSum;
     private final int pipelineDepth;
     private final PreparedStatement streamStatement;
     private final PreparedStatement pipelineStatement;
@@ -137,18 +161,22 @@ public final class ComparisonHarness {
         SqlConnection connection,
         String workload,
         boolean msSql,
+        boolean mySql,
         int fetchSize,
         int rowCount,
         int pipelineDepth) {
       this.connection = connection;
       this.workload = workload;
       this.msSql = msSql;
+      this.mySql = mySql;
       this.fetchSize = fetchSize;
       this.rowCount = rowCount;
-      this.expectedSum = Math.multiplyExact(rowCount, rowCount + 1) / 2;
+      this.expectedSum = (long) rowCount * (rowCount + 1) / 2;
       this.pipelineDepth = pipelineDepth;
-      String streamSql = rowsSql(msSql, rowCount, workload.equals("string100"));
-      this.streamStatement = workload.equals("stream100") || workload.equals("string100")
+      String streamSql = rowsSql(msSql, mySql, rowCount, workload.equals("string100"));
+      this.streamStatement = workload.equals("stream100") ||
+        workload.equals("borrowed100") ||
+        workload.equals("string100")
         ? await(connection.prepare(streamSql))
         : null;
       if (msSql && isBatch(workload)) {
@@ -158,7 +186,9 @@ public final class ComparisonHarness {
       }
       this.pipelineStatement = isBatch(workload)
         ? await(connection.prepare(
-          msSql ? "UPDATE #vertx_batch SET value = @p1" : "SELECT 1::INT4"))
+          msSql
+            ? "UPDATE #vertx_batch SET value = @p1"
+            : mySql ? "SELECT CAST(1 AS SIGNED)" : "SELECT 1::INT4"))
         : null;
       this.pipelineQuery = pipelineStatement == null ? null : pipelineStatement.query();
       if (msSql && isBatch(workload)) {
@@ -189,6 +219,30 @@ public final class ComparisonHarness {
         await(MSSQLConnection.connect(vertx, options)),
         workload,
         true,
+        false,
+        fetchSize,
+        rowCount,
+        pipelineDepth);
+    }
+
+    private static Runner mySql(
+        Vertx vertx,
+        String workload,
+        int fetchSize,
+        int rowCount,
+        int pipelineDepth) {
+      MySQLConnectOptions options = new MySQLConnectOptions()
+        .setHost(environment("APEX_MYSQL_HOST", "localhost"))
+        .setPort(Integer.parseInt(environment("APEX_MYSQL_PORT", "3306")))
+        .setDatabase(environment("APEX_MYSQL_DATABASE", "db"))
+        .setUser(environment("APEX_MYSQL_USERNAME", "user"))
+        .setPassword(environment("APEX_MYSQL_PASSWORD", "pass"))
+        .setPipeliningLimit(Math.max(256, pipelineDepth));
+      return new Runner(
+        await(MySQLConnection.connect(vertx, options)),
+        workload,
+        false,
+        true,
         fetchSize,
         rowCount,
         pipelineDepth);
@@ -210,6 +264,7 @@ public final class ComparisonHarness {
       return new Runner(
         await(PgConnection.connect(vertx, options)),
         workload,
+        false,
         false,
         fetchSize,
         rowCount,
@@ -237,30 +292,40 @@ public final class ComparisonHarness {
           }
           await(Future.all(pending));
           for (Future<RowSet<Row>> result : pending) {
-            if (result.result().iterator().next().getInteger(0) != 1) {
-              throw new IllegalStateException("Unexpected Vert.x PostgreSQL pipeline result");
+            Number value = (Number) result.result().iterator().next().getValue(0);
+            if (value.longValue() != 1L) {
+              throw new IllegalStateException("Unexpected Vert.x pipeline result");
             }
           }
         }
+      } else if (workload.equals("borrowed100")) {
+        long sum = 0;
+        for (Row row : await(streamStatement.query().execute())) {
+          sum += ((Number) row.getValue(0)).longValue();
+        }
+        if (sum != expectedSum) {
+          throw new IllegalStateException("Unexpected Vert.x borrowed-reader sum " + sum);
+        }
       } else if (workload.equals("stream100")) {
-        int sum = consumeStream(false);
+        long sum = consumeStream(false);
         if (sum != expectedSum) {
           throw new IllegalStateException("Unexpected Vert.x stream sum " + sum);
         }
       } else if (workload.equals("string100")) {
-        int count = consumeStream(true);
+        long count = consumeStream(true);
         if (count != rowCount) {
           throw new IllegalStateException("Unexpected Vert.x string row count " + count);
         }
-      } else if (await(connection.query("SELECT 1").execute())
-          .iterator().next().getInteger(0) != 1) {
+      } else if (((Number) await(connection.query(
+          mySql ? "SELECT CAST(1 AS SIGNED)" : "SELECT 1").execute())
+          .iterator().next().getValue(0)).longValue() != 1L) {
         throw new IllegalStateException("Unexpected Vert.x query result");
       }
     }
 
-    private int consumeStream(boolean strings) {
-      CompletableFuture<Integer> completion = new CompletableFuture<>();
-      int[] value = new int[1];
+    private long consumeStream(boolean strings) {
+      CompletableFuture<Long> completion = new CompletableFuture<>();
+      long[] value = new long[1];
       RowStream<Row> stream = streamStatement.createStream(fetchSize);
       stream.exceptionHandler(completion::completeExceptionally);
       stream.handler(row -> {
@@ -271,7 +336,7 @@ public final class ComparisonHarness {
           }
           value[0]++;
         } else {
-          value[0] += row.getInteger(0);
+          value[0] += ((Number) row.getValue(0)).longValue();
         }
       });
       stream.endHandler(ignored -> completion.complete(value[0]));
@@ -289,7 +354,7 @@ public final class ComparisonHarness {
     }
   }
 
-  private static String rowsSql(boolean msSql, int count, boolean strings) {
+  private static String rowsSql(boolean msSql, boolean mySql, int count, boolean strings) {
     if (msSql) {
       return """
         WITH numbers AS (
@@ -301,6 +366,15 @@ public final class ComparisonHarness {
         """.formatted(
           count,
           strings ? "CAST(N'repeated-value' AS nvarchar(32))" : "value");
+    }
+
+    if (mySql) {
+      String cte =
+        "WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < " +
+          count + ") ";
+      return strings
+        ? cte + "SELECT 'repeated-value' FROM seq"
+        : cte + "SELECT CAST(n AS SIGNED) FROM seq";
     }
 
     return strings
