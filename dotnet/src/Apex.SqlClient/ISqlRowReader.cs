@@ -86,4 +86,9 @@ public interface ISqlRowReader : IAsyncDisposable
     byte[] GetBytes(int ordinal);
 
     byte[] GetBytes(string name) => GetBytes(GetOrdinal(name));
+
+    TElement[]? GetArray<TElement>(int ordinal);
+
+    TElement[]? GetArray<TElement>(string name) =>
+      GetArray<TElement>(GetOrdinal(name));
 }

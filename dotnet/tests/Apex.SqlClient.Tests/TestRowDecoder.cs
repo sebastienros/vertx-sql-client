@@ -297,11 +297,11 @@ internal sealed class TestRowDecoder : ISqlRowDecoder
         SqlColumn column) =>
       Throw<JsonElement?>(column);
 
-    public object?[]? DecodeArray(
+    public TElement[]? DecodeArray<TElement>(
         ReadOnlyMemory<byte> row,
         int ordinal,
         SqlColumn column) =>
-      Throw<object?[]?>(column);
+      Throw<TElement[]?>(column);
 
     public T Decode<T>(
         ReadOnlyMemory<byte> row,

@@ -534,6 +534,13 @@ public sealed class PgConnectionIntegrationTests
           SqlParameters.Create(42)))[0];
         AssertTypeValues(binary);
         Assert.AreEqual(42, binary.Get<int>("parameter_value"));
+
+        await using ISqlRowReader reader = await connection.ExecuteReaderAsync(
+          "SELECT ARRAY[1, NULL, 3]::int4[] AS array_value");
+        Assert.IsTrue(await reader.ReadAsync());
+        CollectionAssert.AreEqual(
+          new int?[] { 1, null, 3 },
+          reader.GetArray<int?>("array_value"));
     }
 
     [TestMethod]
@@ -884,8 +891,8 @@ public sealed class PgConnectionIntegrationTests
         Assert.AreEqual(64, row.Get<PgCidr>("cidr_value").PrefixLength);
         Assert.AreEqual(12.34m, row.Get<PgMoney>("money_value").Value);
         CollectionAssert.AreEqual(
-          new object?[] { 1, null, 3 },
-          row.Get<object?[]>("array_value"));
+          new int?[] { 1, null, 3 },
+          row.GetArray<int?>("array_value"));
     }
 
     private static async ValueTask<PgNotification> NextNotificationAsync(

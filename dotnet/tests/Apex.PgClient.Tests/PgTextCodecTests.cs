@@ -53,9 +53,22 @@ public sealed class PgTextCodecTests
     [TestMethod]
     public void DecodesQuotedAndNullArrayElements()
     {
-        var values = (object?[])Decode(1009, """{"one,two",NULL,"quoted\"value"}""");
+        var payload = Encoding.UTF8.GetBytes(
+            """{"one,two",NULL,"quoted\"value"}""");
+        var values = PgTextCodec.DecodeArray<string?>(1009, payload);
+        var objectValue = PgTextCodec.Decode(1009, payload);
 
-        CollectionAssert.AreEqual(new object?[] { "one,two", null, "quoted\"value" }, values);
+        CollectionAssert.AreEqual(
+            new string?[] { "one,two", null, "quoted\"value" },
+            values);
+        Assert.IsInstanceOfType<string?[]>(objectValue);
+
+        var nullableInts = PgTextCodec.DecodeArray<int?>(
+            1007,
+            Encoding.UTF8.GetBytes("{1,NULL,3}"));
+        CollectionAssert.AreEqual(new int?[] { 1, null, 3 }, nullableInts);
+        Assert.ThrowsExactly<InvalidCastException>(() =>
+            PgTextCodec.DecodeArray<int>(1007, Encoding.UTF8.GetBytes("{1,NULL,3}")));
     }
 
     [TestMethod]

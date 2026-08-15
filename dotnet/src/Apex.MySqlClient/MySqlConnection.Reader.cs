@@ -216,6 +216,15 @@ public sealed partial class MySqlConnection
               copyReadOnlyMemory: true);
         }
 
+        public TElement[]? GetArray<TElement>(int ordinal)
+        {
+            EnsureCurrent();
+            return _decoder!.DecodeArray<TElement>(
+              _current.Memory,
+              ordinal,
+              _columns[ordinal]);
+        }
+
         public bool GetBoolean(int ordinal)
         {
             EnsureCurrent();

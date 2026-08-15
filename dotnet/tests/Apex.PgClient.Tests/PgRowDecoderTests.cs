@@ -42,7 +42,7 @@ public sealed class PgRowDecoderTests
           decoder.DecodeDateTimeOffset(row, 0, mismatch));
         AssertInvalid(() =>
           decoder.DecodeJsonElement(row, 0, mismatch));
-        AssertInvalid(() => decoder.DecodeArray(row, 0, mismatch));
+        AssertInvalid(() => decoder.DecodeArray<int>(row, 0, mismatch));
         AssertInvalid(() => PgRowDecoder.DecodePgNumeric(row, 0, mismatch));
         AssertInvalid(() => PgRowDecoder.DecodePgMoney(row, 0, mismatch));
         AssertInvalid(() => PgRowDecoder.DecodePgInterval(row, 0, mismatch));
@@ -206,6 +206,46 @@ public sealed class PgRowDecoderTests
             0,
             column,
             copyReadOnlyMemory: false));
+    }
+
+    [TestMethod]
+    public void DecodesTypedArraysWithoutObjectElements()
+    {
+        PgRowDecoder decoder = new(16, 64);
+        byte[] binaryArray =
+        [
+          .. Int32(1),
+          .. Int32(1),
+          .. Int32(23),
+          .. Int32(3),
+          .. Int32(1),
+          .. Int32(4),
+          .. Int32(1),
+          .. Int32(-1),
+          .. Int32(4),
+          .. Int32(3),
+        ];
+
+        var binary = decoder.DecodeArray<int?>(
+          CreateRow(binaryArray),
+          0,
+          Column(1007, SqlDataFormat.Binary));
+        var text = decoder.DecodeArray<string?>(
+          CreateRow("{one,NULL,three}"u8),
+          0,
+          Column(1009, SqlDataFormat.Text));
+
+        CollectionAssert.AreEqual(new int?[] { 1, null, 3 }, binary);
+        CollectionAssert.AreEqual(new string?[] { "one", null, "three" }, text);
+        Assert.IsNull(decoder.DecodeArray<int?>(
+          CreateNullRow(),
+          0,
+          Column(1007, SqlDataFormat.Binary)));
+        Assert.ThrowsExactly<InvalidCastException>(() =>
+          decoder.DecodeArray<int>(
+            CreateRow(binaryArray),
+            0,
+            Column(1007, SqlDataFormat.Binary)));
     }
 
     [TestMethod]

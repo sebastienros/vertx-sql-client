@@ -91,6 +91,8 @@ interface Apex.SqlClient.ISqlRowReader : System.IAsyncDisposable
   Method: System.TimeOnly GetTimeOnly(System.String)
   Method: T Get[T](Int32)
   Method: T Get[T](System.String)
+  Method: TElement[] GetArray[TElement](Int32)
+  Method: TElement[] GetArray[TElement](System.String)
   Property: Int32 FieldCount
   Property: System.Collections.Generic.IReadOnlyList`1[Apex.SqlClient.SqlColumn] Columns
 interface Apex.SqlClient.ISqlTransaction : System.IAsyncDisposable
@@ -274,6 +276,8 @@ struct Apex.SqlClient.SqlRow
   Method: System.TimeOnly GetTimeOnly(System.String)
   Method: T Get[T](Int32)
   Method: T Get[T](System.String)
+  Method: TElement[] GetArray[TElement](Int32)
+  Method: TElement[] GetArray[TElement](System.String)
   Property: Int32 Count
 class Apex.SqlClient.SqlRowSet : System.Collections.Generic.IEnumerable`1[Apex.SqlClient.SqlRow], System.Collections.Generic.IReadOnlyCollection`1[Apex.SqlClient.SqlRow], System.Collections.Generic.IReadOnlyList`1[Apex.SqlClient.SqlRow], System.Collections.IEnumerable
   Method: Apex.SqlClient.SqlRow get_Item(Int32)

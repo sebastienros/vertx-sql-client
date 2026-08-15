@@ -489,13 +489,13 @@ internal sealed class MySqlRowDecoder : ISqlRowDecoder
         return isNull ? null : DecodeJson(value);
     }
 
-    public object?[]? DecodeArray(
+    public TElement[]? DecodeArray<TElement>(
         ReadOnlyMemory<byte> row,
         int ordinal,
         SqlColumn column)
     {
-        _ = EnsureColumn(ordinal, column, typeof(object?[]));
-        throw CannotRead(column, typeof(object?[]));
+        _ = EnsureColumn(ordinal, column, typeof(TElement[]));
+        throw CannotRead(column, typeof(TElement[]));
     }
 
     public T Decode<T>(

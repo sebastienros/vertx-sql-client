@@ -68,9 +68,48 @@ public sealed class PgBinaryCodecTests
       .. Int32(3),
     ];
 
-        var values = (object?[])PgBinaryCodec.Decode(1007, array);
+        var values = PgBinaryCodec.DecodeArray<int?>(1007, array);
+        var objectValue = PgBinaryCodec.Decode(1007, array);
 
-        CollectionAssert.AreEqual(new object?[] { 1, null, 3 }, values);
+        CollectionAssert.AreEqual(new int?[] { 1, null, 3 }, values);
+        Assert.IsInstanceOfType<int?[]>(objectValue);
+        Assert.ThrowsExactly<InvalidCastException>(() =>
+            PgBinaryCodec.DecodeArray<int>(1007, array));
+    }
+
+    [TestMethod]
+    public void TypedArrayDoesNotBoxElements()
+    {
+        const int count = 100;
+        List<byte> payload =
+        [
+          .. Int32(1),
+                      .. Int32(0),
+                      .. Int32(23),
+                      .. Int32(count),
+                      .. Int32(1),
+                    ];
+        for (var i = 0; i < count; i++)
+        {
+            payload.AddRange(Int32(sizeof(int)));
+            payload.AddRange(Int32(i));
+        }
+
+        byte[] array = payload.ToArray();
+        _ = PgBinaryCodec.DecodeArray<int>(1007, array);
+        _ = new int[count];
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        var baseline = new int[count];
+        var arrayAllocation = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        before = GC.GetAllocatedBytesForCurrentThread();
+        var decoded = PgBinaryCodec.DecodeArray<int>(1007, array);
+        var decodeAllocation = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        GC.KeepAlive(baseline);
+        CollectionAssert.AreEqual(Enumerable.Range(0, count).ToArray(), decoded);
+        Assert.AreEqual(arrayAllocation, decodeAllocation);
     }
 
     [TestMethod]

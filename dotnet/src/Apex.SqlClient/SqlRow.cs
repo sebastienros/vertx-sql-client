@@ -139,6 +139,15 @@ public readonly struct SqlRow
 
     public byte[] GetBytes(string name) => GetBytes(GetOrdinal(name));
 
+    public TElement[]? GetArray<TElement>(int ordinal) =>
+      _decoder.DecodeArray<TElement>(
+        RowMemory,
+        ordinal,
+        _columns[ordinal]);
+
+    public TElement[]? GetArray<TElement>(string name) =>
+      GetArray<TElement>(GetOrdinal(name));
+
     public bool TryGet<T>(int ordinal, [MaybeNullWhen(false)] out T value)
     {
         if (!IsNull(ordinal))

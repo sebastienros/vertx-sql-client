@@ -1684,6 +1684,15 @@ public sealed class PgConnection : ISqlConnection
               copyReadOnlyMemory: true);
         }
 
+        public TElement[]? GetArray<TElement>(int ordinal)
+        {
+            EnsureCurrent();
+            return _connection._rowDecoder.DecodeArray<TElement>(
+                _current.Payload,
+                ordinal,
+                _columns[ordinal]);
+        }
+
         public bool GetBoolean(int ordinal)
         {
             EnsureCurrent();

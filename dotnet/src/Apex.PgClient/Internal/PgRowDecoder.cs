@@ -418,12 +418,12 @@ internal sealed class PgRowDecoder : ISqlRowDecoder
           : DecodeJsonValue(column, field.Value);
     }
 
-    public object?[]? DecodeArray(
+    public TElement[]? DecodeArray<TElement>(
         ReadOnlyMemory<byte> row,
         int ordinal,
         SqlColumn column)
     {
-        EnsureArrayType(column, typeof(object?[]));
+        EnsureArrayType(column, typeof(TElement[]));
         var field = GetField(row, ordinal);
         if (field.IsNull)
         {
@@ -431,8 +431,8 @@ internal sealed class PgRowDecoder : ISqlRowDecoder
         }
 
         return column.Format == SqlDataFormat.Binary
-          ? PgBinaryCodec.DecodeArray(field.Value)
-          : PgTextCodec.DecodeArray(column.TypeId, field.Value);
+                    ? PgBinaryCodec.DecodeArray<TElement>(column.TypeId, field.Value)
+                    : PgTextCodec.DecodeArray<TElement>(column.TypeId, field.Value);
     }
 
     public T Decode<T>(
@@ -456,12 +456,6 @@ internal sealed class PgRowDecoder : ISqlRowDecoder
         {
             var value = DecodeBytes(row, ordinal, column);
             return Unsafe.As<byte[]?, T>(ref value);
-        }
-
-        if (typeof(T) == typeof(object?[]))
-        {
-            var value = DecodeArray(row, ordinal, column);
-            return Unsafe.As<object?[]?, T>(ref value);
         }
 
         if (typeof(T) == typeof(int))
@@ -571,11 +565,6 @@ internal sealed class PgRowDecoder : ISqlRowDecoder
                     var value =
                       DecodeJsonElement(row, ordinal, column);
                     return Unsafe.As<JsonElement, T>(ref value);
-                }
-            case TypedDecoderKind.Array:
-                {
-                    var value = DecodeArray(row, ordinal, column);
-                    return Unsafe.As<object?[]?, T>(ref value);
                 }
             case TypedDecoderKind.Object:
                 return (T)DecodeObject(row, ordinal, column)!;
@@ -887,11 +876,6 @@ internal sealed class PgRowDecoder : ISqlRowDecoder
         if (type == typeof(JsonElement))
         {
             return TypedDecoderKind.JsonElement;
-        }
-
-        if (type == typeof(object?[]))
-        {
-            return TypedDecoderKind.Array;
         }
 
         if (type == typeof(object))
@@ -1740,7 +1724,6 @@ internal sealed class PgRowDecoder : ISqlRowDecoder
         Bytes,
         ReadOnlyMemory,
         JsonElement,
-        Array,
         Object,
         NullableInt32,
         NullableInt64,

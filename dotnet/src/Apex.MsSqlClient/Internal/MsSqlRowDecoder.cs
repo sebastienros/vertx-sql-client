@@ -474,16 +474,16 @@ internal sealed class MsSqlRowDecoder : ISqlRowDecoder
         return field.IsNull ? null : DecodeJson(field.Value, column);
     }
 
-    public object?[]? DecodeArray(
+    public TElement[]? DecodeArray<TElement>(
         ReadOnlyMemory<byte> row,
         int ordinal,
         SqlColumn column)
     {
-        EnsureFormat(column, typeof(object?[]));
+        EnsureFormat(column, typeof(TElement[]));
         _ = GetField(row, ordinal);
         throw CreateInvalidCast(
           checked((byte)column.TypeId),
-          typeof(object?[]));
+          typeof(TElement[]));
     }
 
     public T Decode<T>(
@@ -578,8 +578,6 @@ internal sealed class MsSqlRowDecoder : ISqlRowDecoder
                   DecodeNullableJsonElement(row, ordinal, column));
             case TypedDecoderKind.Object:
                 return (T)DecodeObject(row, ordinal, column)!;
-            case TypedDecoderKind.Array:
-                return Cast<object?[]?, T>(DecodeArray(row, ordinal, column));
             case TypedDecoderKind.Byte:
                 return Cast<byte, T>(DecodeByte(row, ordinal, column));
             case TypedDecoderKind.NullableByte:
@@ -1212,11 +1210,6 @@ internal sealed class MsSqlRowDecoder : ISqlRowDecoder
             return TypedDecoderKind.Object;
         }
 
-        if (type == typeof(object?[]))
-        {
-            return TypedDecoderKind.Array;
-        }
-
         if (type == typeof(byte))
         {
             return TypedDecoderKind.Byte;
@@ -1264,7 +1257,6 @@ internal sealed class MsSqlRowDecoder : ISqlRowDecoder
         JsonElement,
         NullableJsonElement,
         Object,
-        Array,
         Byte,
         NullableByte,
     }

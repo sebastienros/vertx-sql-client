@@ -218,6 +218,15 @@ internal sealed class MsSqlRowReader : ISqlRowReader, IValueTaskSource<bool>
           copyReadOnlyMemory: true);
     }
 
+    public TElement[]? GetArray<TElement>(int ordinal)
+    {
+        EnsureCurrent();
+        return _connection.RowDecoder.DecodeArray<TElement>(
+          _current.WrittenMemory,
+          ordinal,
+          _columns[ordinal]);
+    }
+
     public bool GetBoolean(int ordinal)
     {
         EnsureCurrent();

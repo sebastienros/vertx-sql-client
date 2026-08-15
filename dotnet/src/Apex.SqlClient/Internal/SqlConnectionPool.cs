@@ -790,6 +790,9 @@ internal sealed class SqlConnectionPool<TConnection> : ISqlPool
 
             public T Get<T>(int ordinal) => _inner.Get<T>(ordinal);
 
+            public TElement[]? GetArray<TElement>(int ordinal) =>
+                _inner.GetArray<TElement>(ordinal);
+
             public bool GetBoolean(int ordinal) => _inner.GetBoolean(ordinal);
 
             public short GetInt16(int ordinal) => _inner.GetInt16(ordinal);

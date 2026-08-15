@@ -176,7 +176,7 @@ internal interface ISqlRowDecoder
         int ordinal,
         SqlColumn column);
 
-    object?[]? DecodeArray(
+    TElement[]? DecodeArray<TElement>(
         ReadOnlyMemory<byte> row,
         int ordinal,
         SqlColumn column);
@@ -207,12 +207,6 @@ internal static class SqlRowDecoder
         {
             var value = decoder.DecodeBytes(row, ordinal, column);
             return Unsafe.As<byte[]?, T>(ref value);
-        }
-
-        if (typeof(T) == typeof(object?[]))
-        {
-            var value = decoder.DecodeArray(row, ordinal, column);
-            return Unsafe.As<object?[]?, T>(ref value);
         }
 
         return decoder.Decode<T>(

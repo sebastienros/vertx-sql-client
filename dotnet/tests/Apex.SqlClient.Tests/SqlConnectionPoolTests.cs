@@ -491,6 +491,9 @@ public sealed class SqlConnectionPoolTests
 
         public T Get<T>(int ordinal) => throw new ArgumentOutOfRangeException(nameof(ordinal));
 
+        public TElement[]? GetArray<TElement>(int ordinal) =>
+            throw new ArgumentOutOfRangeException(nameof(ordinal));
+
         public bool GetBoolean(int ordinal) => Get<bool>(ordinal);
 
         public short GetInt16(int ordinal) => Get<short>(ordinal);

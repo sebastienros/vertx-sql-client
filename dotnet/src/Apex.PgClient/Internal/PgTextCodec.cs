@@ -7,6 +7,7 @@
 using System.Buffers.Text;
 using System.Globalization;
 using System.Net;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -24,7 +25,7 @@ internal static class PgTextCodec
         var elementType = GetArrayElementType(typeId);
         if (elementType != 0)
         {
-            return DecodeArray(elementType, text);
+            return DecodeArrayObject(typeId, value);
         }
 
         return DecodeText(typeId, text, value);
@@ -150,7 +151,7 @@ internal static class PgTextCodec
     internal static PgInet DecodeInet(ReadOnlySpan<byte> value) =>
       ParseInet(s_utf8.GetString(value));
 
-    internal static object?[] DecodeArray(
+    internal static TElement[] DecodeArray<TElement>(
         uint typeId,
         ReadOnlyMemory<byte> value)
     {
@@ -160,7 +161,28 @@ internal static class PgTextCodec
             throw new PgUnsupportedTypeException(typeId);
         }
 
-        return DecodeArray(elementType, s_utf8.GetString(value.Span));
+        var parsed = PgArrayParser.Parse(
+          s_utf8.GetString(value.Span),
+          elementType == 603 ? ';' : ',');
+        var result = new TElement[parsed.Length];
+        for (var i = 0; i < parsed.Length; i++)
+        {
+            var item = parsed[i];
+            if (item is null)
+            {
+                if (default(TElement) is not null)
+                {
+                    throw new InvalidCastException(
+                      $"PostgreSQL array element {i} is NULL and cannot be read as {typeof(TElement).FullName}.");
+                }
+
+                continue;
+            }
+
+            result[i] = DecodeArrayElement<TElement>(elementType, item);
+        }
+
+        return result;
     }
 
     private static object DecodeText(
@@ -217,7 +239,7 @@ internal static class PgTextCodec
           _ => text,
       };
 
-    private static uint GetArrayElementType(uint typeId) =>
+    internal static uint GetArrayElementType(uint typeId) =>
       typeId switch
       {
           1000 => 16,
@@ -254,10 +276,129 @@ internal static class PgTextCodec
           _ => 0,
       };
 
-    private static object?[] DecodeArray(uint elementType, string text) =>
-      PgArrayParser.Parse(text, elementType == 603 ? ';' : ',')
-        .Select(item => item is null ? null : DecodeText(elementType, item))
-        .ToArray();
+    private static object DecodeArrayObject(
+        uint arrayTypeId,
+        ReadOnlyMemory<byte> value) =>
+      GetArrayElementType(arrayTypeId) switch
+      {
+          16 => DecodeArray<bool?>(arrayTypeId, value),
+          17 => DecodeArray<byte[]?>(arrayTypeId, value),
+          18 or 19 or 25 or 1043 => DecodeArray<string?>(arrayTypeId, value),
+          20 => DecodeArray<long?>(arrayTypeId, value),
+          21 => DecodeArray<short?>(arrayTypeId, value),
+          23 => DecodeArray<int?>(arrayTypeId, value),
+          700 => DecodeArray<float?>(arrayTypeId, value),
+          701 => DecodeArray<double?>(arrayTypeId, value),
+          790 => DecodeArray<PgMoney?>(arrayTypeId, value),
+          1082 => DecodeArray<DateOnly?>(arrayTypeId, value),
+          1083 => DecodeArray<TimeOnly?>(arrayTypeId, value),
+          1114 => DecodeArray<DateTime?>(arrayTypeId, value),
+          1184 => DecodeArray<DateTimeOffset?>(arrayTypeId, value),
+          1186 => DecodeArray<PgInterval?>(arrayTypeId, value),
+          1266 => DecodeArray<PgTimeWithTimeZone?>(arrayTypeId, value),
+          1700 => DecodeArray<PgNumeric?>(arrayTypeId, value),
+          2950 => DecodeArray<Guid?>(arrayTypeId, value),
+          600 => DecodeArray<PgPoint?>(arrayTypeId, value),
+          601 => DecodeArray<PgLineSegment?>(arrayTypeId, value),
+          602 => DecodeArray<PgPath?>(arrayTypeId, value),
+          603 => DecodeArray<PgBox?>(arrayTypeId, value),
+          604 => DecodeArray<PgPolygon?>(arrayTypeId, value),
+          628 => DecodeArray<PgLine?>(arrayTypeId, value),
+          650 => DecodeArray<PgCidr?>(arrayTypeId, value),
+          718 => DecodeArray<PgCircle?>(arrayTypeId, value),
+          869 => DecodeArray<PgInet?>(arrayTypeId, value),
+          114 or 3802 => DecodeArray<JsonElement?>(arrayTypeId, value),
+          var elementType => throw new PgUnsupportedTypeException(elementType),
+      };
+
+    private static TElement DecodeArrayElement<TElement>(
+        uint elementType,
+        string text) =>
+      elementType switch
+      {
+          16 => ConvertValue<TElement, bool>(text == "t", elementType),
+          17 => ConvertReference<TElement, byte[]>(ParseBytea(text), elementType),
+          18 or 19 or 25 or 1043 =>
+            ConvertReference<TElement, string>(text, elementType),
+          20 => ConvertValue<TElement, long>(
+            long.Parse(text, NumberStyles.Integer, CultureInfo.InvariantCulture),
+            elementType),
+          21 => ConvertValue<TElement, short>(
+            short.Parse(text, NumberStyles.Integer, CultureInfo.InvariantCulture),
+            elementType),
+          23 => ConvertValue<TElement, int>(
+            int.Parse(text, NumberStyles.Integer, CultureInfo.InvariantCulture),
+            elementType),
+          700 => ConvertValue<TElement, float>(
+            float.Parse(text, NumberStyles.Float, CultureInfo.InvariantCulture),
+            elementType),
+          701 => ConvertValue<TElement, double>(
+            double.Parse(text, NumberStyles.Float, CultureInfo.InvariantCulture),
+            elementType),
+          790 => ConvertValue<TElement, PgMoney>(ParseMoney(text), elementType),
+          1082 => ConvertValue<TElement, DateOnly>(ParseDate(text), elementType),
+          1083 => ConvertValue<TElement, TimeOnly>(
+            TimeOnly.Parse(text, CultureInfo.InvariantCulture),
+            elementType),
+          1114 => ConvertValue<TElement, DateTime>(ParseTimestamp(text), elementType),
+          1184 => ConvertValue<TElement, DateTimeOffset>(
+            ParseTimestampWithTimeZone(text),
+            elementType),
+          1186 => ConvertValue<TElement, PgInterval>(ParseInterval(text), elementType),
+          1266 => ConvertValue<TElement, PgTimeWithTimeZone>(
+            ParseTimeWithTimeZone(text),
+            elementType),
+          1700 => ConvertValue<TElement, PgNumeric>(PgNumeric.Parse(text), elementType),
+          2950 => ConvertValue<TElement, Guid>(Guid.Parse(text), elementType),
+          600 => ConvertValue<TElement, PgPoint>(ParsePoint(text), elementType),
+          601 => ConvertValue<TElement, PgLineSegment>(ParseLineSegment(text), elementType),
+          602 => ConvertReference<TElement, PgPath>(ParsePath(text), elementType),
+          603 => ConvertValue<TElement, PgBox>(ParseBox(text), elementType),
+          604 => ConvertReference<TElement, PgPolygon>(ParsePolygon(text), elementType),
+          628 => ConvertValue<TElement, PgLine>(ParseLine(text), elementType),
+          650 => ConvertValue<TElement, PgCidr>(ParseCidr(text), elementType),
+          718 => ConvertValue<TElement, PgCircle>(ParseCircle(text), elementType),
+          869 => ConvertValue<TElement, PgInet>(ParseInet(text), elementType),
+          114 or 3802 => ConvertValue<TElement, JsonElement>(ParseJson(text), elementType),
+          _ => throw new PgUnsupportedTypeException(elementType),
+      };
+
+    private static TElement ConvertValue<TElement, TValue>(
+        TValue value,
+        uint elementType)
+      where TValue : struct
+    {
+        if (typeof(TElement) == typeof(TValue))
+        {
+            return Unsafe.As<TValue, TElement>(ref value);
+        }
+
+        if (typeof(TElement) == typeof(TValue?))
+        {
+            TValue? nullable = value;
+            return Unsafe.As<TValue?, TElement>(ref nullable);
+        }
+
+        throw CannotReadArrayElement<TElement>(elementType);
+    }
+
+    private static TElement ConvertReference<TElement, TValue>(
+        TValue value,
+        uint elementType)
+      where TValue : class
+    {
+        if (typeof(TElement) == typeof(TValue))
+        {
+            return Unsafe.As<TValue, TElement>(ref value);
+        }
+
+        throw CannotReadArrayElement<TElement>(elementType);
+    }
+
+    private static InvalidCastException CannotReadArrayElement<TElement>(
+        uint elementType) =>
+      new(
+        $"PostgreSQL array element type OID {elementType} cannot be read as {typeof(TElement).FullName}.");
 
     private static byte[] ParseBytea(string text) =>
       text.StartsWith("\\x", StringComparison.Ordinal)
