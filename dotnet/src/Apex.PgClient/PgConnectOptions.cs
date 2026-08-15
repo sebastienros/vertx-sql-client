@@ -23,6 +23,10 @@ public sealed record PgConnectOptions : SqlConnectOptions
 
   public int PipeliningLimit { get; init; } = 256;
 
+  public int StringCacheCapacity { get; init; } = 1024;
+
+  public int StringCacheMaximumByteLength { get; init; } = 64;
+
   public PgSslMode SslMode { get; init; } = PgSslMode.Disable;
 
   public PgSslNegotiation SslNegotiation { get; init; } = PgSslNegotiation.Postgres;

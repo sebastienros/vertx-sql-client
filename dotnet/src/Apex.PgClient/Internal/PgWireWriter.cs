@@ -96,6 +96,17 @@ internal sealed class PgWireWriter
       SqlParameters parameters,
       CancellationToken cancellationToken)
   {
+    if (parameters.Count == 0)
+    {
+      WriteParseUnnamed(sql);
+      WriteBindDescribeExecuteNoParameters(
+        portalName: string.Empty,
+        statementName: string.Empty,
+        fetchSize: 0);
+      await _writer.FlushAsync(cancellationToken).ConfigureAwait(false);
+      return;
+    }
+
     ArrayBufferWriter<byte> parse = new();
     parse.WriteByte(0);
     parse.WriteCString(sql);
@@ -258,6 +269,67 @@ internal sealed class PgWireWriter
     describe.WriteCString(portalName);
     WriteTyped((byte)'D', describe.WrittenSpan);
     WriteExecute(portalName, fetchSize);
+    WriteTyped((byte)'S', ReadOnlySpan<byte>.Empty);
+  }
+
+  private void WriteParseUnnamed(string sql)
+  {
+    int sqlLength = Utf8.GetByteCount(sql);
+    int payloadLength = 1 + sqlLength + 1 + sizeof(short);
+    Span<byte> message = _writer.GetSpan(5 + payloadLength);
+    message[0] = (byte)'P';
+    BinaryPrimitives.WriteInt32BigEndian(
+      message[1..],
+      payloadLength + sizeof(int));
+    int position = 5;
+    message[position++] = 0;
+    position += Utf8.GetBytes(sql, message[position..]);
+    message[position++] = 0;
+    BinaryPrimitives.WriteInt16BigEndian(message[position..], 0);
+    _writer.Advance(5 + payloadLength);
+  }
+
+  private void WriteBindDescribeExecuteNoParameters(
+    string portalName,
+    string statementName,
+    int fetchSize)
+  {
+    int portalLength = Utf8.GetByteCount(portalName);
+    int statementLength = Utf8.GetByteCount(statementName);
+    int bindLength =
+      portalLength + 1 +
+      statementLength + 1 +
+      sizeof(short) +
+      sizeof(short) +
+      sizeof(short) +
+      sizeof(short);
+    Span<byte> bind = stackalloc byte[bindLength];
+    int position = 0;
+    position += Utf8.GetBytes(portalName, bind[position..]);
+    bind[position++] = 0;
+    position += Utf8.GetBytes(statementName, bind[position..]);
+    bind[position++] = 0;
+    BinaryPrimitives.WriteInt16BigEndian(bind[position..], 0);
+    position += sizeof(short);
+    BinaryPrimitives.WriteInt16BigEndian(bind[position..], 0);
+    position += sizeof(short);
+    BinaryPrimitives.WriteInt16BigEndian(bind[position..], 1);
+    position += sizeof(short);
+    BinaryPrimitives.WriteInt16BigEndian(bind[position..], 1);
+    WriteTyped((byte)'B', bind);
+
+    Span<byte> describe = stackalloc byte[1 + portalLength + 1];
+    describe[0] = (byte)'P';
+    position = 1;
+    position += Utf8.GetBytes(portalName, describe[position..]);
+    describe[position] = 0;
+    WriteTyped((byte)'D', describe);
+
+    Span<byte> execute = stackalloc byte[portalLength + 1 + sizeof(int)];
+    position = Utf8.GetBytes(portalName, execute);
+    execute[position++] = 0;
+    BinaryPrimitives.WriteInt32BigEndian(execute[position..], fetchSize);
+    WriteTyped((byte)'E', execute);
     WriteTyped((byte)'S', ReadOnlySpan<byte>.Empty);
   }
 

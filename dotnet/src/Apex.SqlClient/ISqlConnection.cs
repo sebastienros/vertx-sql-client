@@ -17,5 +17,10 @@ public interface ISqlConnection : ISqlClient
       string sql,
       CancellationToken cancellationToken = default);
 
+  ValueTask<ISqlRowReader> ExecuteReaderAsync(
+    string sql,
+    SqlParameters parameters = default,
+    CancellationToken cancellationToken = default);
+
   ValueTask<ISqlTransaction> BeginTransactionAsync(CancellationToken cancellationToken = default);
 }

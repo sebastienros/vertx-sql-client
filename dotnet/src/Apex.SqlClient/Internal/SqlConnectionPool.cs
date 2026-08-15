@@ -523,6 +523,27 @@ internal sealed class SqlConnectionPool<TConnection> : ISqlPool
       }
     }
 
+    public async ValueTask<ISqlRowReader> ExecuteReaderAsync(
+      string sql,
+      SqlParameters parameters = default,
+      CancellationToken cancellationToken = default)
+    {
+      TConnection connection = BeginChild();
+      try
+      {
+        ISqlRowReader reader = await connection.ExecuteReaderAsync(
+          sql,
+          parameters,
+          cancellationToken).ConfigureAwait(false);
+        return new LeaseRowReader(this, reader);
+      }
+      catch
+      {
+        await EndChildAsync().ConfigureAwait(false);
+        throw;
+      }
+    }
+
     public async ValueTask<ISqlTransaction> BeginTransactionAsync(
         CancellationToken cancellationToken = default)
     {
@@ -644,32 +665,32 @@ internal sealed class SqlConnectionPool<TConnection> : ISqlPool
       public string Sql => _inner.Sql;
 
       public ValueTask<SqlRowSet> QueryAsync(
-          SqlParameters parameters = default,
-          CancellationToken cancellationToken = default) =>
-          _inner.QueryAsync(parameters, cancellationToken);
+        SqlParameters parameters = default,
+        CancellationToken cancellationToken = default) =>
+        _inner.QueryAsync(parameters, cancellationToken);
 
       public ValueTask<SqlCommandResult> ExecuteAsync(
-          SqlParameters parameters = default,
-          CancellationToken cancellationToken = default) =>
-          _inner.ExecuteAsync(parameters, cancellationToken);
+        SqlParameters parameters = default,
+        CancellationToken cancellationToken = default) =>
+        _inner.ExecuteAsync(parameters, cancellationToken);
 
       public ValueTask<IReadOnlyList<SqlCommandResult>> ExecuteBatchAsync(
-          IReadOnlyList<SqlParameters> batch,
-          CancellationToken cancellationToken = default) =>
-          _inner.ExecuteBatchAsync(batch, cancellationToken);
+        IReadOnlyList<SqlParameters> batch,
+        CancellationToken cancellationToken = default) =>
+        _inner.ExecuteBatchAsync(batch, cancellationToken);
 
       public async ValueTask<ISqlCursor> OpenCursorAsync(
-          SqlParameters parameters = default,
-          int fetchSize = 50,
-          CancellationToken cancellationToken = default)
+        SqlParameters parameters = default,
+        int fetchSize = 50,
+        CancellationToken cancellationToken = default)
       {
         _lease.PinChild();
         try
         {
           ISqlCursor cursor = await _inner.OpenCursorAsync(
-              parameters,
-              fetchSize,
-              cancellationToken).ConfigureAwait(false);
+            parameters,
+            fetchSize,
+            cancellationToken).ConfigureAwait(false);
           return new LeaseCursor(_lease, cursor);
         }
         catch
@@ -679,18 +700,37 @@ internal sealed class SqlConnectionPool<TConnection> : ISqlPool
         }
       }
 
+      public async ValueTask<ISqlRowReader> ExecuteReaderAsync(
+        SqlParameters parameters = default,
+        CancellationToken cancellationToken = default)
+      {
+        _lease.PinChild();
+        try
+        {
+          ISqlRowReader reader = await _inner.ExecuteReaderAsync(
+            parameters,
+            cancellationToken).ConfigureAwait(false);
+          return new LeaseRowReader(_lease, reader);
+        }
+        catch
+        {
+          await _lease.EndChildAsync().ConfigureAwait(false);
+          throw;
+        }
+      }
+
       public async IAsyncEnumerable<SqlRow> StreamAsync(
-          SqlParameters parameters = default,
-          int fetchSize = 50,
-          [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        SqlParameters parameters = default,
+        int fetchSize = 50,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
       {
         _lease.PinChild();
         try
         {
           await foreach (SqlRow row in _inner.StreamAsync(
-                             parameters,
-                             fetchSize,
-                             cancellationToken).ConfigureAwait(false))
+                           parameters,
+                           fetchSize,
+                           cancellationToken).ConfigureAwait(false))
           {
             yield return row;
           }
@@ -717,43 +757,114 @@ internal sealed class SqlConnectionPool<TConnection> : ISqlPool
           await _lease.EndChildAsync().ConfigureAwait(false);
         }
       }
+    }
 
-      private sealed class LeaseCursor : ISqlCursor
+    private sealed class LeaseRowReader : ISqlRowReader
+    {
+      private readonly Lease _lease;
+      private readonly ISqlRowReader _inner;
+      private int _disposed;
+
+      internal LeaseRowReader(Lease lease, ISqlRowReader inner)
       {
-        private readonly Lease _lease;
-        private readonly ISqlCursor _inner;
-        private int _disposed;
+        _lease = lease;
+        _inner = inner;
+      }
 
-        internal LeaseCursor(Lease lease, ISqlCursor inner)
+      public IReadOnlyList<SqlColumn> Columns => _inner.Columns;
+
+      public int FieldCount => _inner.FieldCount;
+
+      public ValueTask<bool> ReadAsync(
+        CancellationToken cancellationToken = default) =>
+        _inner.ReadAsync(cancellationToken);
+
+      public bool IsNull(int ordinal) => _inner.IsNull(ordinal);
+
+      public int GetOrdinal(string name) => _inner.GetOrdinal(name);
+
+      public T Get<T>(int ordinal) => _inner.Get<T>(ordinal);
+
+      public bool GetBoolean(int ordinal) => _inner.GetBoolean(ordinal);
+
+      public short GetInt16(int ordinal) => _inner.GetInt16(ordinal);
+
+      public int GetInt32(int ordinal) => _inner.GetInt32(ordinal);
+
+      public long GetInt64(int ordinal) => _inner.GetInt64(ordinal);
+
+      public float GetFloat(int ordinal) => _inner.GetFloat(ordinal);
+
+      public double GetDouble(int ordinal) => _inner.GetDouble(ordinal);
+
+      public string GetString(int ordinal) => _inner.GetString(ordinal);
+
+      public Guid GetGuid(int ordinal) => _inner.GetGuid(ordinal);
+
+      public DateOnly GetDateOnly(int ordinal) => _inner.GetDateOnly(ordinal);
+
+      public TimeOnly GetTimeOnly(int ordinal) => _inner.GetTimeOnly(ordinal);
+
+      public DateTime GetDateTime(int ordinal) => _inner.GetDateTime(ordinal);
+
+      public DateTimeOffset GetDateTimeOffset(int ordinal) =>
+        _inner.GetDateTimeOffset(ordinal);
+
+      public byte[] GetBytes(int ordinal) => _inner.GetBytes(ordinal);
+
+      public async ValueTask DisposeAsync()
+      {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
         {
-          _lease = lease;
-          _inner = inner;
+          return;
         }
 
-        public bool HasMore => _inner.HasMore;
-
-        public IReadOnlyList<SqlColumn> Columns => _inner.Columns;
-
-        public ValueTask<SqlRowSet> ReadAsync(
-            int count,
-            CancellationToken cancellationToken = default) =>
-            _inner.ReadAsync(count, cancellationToken);
-
-        public async ValueTask DisposeAsync()
+        try
         {
-          if (Interlocked.Exchange(ref _disposed, 1) != 0)
-          {
-            return;
-          }
+          await _inner.DisposeAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+          await _lease.EndChildAsync().ConfigureAwait(false);
+        }
+      }
+    }
 
-          try
-          {
-            await _inner.DisposeAsync().ConfigureAwait(false);
-          }
-          finally
-          {
-            await _lease.EndChildAsync().ConfigureAwait(false);
-          }
+    private sealed class LeaseCursor : ISqlCursor
+    {
+      private readonly Lease _lease;
+      private readonly ISqlCursor _inner;
+      private int _disposed;
+
+      internal LeaseCursor(Lease lease, ISqlCursor inner)
+      {
+        _lease = lease;
+        _inner = inner;
+      }
+
+      public bool HasMore => _inner.HasMore;
+
+      public IReadOnlyList<SqlColumn> Columns => _inner.Columns;
+
+      public ValueTask<SqlRowSet> ReadAsync(
+        int count,
+        CancellationToken cancellationToken = default) =>
+        _inner.ReadAsync(count, cancellationToken);
+
+      public async ValueTask DisposeAsync()
+      {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+          return;
+        }
+
+        try
+        {
+          await _inner.DisposeAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+          await _lease.EndChildAsync().ConfigureAwait(false);
         }
       }
     }
@@ -772,13 +883,15 @@ internal sealed class SqlConnectionPool<TConnection> : ISqlPool
 
       public bool IsCompleted => _inner.IsCompleted;
 
-      public async ValueTask CommitAsync(CancellationToken cancellationToken = default)
+      public async ValueTask CommitAsync(
+        CancellationToken cancellationToken = default)
       {
         await _inner.CommitAsync(cancellationToken).ConfigureAwait(false);
         await ReleaseAsync().ConfigureAwait(false);
       }
 
-      public async ValueTask RollbackAsync(CancellationToken cancellationToken = default)
+      public async ValueTask RollbackAsync(
+        CancellationToken cancellationToken = default)
       {
         await _inner.RollbackAsync(cancellationToken).ConfigureAwait(false);
         await ReleaseAsync().ConfigureAwait(false);

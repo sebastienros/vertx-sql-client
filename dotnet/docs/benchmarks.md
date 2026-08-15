@@ -99,6 +99,35 @@ Allocation-event traces of matched 8-second streaming runs reported 417.4 MB for
 
 Npgsql had no per-row allocation category. About 90% of its sampled bytes were fixed per-operation `NpgsqlCommand`, `NpgsqlBatchCommand`, `ExecuteReader`/`NextResult` state machines, and command behavior objects.
 
+### Lazy rows, borrowed readers, and repeated strings
+
+The safe streaming API now stores PostgreSQL `DataRow` payloads in shared pages
+and decodes values only when accessed. The borrowed `ISqlRowReader` exposes the
+current protocol row only until the next `ReadAsync` call, avoiding safe-row
+ownership allocations entirely. Typed getters such as `GetInt32` decode common
+scalars without boxing.
+
+Repeated small text values use a bounded, per-connection UTF-8 cache with
+two-hit admission. It is direct-mapped, collision-checked against retained
+bytes, and cleared and disabled when the connection closes. The default cache
+contains 1,024 entries and only considers values up to 64 UTF-8 bytes. Global
+string interning is not used. Boxed access also reuses boolean and integer
+objects from -128 through 255; typed getters do not need this cache.
+
+PostgreSQL 16, one connection, 100 identical 14-byte text rows, 2-second
+warmup and 5-second measurement:
+
+| Driver / cache | Operations/s | p50 | Allocated/op |
+|---|---:|---:|---:|
+| Apex, disabled | 2,392 | 0.411 ms | 16,199 B |
+| Apex, enabled | 2,377 | 0.414 ms | 10,598 B |
+| Npgsql | 3,015 | 0.323 ms | 6,748 B |
+
+The cache removes about 5.6 KB per operation, matching 100 avoided string
+allocations, without a measurable latency regression. One-off values retain
+only a hash and byte length as admission metadata; their decoded strings and
+buffers are not retained.
+
 Scaling the same query validates the attribution:
 
 | Driver | Rows | Allocated/op |

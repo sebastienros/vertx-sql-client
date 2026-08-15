@@ -109,4 +109,18 @@ public class PostgreSqlBenchmarks
 
     return sum;
   }
+
+  [Benchmark]
+  public async Task<int> ApexBorrowedReader100RowsAsync()
+  {
+    int sum = 0;
+    await using ISqlRowReader reader = await _apex.ExecuteReaderAsync(
+      "SELECT generate_series(1, 100)::int4");
+    while (await reader.ReadAsync())
+    {
+      sum += reader.GetInt32(0);
+    }
+
+    return sum;
+  }
 }

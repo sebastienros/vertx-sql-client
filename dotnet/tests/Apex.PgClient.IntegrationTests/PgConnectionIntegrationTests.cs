@@ -223,6 +223,214 @@ public sealed class PgConnectionIntegrationTests
   }
 
   [TestMethod]
+  public async Task ReadsBorrowedRowsWithTypedGetters()
+  {
+    PostgreSqlContainer container = _container ??
+      throw new InvalidOperationException("The PostgreSQL container is not running.");
+    PgConnectOptions options = new()
+    {
+      Host = container.Hostname,
+      Port = container.GetMappedPublicPort(5432),
+      Database = "db",
+      Username = "user",
+      Password = "pass",
+    };
+
+    await using PgConnection connection = await PgClient.ConnectAsync(options);
+    await using ISqlRowReader reader = await connection.ExecuteReaderAsync(
+      "SELECT generate_series(1, 3)::int4 AS value, 'text'::text AS label");
+    int sum = 0;
+    while (await reader.ReadAsync())
+    {
+      Assert.AreEqual(2, reader.FieldCount);
+      Assert.AreEqual(0, reader.GetOrdinal("value"));
+      sum += reader.GetInt32("value");
+      Assert.AreEqual("text", reader.GetString("label"));
+    }
+
+    Assert.AreEqual(6, sum);
+
+    await using ISqlPreparedStatement statement =
+      await connection.PrepareAsync("SELECT $1::int4 AS value");
+    await using ISqlRowReader prepared =
+      await statement.ExecuteReaderAsync(SqlParameters.Create(42));
+    Assert.IsTrue(await prepared.ReadAsync());
+    Assert.AreEqual(42, prepared.GetInt32(0));
+    Assert.IsFalse(await prepared.ReadAsync());
+  }
+
+  [TestMethod]
+  public async Task SafeRowsRemainValidAfterConnectionDisposal()
+  {
+    PostgreSqlContainer container = _container ??
+      throw new InvalidOperationException("The PostgreSQL container is not running.");
+    PgConnectOptions options = new()
+    {
+      Host = container.Hostname,
+      Port = container.GetMappedPublicPort(5432),
+      Database = "db",
+      Username = "user",
+      Password = "pass",
+    };
+
+    SqlRow row;
+    await using (PgConnection connection = await PgClient.ConnectAsync(options))
+    {
+      row = (await connection.QueryAsync(
+        "SELECT 42::int4 AS value, 'safe'::text AS label"))[0];
+    }
+
+    Assert.AreEqual(42, row.GetInt32("value"));
+    Assert.AreEqual("safe", row.GetString("label"));
+  }
+
+  [TestMethod]
+  public async Task ReusesRepeatedStringsAndBoxedScalars()
+  {
+    PostgreSqlContainer container = _container ??
+      throw new InvalidOperationException("The PostgreSQL container is not running.");
+    PgConnectOptions options = new()
+    {
+      Host = container.Hostname,
+      Port = container.GetMappedPublicPort(5432),
+      Database = "db",
+      Username = "user",
+      Password = "pass",
+      StringCacheCapacity = 16,
+      StringCacheMaximumByteLength = 64,
+    };
+
+    await using PgConnection connection = await PgClient.ConnectAsync(options);
+    SqlRowSet rows = await connection.QueryAsync(
+      "SELECT 42::int4 AS value, 'repeated'::text AS label " +
+      "FROM generate_series(1, 3)");
+    string first = rows[0].GetString("label");
+    string second = rows[1].GetString("label");
+    string third = rows[2].GetString("label");
+
+    Assert.AreNotSame(first, second);
+    Assert.AreSame(second, third);
+    Assert.AreSame(rows[0]["value"], rows[1]["value"]);
+  }
+
+  [TestMethod]
+  public async Task PooledReaderPinsConnectionLease()
+  {
+    PostgreSqlContainer container = _container ??
+      throw new InvalidOperationException("The PostgreSQL container is not running.");
+    PgConnectOptions options = new()
+    {
+      Host = container.Hostname,
+      Port = container.GetMappedPublicPort(5432),
+      Database = "db",
+      Username = "user",
+      Password = "pass",
+    };
+
+    await using PgPool pool = PgPool.Create(
+      options,
+      new SqlPoolOptions
+      {
+        MaximumSize = 1,
+        AcquisitionTimeout = TimeSpan.FromSeconds(5),
+      });
+    ISqlConnection first = await pool.GetConnectionAsync();
+    ISqlRowReader reader = await first.ExecuteReaderAsync(
+      "SELECT generate_series(1, 2)::int4");
+    await first.DisposeAsync();
+
+    Task<ISqlConnection> pending = pool.GetConnectionAsync().AsTask();
+    await Task.Delay(50);
+    Assert.IsFalse(pending.IsCompleted);
+
+    await reader.DisposeAsync();
+    await using ISqlConnection second = await pending;
+    Assert.AreEqual(1, (await second.QueryAsync("SELECT 1::int4"))[0].GetInt32(0));
+  }
+
+  [TestMethod]
+  public async Task ReusesPullReaderRepeatedly()
+  {
+    PostgreSqlContainer container = _container ??
+      throw new InvalidOperationException("The PostgreSQL container is not running.");
+    PgConnectOptions options = new()
+    {
+      Host = container.Hostname,
+      Port = container.GetMappedPublicPort(5432),
+      Database = "db",
+      Username = "user",
+      Password = "pass",
+    };
+
+    await using PgConnection connection = await PgClient.ConnectAsync(options);
+    using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(20));
+    for (int iteration = 0; iteration < 1000; iteration++)
+    {
+      await using ISqlRowReader reader = await connection.ExecuteReaderAsync(
+        "SELECT generate_series(1, 100)::int4",
+        cancellationToken: timeout.Token);
+      int sum = 0;
+      while (await reader.ReadAsync(timeout.Token))
+      {
+        sum += reader.GetInt32(0);
+      }
+
+      Assert.AreEqual(5050, sum);
+    }
+  }
+
+  [TestMethod]
+  public async Task CancelsBorrowedReaderAndReusesConnection()
+  {
+    PostgreSqlContainer container = _container ??
+      throw new InvalidOperationException("The PostgreSQL container is not running.");
+    PgConnectOptions options = new()
+    {
+      Host = container.Hostname,
+      Port = container.GetMappedPublicPort(5432),
+      Database = "db",
+      Username = "user",
+      Password = "pass",
+    };
+
+    await using PgConnection connection = await PgClient.ConnectAsync(options);
+    using CancellationTokenSource cancellation = new(TimeSpan.FromMilliseconds(200));
+    await using ISqlRowReader reader = await connection.ExecuteReaderAsync(
+      "SELECT pg_sleep(10), 1::int4",
+      cancellationToken: cancellation.Token);
+    OperationCanceledException exception =
+      await Assert.ThrowsAsync<OperationCanceledException>(
+      () => reader.ReadAsync(cancellation.Token).AsTask());
+    Assert.AreEqual(cancellation.Token, exception.CancellationToken);
+    Assert.AreEqual(
+      42,
+      (await connection.QueryAsync("SELECT 42::int4"))[0].GetInt32(0));
+  }
+
+  [TestMethod]
+  public async Task ReaderDescribesColumnsForEmptyResult()
+  {
+    PostgreSqlContainer container = _container ??
+      throw new InvalidOperationException("The PostgreSQL container is not running.");
+    PgConnectOptions options = new()
+    {
+      Host = container.Hostname,
+      Port = container.GetMappedPublicPort(5432),
+      Database = "db",
+      Username = "user",
+      Password = "pass",
+    };
+
+    await using PgConnection connection = await PgClient.ConnectAsync(options);
+    await using ISqlRowReader reader = await connection.ExecuteReaderAsync(
+      "SELECT 1::int4 AS value WHERE false");
+
+    Assert.IsFalse(await reader.ReadAsync());
+    Assert.AreEqual(1, reader.FieldCount);
+    Assert.AreEqual("value", reader.Columns[0].Name);
+  }
+
+  [TestMethod]
   public async Task CancellationLeavesConnectionReusable()
   {
     PostgreSqlContainer container = _container ??

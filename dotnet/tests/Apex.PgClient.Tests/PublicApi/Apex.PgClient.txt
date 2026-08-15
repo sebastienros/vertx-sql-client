@@ -73,6 +73,8 @@ class Apex.PgClient.PgConnectOptions : Apex.SqlClient.SqlConnectOptions, System.
   Method: Boolean op_Inequality(Apex.PgClient.PgConnectOptions, Apex.PgClient.PgConnectOptions)
   Method: Int32 GetHashCode()
   Method: Int32 get_PipeliningLimit()
+  Method: Int32 get_StringCacheCapacity()
+  Method: Int32 get_StringCacheMaximumByteLength()
   Method: System.Collections.Generic.IReadOnlyDictionary`2[System.String,System.String] get_Properties()
   Method: System.Collections.Generic.IReadOnlyList`1[System.Security.Cryptography.X509Certificates.X509Certificate2] get_ClientCertificates()
   Method: System.Net.Security.RemoteCertificateValidationCallback get_CertificateValidationCallback()
@@ -87,6 +89,8 @@ class Apex.PgClient.PgConnectOptions : Apex.SqlClient.SqlConnectOptions, System.
   Method: Void set_Proxy(Apex.PgClient.PgProxyOptions)
   Method: Void set_SslMode(Apex.PgClient.PgSslMode)
   Method: Void set_SslNegotiation(Apex.PgClient.PgSslNegotiation)
+  Method: Void set_StringCacheCapacity(Int32)
+  Method: Void set_StringCacheMaximumByteLength(Int32)
   Method: Void set_UseLayer7Proxy(Boolean)
   Property: Apex.PgClient.PgChannelBinding ChannelBinding
   Property: Apex.PgClient.PgProxyOptions Proxy
@@ -94,6 +98,8 @@ class Apex.PgClient.PgConnectOptions : Apex.SqlClient.SqlConnectOptions, System.
   Property: Apex.PgClient.PgSslNegotiation SslNegotiation
   Property: Boolean UseLayer7Proxy
   Property: Int32 PipeliningLimit
+  Property: Int32 StringCacheCapacity
+  Property: Int32 StringCacheMaximumByteLength
   Property: System.Collections.Generic.IReadOnlyDictionary`2[System.String,System.String] Properties
   Property: System.Collections.Generic.IReadOnlyList`1[System.Security.Cryptography.X509Certificates.X509Certificate2] ClientCertificates
   Property: System.Net.Security.RemoteCertificateValidationCallback CertificateValidationCallback
@@ -109,6 +115,7 @@ class Apex.PgClient.PgConnection : Apex.SqlClient.ISqlClient, Apex.SqlClient.ISq
   Method: System.Threading.Tasks.ValueTask CancelRequestAsync(System.Threading.CancellationToken)
   Method: System.Threading.Tasks.ValueTask DisposeAsync()
   Method: System.Threading.Tasks.ValueTask`1[Apex.SqlClient.ISqlPreparedStatement] PrepareAsync(System.String, System.Threading.CancellationToken)
+  Method: System.Threading.Tasks.ValueTask`1[Apex.SqlClient.ISqlRowReader] ExecuteReaderAsync(System.String, Apex.SqlClient.SqlParameters, System.Threading.CancellationToken)
   Method: System.Threading.Tasks.ValueTask`1[Apex.SqlClient.ISqlTransaction] BeginTransactionAsync(System.Threading.CancellationToken)
   Method: System.Threading.Tasks.ValueTask`1[Apex.SqlClient.SqlCommandResult] ExecuteAsync(System.String, Apex.SqlClient.SqlParameters, System.Threading.CancellationToken)
   Method: System.Threading.Tasks.ValueTask`1[Apex.SqlClient.SqlCommandResult] ExecuteAsync(System.String, System.Threading.CancellationToken)

@@ -13,7 +13,7 @@ using System.Runtime.CompilerServices;
 using System.Security.Authentication;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
-using System.Threading.Channels;
+using System.Threading.Tasks.Sources;
 using Apex.PgClient.Internal;
 using Apex.SqlClient;
 using Apex.SqlClient.Internal;
@@ -29,6 +29,7 @@ public sealed class PgConnection : ISqlConnection
   private readonly PipeWriter _pipeWriter;
   private readonly PgWireReader _reader;
   private readonly PgWireWriter _writer;
+  private readonly PgRowDecoder _rowDecoder;
   private readonly byte[]? _channelBindingData;
   private readonly BoundedOrderedCommandScheduler _scheduler;
   private readonly object _statementCacheGate = new();
@@ -58,6 +59,9 @@ public sealed class PgConnection : ISqlConnection
     _pipeWriter = PipeWriter.Create(stream, new StreamPipeWriterOptions(leaveOpen: true));
     _reader = new PgWireReader(_pipeReader);
     _writer = new PgWireWriter(_pipeWriter);
+    _rowDecoder = new PgRowDecoder(
+      options.StringCacheCapacity,
+      options.StringCacheMaximumByteLength);
     _scheduler = new BoundedOrderedCommandScheduler(
       options.PipeliningLimit,
       (int)Math.Max(16, Math.Min(4096, (long)options.PipeliningLimit * 4)),
@@ -239,6 +243,22 @@ public sealed class PgConnection : ISqlConnection
       cancellationToken).ConfigureAwait(false);
   }
 
+  public ValueTask<ISqlRowReader> ExecuteReaderAsync(
+    string sql,
+    SqlParameters parameters = default,
+    CancellationToken cancellationToken = default)
+  {
+    ObjectDisposedException.ThrowIf(_disposed, this);
+    ArgumentException.ThrowIfNullOrWhiteSpace(sql);
+    return ValueTask.FromResult<ISqlRowReader>(
+      new PgRowReader(
+        this,
+        sql,
+        statementName: null,
+        parameters,
+        cancellationToken));
+  }
+
   public async ValueTask<ISqlTransaction> BeginTransactionAsync(
       CancellationToken cancellationToken = default)
   {
@@ -320,6 +340,7 @@ public sealed class PgConnection : ISqlConnection
       await _reader.CompleteAsync().ConfigureAwait(false);
       await _stream.DisposeAsync().ConfigureAwait(false);
       _socket.Dispose();
+      _rowDecoder.DisableCache();
     }
   }
 
@@ -774,6 +795,18 @@ public sealed class PgConnection : ISqlConnection
     }
   }
 
+  internal ValueTask<ISqlRowReader> ExecutePreparedReaderAsync(
+    string statementName,
+    SqlParameters parameters,
+    CancellationToken cancellationToken) =>
+    ValueTask.FromResult<ISqlRowReader>(
+      new PgRowReader(
+        this,
+        sql: null,
+        statementName,
+        parameters,
+        cancellationToken));
+
   private async IAsyncEnumerable<SqlRow> StreamRowsAsync(
     string? sql,
     string? statementName,
@@ -781,80 +814,35 @@ public sealed class PgConnection : ISqlConnection
     int capacity,
     [EnumeratorCancellation] CancellationToken cancellationToken)
   {
-    ObjectDisposedException.ThrowIf(_disposed, this);
-    Channel<SqlRow> rows = Channel.CreateBounded<SqlRow>(
-      new BoundedChannelOptions(capacity)
-      {
-        AllowSynchronousContinuations = false,
-        FullMode = BoundedChannelFullMode.Wait,
-        SingleReader = true,
-        SingleWriter = true,
-      });
-    using CancellationTokenSource stopPublishing = new();
-    Task<bool> operation = _scheduler.ExecuteAsync(
-      async token =>
-      {
-        token.ThrowIfCancellationRequested();
-        if (sql is not null)
-        {
-          await _writer.WriteExtendedQueryAsync(
-            sql,
-            parameters,
-            CancellationToken.None).ConfigureAwait(false);
-        }
-        else
-        {
-          await _writer.WritePreparedQueryAsync(
-            statementName!,
-            parameters,
-            CancellationToken.None).ConfigureAwait(false);
-        }
-      },
-      _ => ReadStreamingQueryResultsAsync(
-        rows.Writer,
-        cancellationToken,
-        stopPublishing.Token),
-      barrier: true,
-      cancellationToken).AsTask();
-    _ = CompleteStreamOnOperationFailureAsync(operation, rows.Writer);
-    try
+    int pageCapacity = Math.Min(capacity, 256);
+    await using PgRowReader reader = new(
+      this,
+      sql,
+      statementName,
+      parameters,
+      cancellationToken);
+    while (true)
     {
-      await foreach (SqlRow row in rows.Reader.ReadAllAsync(cancellationToken)
-                       .ConfigureAwait(false))
+      SqlRowPageBuilder page = new(
+        _rowDecoder,
+        rowCapacity: pageCapacity,
+        byteCapacity: Math.Max(256, pageCapacity * 16));
+      while (page.Count < pageCapacity &&
+             await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
       {
-        yield return row;
+        reader.CopyCurrentTo(page);
       }
 
-      await operation.ConfigureAwait(false);
-    }
-    finally
-    {
-      if (!operation.IsCompleted)
+      if (page.Count == 0)
       {
-        await stopPublishing.CancelAsync().ConfigureAwait(false);
+        yield break;
       }
 
-      try
+      SqlRowPageBatch batch = page.BuildBatch(reader.Columns);
+      for (int i = 0; i < batch.Count; i++)
       {
-        await operation.ConfigureAwait(false);
+        yield return batch.CreateRow(i);
       }
-      catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-      {
-      }
-    }
-  }
-
-  private static async Task CompleteStreamOnOperationFailureAsync(
-    Task operation,
-    ChannelWriter<SqlRow> rows)
-  {
-    try
-    {
-      await operation.ConfigureAwait(false);
-    }
-    catch (Exception exception)
-    {
-      rows.TryComplete(exception);
     }
   }
 
@@ -899,7 +887,7 @@ public sealed class PgConnection : ISqlConnection
   private async ValueTask<SqlRowSet> ReadQueryResultsAsync(CancellationToken cancellationToken)
   {
     List<ResultBuilder> results = [];
-    ResultBuilder current = new();
+    ResultBuilder current = new(_rowDecoder);
     PgException? error = null;
 
     while (true)
@@ -911,17 +899,17 @@ public sealed class PgConnection : ISqlConnection
           current.SetColumns(ParseColumns(message.Payload.Span));
           break;
         case (byte)'D':
-          current.AddRow(ParseRow(message.Payload.Span, current.Columns));
+          current.AddRow(message.Payload.Span);
           break;
         case (byte)'C':
           current.Complete(ParseCommandTag(message.Payload.Span));
           results.Add(current);
-          current = new ResultBuilder();
+          current = new ResultBuilder(_rowDecoder);
           break;
         case (byte)'I':
           current.Complete(string.Empty);
           results.Add(current);
-          current = new ResultBuilder();
+          current = new ResultBuilder(_rowDecoder);
           break;
         case (byte)'E':
           error = ParseError(message.Payload.Span);
@@ -956,105 +944,12 @@ public sealed class PgConnection : ISqlConnection
     }
   }
 
-  private async ValueTask<bool> ReadStreamingQueryResultsAsync(
-    ChannelWriter<SqlRow> rows,
-    CancellationToken callerCancellation,
-    CancellationToken stopPublishing)
-  {
-    IReadOnlyList<SqlColumn> columns = Array.Empty<SqlColumn>();
-    PgException? error = null;
-    bool publish = true;
-    Task? cancellationRequest = null;
-    using CancellationTokenSource publishCancellation =
-      CancellationTokenSource.CreateLinkedTokenSource(
-        callerCancellation,
-        stopPublishing);
-    using CancellationTokenRegistration registration = callerCancellation.Register(
-      () => cancellationRequest = TryCancelRequestAsync());
-    try
-    {
-      while (true)
-      {
-        using PgWireMessage message =
-          await _reader.ReadAsync(CancellationToken.None).ConfigureAwait(false);
-        switch (message.Type)
-        {
-          case (byte)'T':
-            columns = ParseColumns(message.Payload.Span);
-            break;
-          case (byte)'D':
-            SqlRow row = ParseRow(message.Payload.Span, columns);
-            if (publish)
-            {
-              try
-              {
-                await rows.WriteAsync(row, publishCancellation.Token).ConfigureAwait(false);
-              }
-              catch (OperationCanceledException) when (publishCancellation.IsCancellationRequested)
-              {
-                publish = false;
-              }
-            }
-
-            break;
-          case (byte)'E':
-            error = ParseError(message.Payload.Span);
-            break;
-          case (byte)'N':
-            HandleNotice(message.Payload.Span);
-            break;
-          case (byte)'S':
-            HandleParameterStatus(message.Payload.Span);
-            break;
-          case (byte)'A':
-            HandleNotification(message.Payload.Span);
-            break;
-          case (byte)'1':
-          case (byte)'2':
-          case (byte)'3':
-          case (byte)'C':
-          case (byte)'I':
-          case (byte)'n':
-          case (byte)'t':
-            break;
-          case (byte)'Z':
-            UpdateTransactionStatus(message.Payload.Span);
-            if (cancellationRequest is not null)
-            {
-              await cancellationRequest.ConfigureAwait(false);
-            }
-
-            if (callerCancellation.IsCancellationRequested)
-            {
-              throw new OperationCanceledException(callerCancellation);
-            }
-
-            if (error is not null)
-            {
-              throw error;
-            }
-
-            rows.TryComplete();
-            return true;
-          default:
-            throw new InvalidDataException(
-              $"Unexpected PostgreSQL streaming message '{(char)message.Type}'.");
-        }
-      }
-    }
-    catch (Exception exception)
-    {
-      rows.TryComplete(exception);
-      throw;
-    }
-  }
-
   private async ValueTask<PortalPage> ReadPortalPageAsync(
     IReadOnlyList<SqlColumn> existingColumns,
     CancellationToken cancellationToken)
   {
     IReadOnlyList<SqlColumn> columns = existingColumns;
-    List<SqlRow> rows = [];
+    SqlRowPageCollectionBuilder rows = new(_rowDecoder);
     string commandTag = string.Empty;
     bool hasMore = false;
     bool completed = false;
@@ -1068,7 +963,8 @@ public sealed class PgConnection : ISqlConnection
           columns = ParseColumns(message.Payload.Span);
           break;
         case (byte)'D':
-          rows.Add(ParseRow(message.Payload.Span, columns));
+          ValidateRow(message.Payload.Span, columns, _rowDecoder);
+          rows.Add(message.Payload.Span);
           break;
         case (byte)'C':
           commandTag = ParseCommandTag(message.Payload.Span);
@@ -1108,7 +1004,7 @@ public sealed class PgConnection : ISqlConnection
           return new PortalPage(
             new SqlRowSet(
               columns,
-              rows.ToArray(),
+              rows.Build(columns),
               ParseAffectedRows(commandTag),
               commandTag),
             hasMore);
@@ -1186,37 +1082,17 @@ public sealed class PgConnection : ISqlConnection
     return columns;
   }
 
-  private static SqlRow ParseRow(
+  private static void ValidateRow(
       ReadOnlySpan<byte> payload,
-      IReadOnlyList<SqlColumn> columns)
+      IReadOnlyList<SqlColumn> columns,
+      PgRowDecoder decoder)
   {
-    PgPayloadReader reader = new(payload);
-    int count = reader.ReadInt16();
+    int count = decoder.GetFieldCount(payload);
     if (count != columns.Count)
     {
       throw new InvalidDataException(
           $"PostgreSQL row has {count} values but {columns.Count} columns were described.");
     }
-
-    object?[] values = new object?[count];
-    for (int i = 0; i < count; i++)
-    {
-      int length = reader.ReadInt32();
-      try
-      {
-        values[i] = length < 0
-          ? null
-          : DecodeColumn(columns[i], reader.ReadSpan(length));
-      }
-      catch (Exception exception)
-      {
-        throw new InvalidDataException(
-          $"Failed to decode PostgreSQL column {i} with type OID {columns[i].TypeId}.",
-          exception);
-      }
-    }
-
-    return new SqlRow(columns, values);
   }
 
   private static string ParseCommandTag(ReadOnlySpan<byte> payload)
@@ -1224,11 +1100,6 @@ public sealed class PgConnection : ISqlConnection
     PgPayloadReader reader = new(payload);
     return reader.ReadCString();
   }
-
-  private static object DecodeColumn(SqlColumn column, ReadOnlySpan<byte> value) =>
-    column.Format == SqlDataFormat.Binary
-      ? PgBinaryCodec.Decode(column.TypeId, value)
-      : PgTextCodec.Decode(column.TypeId, value);
 
   private static SqlRowSet BuildResultChain(IReadOnlyList<ResultBuilder> builders)
   {
@@ -1520,6 +1391,21 @@ public sealed class PgConnection : ISqlConnection
 
     ArgumentOutOfRangeException.ThrowIfNegativeOrZero(options.PipeliningLimit);
     ArgumentOutOfRangeException.ThrowIfNegative(options.PreparedStatementCacheSize);
+    ArgumentOutOfRangeException.ThrowIfNegative(options.StringCacheCapacity);
+    ArgumentOutOfRangeException.ThrowIfNegative(options.StringCacheMaximumByteLength);
+    if (options.StringCacheCapacity > 1_048_576)
+    {
+      throw new ArgumentOutOfRangeException(
+        nameof(options),
+        "String cache capacity must be at most 1,048,576.");
+    }
+
+    if (options.StringCacheMaximumByteLength > 4096)
+    {
+      throw new ArgumentOutOfRangeException(
+        nameof(options),
+        "Cached strings must be at most 4,096 UTF-8 bytes.");
+    }
     if (options.Proxy is not null)
     {
       ArgumentException.ThrowIfNullOrWhiteSpace(options.Proxy.Host);
@@ -1557,23 +1443,525 @@ public sealed class PgConnection : ISqlConnection
 
   private sealed class ResultBuilder
   {
-    private readonly List<SqlRow> _rows = [];
+    private readonly PgRowDecoder _decoder;
+    private readonly SqlRowPageCollectionBuilder _rows;
     private string _commandTag = string.Empty;
+
+    internal ResultBuilder(PgRowDecoder decoder)
+    {
+      _decoder = decoder;
+      _rows = new SqlRowPageCollectionBuilder(decoder);
+    }
 
     public IReadOnlyList<SqlColumn> Columns { get; private set; } = Array.Empty<SqlColumn>();
 
     public void SetColumns(IReadOnlyList<SqlColumn> columns) => Columns = columns;
 
-    public void AddRow(SqlRow row) => _rows.Add(row);
+    public void AddRow(ReadOnlySpan<byte> row)
+    {
+      ValidateRow(row, Columns, _decoder);
+      _rows.Add(row);
+    }
 
     public void Complete(string commandTag) => _commandTag = commandTag;
 
     public SqlRowSet Build(SqlRowSet? next)
     {
       long affectedRows = PgConnection.ParseAffectedRows(_commandTag);
-      return new SqlRowSet(Columns, _rows.ToArray(), affectedRows, _commandTag, next);
+      return new SqlRowSet(
+        Columns,
+        _rows.Build(Columns),
+        affectedRows,
+        _commandTag,
+        next);
+    }
+  }
+
+  private sealed class PgRowReader : ISqlRowReader, IValueTaskSource<bool>
+  {
+    private readonly PgConnection _connection;
+    private readonly AsyncAutoResetEvent _advance = new();
+    private readonly object _gate = new();
+    private readonly Action _cancelAction;
+    private readonly CancellationTokenRegistration _operationCancellation;
+    private readonly CancellationToken _operationCancellationToken;
+    private readonly Task<bool> _operation;
+    private ManualResetValueTaskSourceCore<bool> _readCompletion;
+    private CancellationTokenRegistration _readCancellation;
+    private CancellationToken _readCancellationToken;
+    private CancellationToken _cancellationToken;
+    private PgWireMessage _current;
+    private IReadOnlyList<SqlColumn> _columns = Array.Empty<SqlColumn>();
+    private Exception? _error;
+    private Task? _cancelRequest;
+    private bool _hasCurrent;
+    private bool _currentDelivered;
+    private bool _completed;
+    private bool _stopped;
+    private bool _canceled;
+    private bool _sent;
+    private bool _readPending;
+    private int _disposed;
+
+    internal PgRowReader(
+      PgConnection connection,
+      string? sql,
+      string? statementName,
+      SqlParameters parameters,
+      CancellationToken cancellationToken)
+    {
+      _connection = connection;
+      _operationCancellationToken = cancellationToken;
+      _cancelAction = Cancel;
+      _readCompletion.RunContinuationsAsynchronously = true;
+      _operationCancellation = cancellationToken.CanBeCanceled
+        ? cancellationToken.Register(_cancelAction)
+        : default;
+      _operation = connection._scheduler.ExecuteAsync(
+        async token =>
+        {
+          token.ThrowIfCancellationRequested();
+          if (sql is not null)
+          {
+            await connection._writer.WriteExtendedQueryAsync(
+              sql,
+              parameters,
+              CancellationToken.None).ConfigureAwait(false);
+          }
+          else
+          {
+            await connection._writer.WritePreparedQueryAsync(
+              statementName!,
+              parameters,
+              CancellationToken.None).ConfigureAwait(false);
+          }
+
+          Task? cancelRequest = null;
+          lock (_gate)
+          {
+            _sent = true;
+            if (_canceled && _cancelRequest is null)
+            {
+              cancelRequest = _cancelRequest =
+                _connection.TryCancelRequestAsync();
+            }
+          }
+
+          _ = cancelRequest;
+        },
+        _ => PumpAsync(),
+        barrier: true,
+        cancellationToken).AsTask();
+      _ = ObserveOperationAsync();
     }
 
+    public IReadOnlyList<SqlColumn> Columns => _columns;
+
+    public int FieldCount => _columns.Count;
+
+    public ValueTask<bool> ReadAsync(
+      CancellationToken cancellationToken = default)
+    {
+      ObjectDisposedException.ThrowIf(_disposed != 0, this);
+      cancellationToken.ThrowIfCancellationRequested();
+      bool advance;
+      lock (_gate)
+      {
+        ThrowIfError();
+        if (_completed)
+        {
+          return ValueTask.FromResult(false);
+        }
+
+        if (_hasCurrent && !_currentDelivered)
+        {
+          _currentDelivered = true;
+          return ValueTask.FromResult(true);
+        }
+
+        if (_readPending)
+        {
+          throw new InvalidOperationException("Concurrent row reads are not supported.");
+        }
+
+        advance = _hasCurrent;
+        _readPending = true;
+        _readCompletion.Reset();
+        _readCancellationToken = cancellationToken;
+        _readCancellation = cancellationToken.CanBeCanceled
+          ? cancellationToken.Register(_cancelAction)
+          : default;
+      }
+
+      if (advance)
+      {
+        _advance.Set();
+      }
+
+      return new ValueTask<bool>(this, _readCompletion.Version);
+    }
+
+    public bool GetResult(short token)
+    {
+      CancellationTokenRegistration registration;
+      CancellationToken cancellationToken;
+      bool result;
+      try
+      {
+        result = _readCompletion.GetResult(token);
+      }
+      finally
+      {
+        lock (_gate)
+        {
+          registration = _readCancellation;
+          cancellationToken = _readCancellationToken;
+          _readCancellation = default;
+          _readCancellationToken = default;
+          _readPending = false;
+        }
+
+        registration.Dispose();
+      }
+
+      cancellationToken.ThrowIfCancellationRequested();
+      return result;
+    }
+
+    public ValueTaskSourceStatus GetStatus(short token) =>
+      _readCompletion.GetStatus(token);
+
+    public void OnCompleted(
+      Action<object?> continuation,
+      object? state,
+      short token,
+      ValueTaskSourceOnCompletedFlags flags) =>
+      _readCompletion.OnCompleted(continuation, state, token, flags);
+
+    public bool IsNull(int ordinal)
+    {
+      EnsureCurrent();
+      return _connection._rowDecoder.IsNull(_current.Payload.Span, ordinal);
+    }
+
+    public int GetOrdinal(string name)
+    {
+      ArgumentException.ThrowIfNullOrEmpty(name);
+      for (int i = 0; i < _columns.Count; i++)
+      {
+        if (string.Equals(_columns[i].Name, name, StringComparison.Ordinal))
+        {
+          return i;
+        }
+      }
+
+      throw new IndexOutOfRangeException($"Column '{name}' does not exist.");
+    }
+
+    public T Get<T>(int ordinal)
+    {
+      EnsureCurrent();
+      return _connection._rowDecoder.Decode<T>(
+        _current.Payload.Span,
+        ordinal,
+        _columns[ordinal]);
+    }
+
+    public bool GetBoolean(int ordinal) => Get<bool>(ordinal);
+
+    public short GetInt16(int ordinal) => Get<short>(ordinal);
+
+    public int GetInt32(int ordinal) => Get<int>(ordinal);
+
+    public long GetInt64(int ordinal) => Get<long>(ordinal);
+
+    public float GetFloat(int ordinal) => Get<float>(ordinal);
+
+    public double GetDouble(int ordinal) => Get<double>(ordinal);
+
+    public string GetString(int ordinal) => Get<string>(ordinal);
+
+    public Guid GetGuid(int ordinal) => Get<Guid>(ordinal);
+
+    public DateOnly GetDateOnly(int ordinal) => Get<DateOnly>(ordinal);
+
+    public TimeOnly GetTimeOnly(int ordinal) => Get<TimeOnly>(ordinal);
+
+    public DateTime GetDateTime(int ordinal) => Get<DateTime>(ordinal);
+
+    public DateTimeOffset GetDateTimeOffset(int ordinal) =>
+      Get<DateTimeOffset>(ordinal);
+
+    public byte[] GetBytes(int ordinal) => Get<byte[]>(ordinal);
+
+    public async ValueTask DisposeAsync()
+    {
+      if (Interlocked.Exchange(ref _disposed, 1) != 0)
+      {
+        return;
+      }
+
+      lock (_gate)
+      {
+        _stopped = true;
+      }
+
+      _advance.Set();
+      try
+      {
+        await _operation.ConfigureAwait(false);
+      }
+      catch (OperationCanceledException)
+      {
+      }
+      finally
+      {
+        _operationCancellation.Dispose();
+        DisposeCurrent();
+      }
+    }
+
+    internal void CopyCurrentTo(SqlRowPageBuilder page)
+    {
+      EnsureCurrent();
+      page.Add(_current.Payload.Span);
+    }
+
+    private async ValueTask<bool> PumpAsync()
+    {
+      PgException? serverError = null;
+      try
+      {
+        while (true)
+        {
+          PgWireMessage message =
+            await _connection._reader.ReadAsync(CancellationToken.None)
+              .ConfigureAwait(false);
+          bool retained = false;
+          try
+          {
+            switch (message.Type)
+            {
+              case (byte)'T':
+                _columns = ParseColumns(message.Payload.Span);
+                break;
+              case (byte)'D':
+                ValidateRow(
+                  message.Payload.Span,
+                  _columns,
+                  _connection._rowDecoder);
+                lock (_gate)
+                {
+                  if (!_stopped)
+                  {
+                    _current = message;
+                    _hasCurrent = true;
+                    _currentDelivered = false;
+                    retained = true;
+                  }
+                }
+
+                if (retained)
+                {
+                  SignalRead(result: true, error: null);
+                  await _advance.WaitAsync().ConfigureAwait(false);
+                  DisposeCurrent();
+                }
+
+                break;
+              case (byte)'E':
+                serverError = ParseError(message.Payload.Span);
+                break;
+              case (byte)'N':
+                _connection.HandleNotice(message.Payload.Span);
+                break;
+              case (byte)'S':
+                _connection.HandleParameterStatus(message.Payload.Span);
+                break;
+              case (byte)'A':
+                _connection.HandleNotification(message.Payload.Span);
+                break;
+              case (byte)'1':
+              case (byte)'2':
+              case (byte)'3':
+              case (byte)'C':
+              case (byte)'I':
+              case (byte)'n':
+              case (byte)'t':
+                break;
+              case (byte)'Z':
+                _connection.UpdateTransactionStatus(message.Payload.Span);
+                Task? cancelRequest;
+                lock (_gate)
+                {
+                  cancelRequest = _cancelRequest;
+                }
+
+                if (cancelRequest is not null)
+                {
+                  await cancelRequest.ConfigureAwait(false);
+                }
+
+                bool canceled;
+                lock (_gate)
+                {
+                  canceled = _canceled;
+                }
+
+                if (canceled)
+                {
+                  throw new OperationCanceledException(_cancellationToken);
+                }
+
+                if (serverError is not null)
+                {
+                  throw serverError;
+                }
+
+                Complete(error: null);
+                return true;
+              default:
+                throw new InvalidDataException(
+                  $"Unexpected PostgreSQL reader message '{(char)message.Type}'.");
+            }
+          }
+          finally
+          {
+            if (!retained)
+            {
+              message.Dispose();
+            }
+          }
+        }
+      }
+      catch (Exception exception)
+      {
+        Complete(exception);
+        throw;
+      }
+    }
+
+    private async Task ObserveOperationAsync()
+    {
+      try
+      {
+        await _operation.ConfigureAwait(false);
+      }
+      catch (Exception exception)
+      {
+        Complete(exception);
+      }
+    }
+
+    private void Cancel()
+    {
+      bool advance;
+      lock (_gate)
+      {
+        if (_completed || _canceled)
+        {
+          return;
+        }
+
+        _canceled = true;
+        _stopped = true;
+        _cancellationToken = _readCancellationToken.IsCancellationRequested
+          ? _readCancellationToken
+          : _operationCancellationToken;
+        advance = !_hasCurrent || !_currentDelivered;
+        if (_sent)
+        {
+          _cancelRequest = _connection.TryCancelRequestAsync();
+        }
+      }
+
+      if (advance)
+      {
+        _advance.Set();
+      }
+    }
+
+    private void Complete(Exception? error)
+    {
+      lock (_gate)
+      {
+        if (_completed)
+        {
+          return;
+        }
+
+        _error = error;
+        _completed = true;
+      }
+
+      SignalRead(result: false, error);
+    }
+
+    private void DisposeCurrent()
+    {
+      lock (_gate)
+      {
+        if (!_hasCurrent)
+        {
+          return;
+        }
+
+        _current.Dispose();
+        _current = default;
+        _hasCurrent = false;
+        _currentDelivered = false;
+      }
+    }
+
+    private void EnsureCurrent()
+    {
+      ObjectDisposedException.ThrowIf(_disposed != 0, this);
+      lock (_gate)
+      {
+        ThrowIfError();
+        if (!_hasCurrent)
+        {
+          throw new InvalidOperationException("ReadAsync must return true first.");
+        }
+      }
+    }
+
+    private void ThrowIfError()
+    {
+      if (_error is not null)
+      {
+        System.Runtime.ExceptionServices.ExceptionDispatchInfo
+          .Capture(_error)
+          .Throw();
+      }
+    }
+
+    private void SignalRead(bool result, Exception? error)
+    {
+      bool signal;
+      lock (_gate)
+      {
+        signal = _readPending;
+        if (signal && result)
+        {
+          _currentDelivered = true;
+        }
+      }
+
+      if (!signal)
+      {
+        return;
+      }
+
+      if (error is not null)
+      {
+        _readCompletion.SetException(error);
+      }
+      else
+      {
+        _readCompletion.SetResult(result);
+      }
+    }
   }
 
   internal readonly record struct PortalPage(SqlRowSet Rows, bool HasMore);

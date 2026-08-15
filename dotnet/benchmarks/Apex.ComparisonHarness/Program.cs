@@ -184,6 +184,7 @@ internal sealed class ApexQueryRunner(
   string workload,
   int fetchSize,
   string streamSql,
+  int rowCount,
   int expectedSum,
   int pipelineDepth,
   ISqlPreparedStatement? pipelineStatement) : IQueryRunner
@@ -198,6 +199,9 @@ internal sealed class ApexQueryRunner(
     NpgsqlConnectionStringBuilder builder = new(connectionString);
     string username = builder.Username ??
       throw new InvalidOperationException("Connection string requires Username.");
+    int stringCacheCapacity = int.Parse(
+      Environment.GetEnvironmentVariable("APEX_BENCH_STRING_CACHE_CAPACITY") ??
+      "1024");
     PgConnection connection = await PgClient.ConnectAsync(new PgConnectOptions
     {
       Host = builder.Host ??
@@ -207,6 +211,7 @@ internal sealed class ApexQueryRunner(
       Username = username,
       Password = builder.Password ?? string.Empty,
       PipeliningLimit = 256,
+      StringCacheCapacity = stringCacheCapacity,
     });
     ISqlPreparedStatement? pipelineStatement = workload == "pipeline"
       ? await connection.PrepareAsync("SELECT 1::int4")
@@ -215,7 +220,10 @@ internal sealed class ApexQueryRunner(
       connection,
       workload,
       fetchSize,
-      $"SELECT generate_series(1, {rowCount})::int4",
+      workload == "string100"
+        ? $"SELECT 'repeated-value'::text FROM generate_series(1, {rowCount})"
+        : $"SELECT generate_series(1, {rowCount})::int4",
+      rowCount,
       checked(rowCount * (rowCount + 1) / 2),
       pipelineDepth,
       pipelineStatement);
@@ -241,6 +249,21 @@ internal sealed class ApexQueryRunner(
         throw new InvalidOperationException("Unexpected Apex pipeline result.");
       }
     }
+    else if (workload == "borrowed100")
+    {
+      int sum = 0;
+      await using ISqlRowReader reader =
+        await connection.ExecuteReaderAsync(streamSql, cancellationToken: cancellationToken);
+      while (await reader.ReadAsync(cancellationToken))
+      {
+        sum += reader.GetInt32(0);
+      }
+
+      if (sum != expectedSum)
+      {
+        throw new InvalidOperationException($"Unexpected borrowed-reader sum {sum}.");
+      }
+    }
     else if (workload == "stream100")
     {
       int sum = 0;
@@ -255,6 +278,27 @@ internal sealed class ApexQueryRunner(
       if (sum != expectedSum)
       {
         throw new InvalidOperationException($"Unexpected stream sum {sum}.");
+      }
+    }
+    else if (workload == "string100")
+    {
+      int count = 0;
+      await foreach (SqlRow row in connection.StreamAsync(
+                       streamSql,
+                       fetchSize: fetchSize,
+                       cancellationToken: cancellationToken))
+      {
+        if (row.GetString(0) != "repeated-value")
+        {
+          throw new InvalidOperationException("Unexpected string value.");
+        }
+
+        count++;
+      }
+
+      if (count != rowCount)
+      {
+        throw new InvalidOperationException($"Unexpected row count {count}.");
       }
     }
     else
@@ -278,6 +322,7 @@ internal sealed class NpgsqlQueryRunner(
   NpgsqlConnection connection,
   string workload,
   string streamSql,
+  int rowCount,
   int expectedSum,
   int pipelineDepth,
   NpgsqlBatch? pipelineBatch) : IQueryRunner
@@ -306,7 +351,10 @@ internal sealed class NpgsqlQueryRunner(
     return new NpgsqlQueryRunner(
       connection,
       workload,
-      $"SELECT generate_series(1, {rowCount})::int4",
+      workload == "string100"
+        ? $"SELECT 'repeated-value'::text FROM generate_series(1, {rowCount})"
+        : $"SELECT generate_series(1, {rowCount})::int4",
+      rowCount,
       checked(rowCount * (rowCount + 1) / 2),
       pipelineDepth,
       pipelineBatch);
@@ -340,7 +388,7 @@ internal sealed class NpgsqlQueryRunner(
           $"Expected {pipelineDepth} Npgsql results but received {count}.");
       }
     }
-    else if (workload == "stream100")
+    else if (workload is "stream100" or "borrowed100")
     {
       await using NpgsqlCommand command =
         new(streamSql, connection);
@@ -355,6 +403,28 @@ internal sealed class NpgsqlQueryRunner(
       if (sum != expectedSum)
       {
         throw new InvalidOperationException($"Unexpected stream sum {sum}.");
+      }
+    }
+    else if (workload == "string100")
+    {
+      await using NpgsqlCommand command =
+        new(streamSql, connection);
+      await using NpgsqlDataReader reader =
+        await command.ExecuteReaderAsync(cancellationToken);
+      int count = 0;
+      while (await reader.ReadAsync(cancellationToken))
+      {
+        if (reader.GetString(0) != "repeated-value")
+        {
+          throw new InvalidOperationException("Unexpected string value.");
+        }
+
+        count++;
+      }
+
+      if (count != rowCount)
+      {
+        throw new InvalidOperationException($"Unexpected row count {count}.");
       }
     }
     else

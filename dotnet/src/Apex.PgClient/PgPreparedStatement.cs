@@ -76,6 +76,17 @@ internal sealed class PgPreparedStatement : ISqlPreparedStatement
       cancellationToken).ConfigureAwait(false);
   }
 
+  public ValueTask<ISqlRowReader> ExecuteReaderAsync(
+    SqlParameters parameters = default,
+    CancellationToken cancellationToken = default)
+  {
+    ObjectDisposedException.ThrowIf(_disposed, this);
+    return _connection.ExecutePreparedReaderAsync(
+      _name,
+      parameters,
+      cancellationToken);
+  }
+
   public async IAsyncEnumerable<SqlRow> StreamAsync(
     SqlParameters parameters = default,
     int fetchSize = 50,

@@ -386,6 +386,12 @@ public sealed class SqlConnectionPoolTests
       return ValueTask.FromResult<ISqlPreparedStatement>(PreparedStatement);
     }
 
+    public ValueTask<ISqlRowReader> ExecuteReaderAsync(
+      string sql,
+      SqlParameters parameters = default,
+      CancellationToken cancellationToken = default) =>
+      ValueTask.FromResult<ISqlRowReader>(new FakeRowReader());
+
     public ValueTask<ISqlTransaction> BeginTransactionAsync(
         CancellationToken cancellationToken = default) =>
         ValueTask.FromResult<ISqlTransaction>(new FakeTransaction());
@@ -434,6 +440,11 @@ public sealed class SqlConnectionPoolTests
         CancellationToken cancellationToken = default) =>
         ValueTask.FromResult<ISqlCursor>(new FakeCursor());
 
+    public ValueTask<ISqlRowReader> ExecuteReaderAsync(
+      SqlParameters parameters = default,
+      CancellationToken cancellationToken = default) =>
+      ValueTask.FromResult<ISqlRowReader>(new FakeRowReader());
+
     public IAsyncEnumerable<SqlRow> StreamAsync(
         SqlParameters parameters = default,
         int fetchSize = 50,
@@ -460,6 +471,52 @@ public sealed class SqlConnectionPoolTests
         int count,
         CancellationToken cancellationToken = default) =>
         ValueTask.FromResult(SqlRowSet.Empty);
+
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+  }
+
+  private sealed class FakeRowReader : ISqlRowReader
+  {
+    public IReadOnlyList<SqlColumn> Columns => [];
+
+    public int FieldCount => 0;
+
+    public ValueTask<bool> ReadAsync(
+      CancellationToken cancellationToken = default) =>
+      ValueTask.FromResult(false);
+
+    public bool IsNull(int ordinal) => throw new ArgumentOutOfRangeException(nameof(ordinal));
+
+    public int GetOrdinal(string name) => throw new IndexOutOfRangeException(name);
+
+    public T Get<T>(int ordinal) => throw new ArgumentOutOfRangeException(nameof(ordinal));
+
+    public bool GetBoolean(int ordinal) => Get<bool>(ordinal);
+
+    public short GetInt16(int ordinal) => Get<short>(ordinal);
+
+    public int GetInt32(int ordinal) => Get<int>(ordinal);
+
+    public long GetInt64(int ordinal) => Get<long>(ordinal);
+
+    public float GetFloat(int ordinal) => Get<float>(ordinal);
+
+    public double GetDouble(int ordinal) => Get<double>(ordinal);
+
+    public string GetString(int ordinal) => Get<string>(ordinal);
+
+    public Guid GetGuid(int ordinal) => Get<Guid>(ordinal);
+
+    public DateOnly GetDateOnly(int ordinal) => Get<DateOnly>(ordinal);
+
+    public TimeOnly GetTimeOnly(int ordinal) => Get<TimeOnly>(ordinal);
+
+    public DateTime GetDateTime(int ordinal) => Get<DateTime>(ordinal);
+
+    public DateTimeOffset GetDateTimeOffset(int ordinal) =>
+      Get<DateTimeOffset>(ordinal);
+
+    public byte[] GetBytes(int ordinal) => Get<byte[]>(ordinal);
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
   }

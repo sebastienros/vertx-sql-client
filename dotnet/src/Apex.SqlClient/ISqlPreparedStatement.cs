@@ -28,6 +28,10 @@ public interface ISqlPreparedStatement : IAsyncDisposable
       int fetchSize = 50,
       CancellationToken cancellationToken = default);
 
+  ValueTask<ISqlRowReader> ExecuteReaderAsync(
+      SqlParameters parameters = default,
+      CancellationToken cancellationToken = default);
+
   IAsyncEnumerable<SqlRow> StreamAsync(
       SqlParameters parameters = default,
       int fetchSize = 50,
