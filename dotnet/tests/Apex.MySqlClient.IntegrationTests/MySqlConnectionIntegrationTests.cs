@@ -4,6 +4,11 @@
  * SPDX-License-Identifier: EPL-2.0 OR Apache-2.0
  */
 
+using System.Collections;
+using System.Globalization;
+using System.Net;
+using System.Net.NetworkInformation;
+using System.Numerics;
 using System.Text.Json;
 using Apex.SqlClient;
 using Testcontainers.MySql;
@@ -755,6 +760,59 @@ public sealed class MySqlConnectionIntegrationTests
         Assert.AreEqual(value, textRows[0].Get<MySqlDecimal>(0));
         Assert.AreEqual(value, binaryRows[0].Get<MySqlDecimal>(0));
         Assert.AreEqual(text, textRows[0].Get<MySqlDecimal>(0).ToString());
+    }
+
+    [TestMethod]
+    public async Task RoundTripsBclScalarAlternatives()
+    {
+        BigInteger integer = BigInteger.Parse(
+          "123456789012345678901234567890",
+          CultureInfo.InvariantCulture);
+        IPAddress address = IPAddress.Parse("192.0.2.1");
+        PhysicalAddress physicalAddress = PhysicalAddress.Parse("08-00-2B-01-02-03");
+        BitArray bits = new(new[] { true, false, true, true });
+        await using var connection = await MySqlClient.ConnectAsync(Options);
+        await connection.ExecuteAsync(
+          "CREATE TEMPORARY TABLE bcl_scalar_matrix (" +
+          "c_integer DECIMAL(65,0), c_character CHAR(1), c_characters VARCHAR(20), " +
+          "c_address VARCHAR(45), c_physical VARBINARY(8), c_bits BIT(4), " +
+          "c_half FLOAT, c_int128 DECIMAL(65,0), c_uint128 DECIMAL(65,0))");
+        await using (var insert = await connection.PrepareAsync(
+          "INSERT INTO bcl_scalar_matrix VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"))
+        {
+            await insert.ExecuteAsync(SqlParameters.Create(
+              SqlValue.From(integer),
+              SqlValue.From('x'),
+              SqlValue.From("hello".ToCharArray()),
+              SqlValue.From(address),
+              SqlValue.From(physicalAddress),
+              SqlValue.From(bits),
+              SqlValue.From((Half)1.5f),
+              SqlValue.From(Int128.MinValue),
+              SqlValue.From(UInt128.MaxValue)));
+        }
+
+        await AssertValuesAsync(await connection.QueryAsync("SELECT * FROM bcl_scalar_matrix"));
+        await using var select = await connection.PrepareAsync("SELECT * FROM bcl_scalar_matrix");
+        await AssertValuesAsync(await select.QueryAsync());
+
+        Task AssertValuesAsync(SqlRowSet rows)
+        {
+            var row = rows[0];
+            Assert.AreEqual(integer, row.Get<BigInteger>("c_integer"));
+            Assert.AreEqual('x', row.Get<char>("c_character"));
+            CollectionAssert.AreEqual("hello".ToCharArray(), row.Get<char[]>("c_characters"));
+            Assert.AreEqual(address, row.Get<IPAddress>("c_address"));
+            Assert.AreEqual(physicalAddress, row.Get<PhysicalAddress>("c_physical"));
+            BitArray decodedBits = row.Get<BitArray>("c_bits");
+            CollectionAssert.AreEqual(
+              new[] { true, false, true, true },
+              Enumerable.Range(0, decodedBits.Count).Select(index => decodedBits[index]).ToArray());
+            Assert.AreEqual((Half)1.5f, row.Get<Half>("c_half"));
+            Assert.AreEqual(Int128.MinValue, row.Get<Int128>("c_int128"));
+            Assert.AreEqual(UInt128.MaxValue, row.Get<UInt128>("c_uint128"));
+            return Task.CompletedTask;
+        }
     }
 
     [TestMethod]

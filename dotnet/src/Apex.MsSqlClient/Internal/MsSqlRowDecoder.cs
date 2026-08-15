@@ -5,6 +5,10 @@
  */
 
 using System.Buffers.Binary;
+using System.Collections;
+using System.Net;
+using System.Net.NetworkInformation;
+using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Apex.SqlClient;
@@ -492,6 +496,11 @@ internal sealed class MsSqlRowDecoder : ISqlRowDecoder
         SqlColumn column,
         bool copyReadOnlyMemory)
     {
+        if (BclAlternative<T>.IsSupported)
+        {
+            return DecodeBclAlternative<T>(row, ordinal, column);
+        }
+
         switch (TypedDecoder<T>.s_kind)
         {
             case TypedDecoderKind.Boolean:
@@ -587,6 +596,207 @@ internal sealed class MsSqlRowDecoder : ISqlRowDecoder
                   checked((byte)column.TypeId),
                   typeof(T));
         }
+    }
+
+    private T DecodeBclAlternative<T>(
+        ReadOnlyMemory<byte> row,
+        int ordinal,
+        SqlColumn column)
+    {
+        var requestedType = typeof(T);
+        var valueType = Nullable.GetUnderlyingType(requestedType) ?? requestedType;
+        byte type = checked((byte)column.TypeId);
+        if (valueType == typeof(sbyte))
+        {
+            EnsureType(
+              column,
+              type is TdsDataType.Int1 or TdsDataType.Int2 ||
+              type == TdsDataType.IntN && column.TypeSize is 1 or 2,
+              requestedType);
+        }
+                else if (valueType == typeof(Half))
+                {
+                        EnsureType(
+                            column,
+                            type == TdsDataType.Float4 ||
+                            type == TdsDataType.FloatN && column.TypeSize == 4,
+                            requestedType);
+                }
+                else if (valueType == typeof(BigInteger) ||
+                                 valueType == typeof(Int128) ||
+                                 valueType == typeof(UInt128))
+        {
+            EnsureType(
+              column,
+                            type is (TdsDataType.Decimal or TdsDataType.Numeric or
+                                TdsDataType.DecimalN or TdsDataType.NumericN) &&
+                                (byte)column.TypeModifier == 0,
+              requestedType);
+        }
+        else if (valueType == typeof(TimeSpan))
+        {
+            EnsureType(column, type == TdsDataType.Time, requestedType);
+        }
+        else if (valueType == typeof(char) || requestedType == typeof(char[]) ||
+                 requestedType == typeof(IPAddress) || requestedType == typeof(BitArray))
+        {
+            EnsureType(column, IsStringType(type), requestedType);
+        }
+        else if (requestedType == typeof(PhysicalAddress))
+        {
+            EnsureType(column, IsBinaryType(type), requestedType);
+        }
+        else
+        {
+            throw CreateInvalidCast(type, requestedType);
+        }
+
+        var field = GetField(row, ordinal);
+        if (field.IsNull)
+        {
+            if (default(T) is null)
+            {
+                return default!;
+            }
+
+            throw new InvalidCastException($"Column {ordinal} contains NULL.");
+        }
+
+        var bytes = field.Value.Span;
+        if (valueType == typeof(sbyte))
+        {
+            sbyte value = bytes.Length switch
+            {
+                1 => checked((sbyte)bytes[0]),
+                2 => checked((sbyte)ReadInt16(bytes)),
+                _ => throw CreateInvalidCast(type, requestedType),
+            };
+            return CastAlternative<T, sbyte>(value);
+        }
+
+        if (valueType == typeof(BigInteger))
+        {
+            if (bytes.IsEmpty)
+            {
+                throw new InvalidDataException("Invalid SQL Server numeric value.");
+            }
+
+            BigInteger value = new(bytes[1..], isUnsigned: true, isBigEndian: false);
+            if (bytes[0] == 0)
+            {
+                value = -value;
+            }
+
+            return CastAlternative<T, BigInteger>(value);
+        }
+
+        if (valueType == typeof(Int128))
+        {
+            BigInteger integer = DecodeBigInteger(bytes);
+            Int128 value = checked((Int128)integer);
+            return CastAlternative<T, Int128>(value);
+        }
+
+        if (valueType == typeof(UInt128))
+        {
+            BigInteger integer = DecodeBigInteger(bytes);
+            UInt128 value = checked((UInt128)integer);
+            return CastAlternative<T, UInt128>(value);
+        }
+
+        if (valueType == typeof(Half))
+        {
+            Half value = checked((Half)ReadSingle(bytes));
+            return CastAlternative<T, Half>(value);
+        }
+
+        if (valueType == typeof(TimeSpan))
+        {
+            TimeSpan value = DecodeTime(bytes, (byte)column.TypeModifier).ToTimeSpan();
+            return CastAlternative<T, TimeSpan>(value);
+        }
+
+        if (valueType == typeof(char))
+        {
+            string text = DecodeStringValue(bytes, column);
+            char value = text.Length == 1
+              ? text[0]
+              : throw CreateInvalidCast(type, requestedType);
+            return CastAlternative<T, char>(value);
+        }
+
+        if (requestedType == typeof(char[]))
+        {
+            return (T)(object)DecodeStringValue(bytes, column).ToCharArray();
+        }
+
+        if (requestedType == typeof(IPAddress))
+        {
+            return (T)(object)IPAddress.Parse(DecodeStringValue(bytes, column));
+        }
+
+        if (requestedType == typeof(PhysicalAddress))
+        {
+            return (T)(object)new PhysicalAddress(bytes.ToArray());
+        }
+
+        string bitText = DecodeStringValue(bytes, column);
+        var bits = new BitArray(bitText.Length);
+        for (var i = 0; i < bitText.Length; i++)
+        {
+            bits[i] = bitText[i] switch
+            {
+                '0' => false,
+                '1' => true,
+                _ => throw CreateInvalidCast(type, requestedType),
+            };
+        }
+
+        return (T)(object)bits;
+    }
+
+    private static T CastAlternative<T, TValue>(TValue value)
+      where TValue : struct
+    {
+        if (typeof(T) == typeof(TValue))
+        {
+            return Unsafe.As<TValue, T>(ref value);
+        }
+
+        TValue? nullable = value;
+        return Unsafe.As<TValue?, T>(ref nullable);
+    }
+
+    private static BigInteger DecodeBigInteger(ReadOnlySpan<byte> value)
+    {
+        if (value.IsEmpty)
+        {
+            throw new InvalidDataException("Invalid SQL Server numeric value.");
+        }
+
+        BigInteger result = new(value[1..], isUnsigned: true, isBigEndian: false);
+        return value[0] == 0 ? -result : result;
+    }
+
+    private static bool IsBclAlternative(Type type)
+    {
+        var valueType = Nullable.GetUnderlyingType(type) ?? type;
+        return valueType == typeof(sbyte) ||
+             valueType == typeof(Half) ||
+               valueType == typeof(BigInteger) ||
+             valueType == typeof(Int128) ||
+             valueType == typeof(UInt128) ||
+               valueType == typeof(TimeSpan) ||
+               valueType == typeof(char) ||
+               type == typeof(char[]) ||
+               type == typeof(IPAddress) ||
+               type == typeof(PhysicalAddress) ||
+               type == typeof(BitArray);
+    }
+
+    private static class BclAlternative<T>
+    {
+        internal static bool IsSupported { get; } = IsBclAlternative(typeof(T));
     }
 
     private static byte DecodeByte(

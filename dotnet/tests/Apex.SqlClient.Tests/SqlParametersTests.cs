@@ -41,6 +41,21 @@ public sealed class SqlParametersTests
     }
 
     [TestMethod]
+    public void DistinguishesByteAndSignedByteArrays()
+    {
+        byte[] bytes = [1, 2];
+        sbyte[] signedBytes = [-1, 2];
+
+        SqlValue binary = SqlValue.From(bytes);
+        SqlValue signed = SqlValue.From(signedBytes);
+
+        Assert.AreEqual(SqlValueKind.Bytes, binary.Kind);
+        Assert.AreSame(bytes, binary.Get<byte[]>());
+        Assert.AreEqual(SqlValueKind.Object, signed.Kind);
+        Assert.AreSame(signedBytes, signed.Get<sbyte[]>());
+    }
+
+    [TestMethod]
     public void DefaultValueIsEmpty()
     {
         SqlParameters parameters = default;

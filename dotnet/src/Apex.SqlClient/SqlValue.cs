@@ -42,7 +42,9 @@ public readonly struct SqlValue
           double typed => typed,
           decimal typed => typed,
           string typed => typed,
-          byte[] typed => typed,
+          byte[] typed when value.GetType() == typeof(byte[]) => typed,
+          sbyte[] typed when value.GetType() == typeof(sbyte[]) =>
+          new SqlValue(SqlValueKind.Object, reference: typed),
           ReadOnlyMemory<byte> typed => typed,
           Guid typed => typed,
           DateOnly typed => typed,

@@ -4,7 +4,11 @@
  * SPDX-License-Identifier: EPL-2.0 OR Apache-2.0
  */
 
+using System.Collections;
 using System.Globalization;
+using System.Net;
+using System.Net.NetworkInformation;
+using System.Numerics;
 using System.Text.Json;
 using Apex.MySqlClient.Internal;
 using Apex.SqlClient;
@@ -170,6 +174,62 @@ public sealed class MySqlParameterEncoderTests
 
         AssertTypeTable(ref reader, expected);
     }
+
+        [TestMethod]
+        public void EncodesBclAlternativeParameters()
+        {
+                BigInteger integer = BigInteger.Parse(
+                    "123456789012345678901234567890",
+                    CultureInfo.InvariantCulture);
+                SqlParameters parameters = SqlParameters.Create(
+                    SqlValue.From(integer),
+                    SqlValue.From("hello".ToCharArray()),
+                    SqlValue.From(IPAddress.Parse("192.0.2.1")),
+                    SqlValue.From(PhysicalAddress.Parse("08-00-2B-01-02-03")),
+                    SqlValue.From(new BitArray(new[] { true, false, true, true })));
+
+                var payload = Encode(MySqlCursorType.NoCursor, parameters);
+                MySqlPayloadReader reader = new(payload);
+                SkipHeaderBitmapAndSendFlag(ref reader, parameters.Count);
+                AssertTypeTable(ref reader,
+                [
+                    (MySqlType.NewDecimal, false),
+                    (MySqlType.VarString, false),
+                    (MySqlType.VarString, false),
+                    (MySqlType.Blob, false),
+                      (MySqlType.LongLong, true),
+                ]);
+
+                Assert.AreEqual(integer.ToString(CultureInfo.InvariantCulture), reader.ReadLengthEncodedString());
+                Assert.AreEqual("hello", reader.ReadLengthEncodedString());
+                Assert.AreEqual("192.0.2.1", reader.ReadLengthEncodedString());
+                CollectionAssert.AreEqual(
+                    new byte[] { 0x08, 0x00, 0x2b, 0x01, 0x02, 0x03 },
+                    reader.ReadLengthEncodedSpan(out _).ToArray());
+                Assert.AreEqual(0b1011UL, reader.ReadUInt64());
+        }
+
+        [TestMethod]
+        public void EncodesHalfAnd128BitIntegerParameters()
+        {
+                SqlParameters parameters = SqlParameters.Create(
+                    SqlValue.From((Half)1.5f),
+                    SqlValue.From(Int128.MinValue),
+                    SqlValue.From(UInt128.MaxValue));
+
+                var payload = Encode(MySqlCursorType.NoCursor, parameters);
+                MySqlPayloadReader reader = new(payload);
+                SkipHeaderBitmapAndSendFlag(ref reader, parameters.Count);
+                AssertTypeTable(ref reader,
+                [
+                    (MySqlType.Float, false),
+                    (MySqlType.NewDecimal, false),
+                    (MySqlType.NewDecimal, false),
+                ]);
+                Assert.AreEqual(1.5f, BitConverter.Int32BitsToSingle((int)reader.ReadUInt32()));
+                Assert.AreEqual(Int128.MinValue.ToString(CultureInfo.InvariantCulture), reader.ReadLengthEncodedString());
+                Assert.AreEqual(UInt128.MaxValue.ToString(CultureInfo.InvariantCulture), reader.ReadLengthEncodedString());
+        }
 
     [TestMethod]
     public void RejectsUnsupportedObjectParameterType()

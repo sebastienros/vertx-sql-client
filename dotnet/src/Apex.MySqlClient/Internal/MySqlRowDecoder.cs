@@ -5,6 +5,10 @@
  */
 
 using System.Buffers.Binary;
+using System.Collections;
+using System.Net;
+using System.Net.NetworkInformation;
+using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Apex.SqlClient;
@@ -523,6 +527,11 @@ internal sealed class MySqlRowDecoder : ISqlRowDecoder
             return DecodeJsonValue<T>(json, ordinal);
         }
 
+        if (BclAlternative<T>.IsSupported)
+        {
+            return DecodeBclAlternative<T>(row, ordinal, column);
+        }
+
         switch (TypedDecoder<T>.s_kind)
         {
             case TypedDecoderKind.Boolean:
@@ -635,6 +644,165 @@ internal sealed class MySqlRowDecoder : ISqlRowDecoder
             default:
                 throw CannotRead(column, typeof(T));
         }
+    }
+
+    private T DecodeBclAlternative<T>(
+        ReadOnlyMemory<byte> row,
+        int ordinal,
+        SqlColumn column)
+    {
+        var requestedType = typeof(T);
+        var valueType = Nullable.GetUnderlyingType(requestedType) ?? requestedType;
+        var metadata = EnsureColumn(ordinal, column, requestedType);
+        if (valueType == typeof(Half))
+        {
+            _ = EnsureType(ordinal, column, requestedType, MySqlType.Float);
+        }
+        else if (valueType == typeof(BigInteger) ||
+                 valueType == typeof(Int128) ||
+                 valueType == typeof(UInt128))
+        {
+            _ = EnsureType(
+              ordinal,
+              column,
+              requestedType,
+              MySqlType.Decimal,
+              MySqlType.NewDecimal);
+        }
+        else if (valueType == typeof(char) || requestedType == typeof(char[]) ||
+                 requestedType == typeof(IPAddress))
+        {
+            EnsureStringType(metadata, column, requestedType);
+        }
+        else if (requestedType == typeof(PhysicalAddress))
+        {
+            EnsureBytesType(metadata, column, requestedType);
+        }
+        else if (requestedType == typeof(BitArray))
+        {
+            _ = EnsureType(ordinal, column, requestedType, MySqlType.Bit);
+        }
+        else
+        {
+            throw CannotRead(column, requestedType);
+        }
+
+        var bytes = GetRequiredField(row, ordinal);
+        if (valueType == typeof(BigInteger))
+        {
+            var numeric = MySqlDecimal.Parse(_strings.GetString(bytes));
+            if (numeric.Scale != 0)
+            {
+                throw CannotRead(column, requestedType);
+            }
+
+            return CastAlternative<T, BigInteger>(numeric.UnscaledValue);
+        }
+
+        if (valueType == typeof(Int128))
+        {
+            var numeric = MySqlDecimal.Parse(_strings.GetString(bytes));
+            if (numeric.Scale != 0)
+            {
+                throw CannotRead(column, requestedType);
+            }
+
+            Int128 value = checked((Int128)numeric.UnscaledValue);
+            return CastAlternative<T, Int128>(value);
+        }
+
+        if (valueType == typeof(UInt128))
+        {
+            var numeric = MySqlDecimal.Parse(_strings.GetString(bytes));
+            if (numeric.Scale != 0)
+            {
+                throw CannotRead(column, requestedType);
+            }
+
+            UInt128 value = checked((UInt128)numeric.UnscaledValue);
+            return CastAlternative<T, UInt128>(value);
+        }
+
+        if (valueType == typeof(Half))
+        {
+            Half value = checked((Half)ReadDouble(bytes, metadata));
+            return CastAlternative<T, Half>(value);
+        }
+
+        if (valueType == typeof(char))
+        {
+            string text = _strings.GetString(bytes);
+            char value = text.Length == 1
+              ? text[0]
+              : throw CannotRead(column, requestedType);
+            return CastAlternative<T, char>(value);
+        }
+
+        if (requestedType == typeof(char[]))
+        {
+            return (T)(object)_strings.GetString(bytes).ToCharArray();
+        }
+
+        if (requestedType == typeof(IPAddress))
+        {
+            return (T)(object)IPAddress.Parse(_strings.GetString(bytes));
+        }
+
+        if (requestedType == typeof(PhysicalAddress))
+        {
+            if (bytes.Length is not (6 or 8))
+            {
+                throw CannotRead(column, requestedType);
+            }
+
+            return (T)(object)new PhysicalAddress(bytes.ToArray());
+        }
+
+        int bitCount = checked((int)metadata.ColumnLength);
+        if (bitCount is < 0 or > 64)
+        {
+            throw CannotRead(column, requestedType);
+        }
+
+        ulong bitValue = MySqlValueCodec.ParseBit(bytes);
+        var bits = new BitArray(bitCount);
+        for (var i = 0; i < bitCount; i++)
+        {
+            bits[i] = (bitValue & (1UL << (bitCount - 1 - i))) != 0;
+        }
+
+        return (T)(object)bits;
+    }
+
+    private static T CastAlternative<T, TValue>(TValue value)
+      where TValue : struct
+    {
+        if (typeof(T) == typeof(TValue))
+        {
+            return Unsafe.As<TValue, T>(ref value);
+        }
+
+        TValue? nullable = value;
+        return Unsafe.As<TValue?, T>(ref nullable);
+    }
+
+    private static bool IsBclAlternative(Type type)
+    {
+        var valueType = Nullable.GetUnderlyingType(type) ?? type;
+         return valueType == typeof(Half) ||
+             valueType == typeof(BigInteger) ||
+             valueType == typeof(Int128) ||
+             valueType == typeof(UInt128) ||
+               valueType == typeof(char) ||
+               type == typeof(char[]) ||
+               type == typeof(IPAddress) ||
+               type == typeof(PhysicalAddress) ||
+               type == typeof(BitArray);
+    }
+
+    private static class BclAlternative<T>
+    {
+        internal static bool IsSupported { get; } = IsBclAlternative(typeof(T));
     }
 
     internal T Decode<T>(ReadOnlyMemory<byte> row, int ordinal)

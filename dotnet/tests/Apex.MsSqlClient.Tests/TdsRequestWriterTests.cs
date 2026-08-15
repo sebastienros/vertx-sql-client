@@ -4,6 +4,11 @@
  * SPDX-License-Identifier: EPL-2.0 OR Apache-2.0
  */
 
+using System.Collections;
+using System.Globalization;
+using System.Net;
+using System.Net.NetworkInformation;
+using System.Numerics;
 using System.Text;
 using Apex.MsSqlClient.Internal;
 using Apex.SqlClient;
@@ -58,6 +63,73 @@ public sealed class TdsRequestWriterTests
         Assert.IsTrue(ContainsUtf16(payload.Span, "@P1 int,@P2 nvarchar(4000),@P3 uniqueidentifier"));
         Assert.IsTrue(ContainsUtf16(payload.Span, "@P1"));
         Assert.IsTrue(ContainsUtf16(payload.Span, "not interpolated"));
+    }
+
+    [TestMethod]
+    public void EncodesBclAlternativeParameters()
+    {
+        SqlParameters parameters = SqlParameters.Create(
+          SqlValue.From(BigInteger.Parse(
+            "123456789012345678901234567890",
+            CultureInfo.InvariantCulture)),
+          SqlValue.From(TimeSpan.FromHours(12.5)),
+          SqlValue.From((sbyte)-128),
+          SqlValue.From('x'),
+          SqlValue.From("hello".ToCharArray()),
+          SqlValue.From(IPAddress.Parse("192.0.2.1")),
+          SqlValue.From(PhysicalAddress.Parse("08-00-2B-01-02-03")),
+          SqlValue.From(new BitArray(new[] { true, false, true, true })));
+
+        var payload = TdsRequestWriter.BuildExecuteSql(
+          "SELECT @P1, @P2, @P3, @P4, @P5, @P6, @P7, @P8",
+          parameters,
+          0);
+
+        Assert.IsTrue(ContainsUtf16(
+          payload.Span,
+          "@P1 numeric(38,0),@P2 time(7),@P3 smallint,@P4 nvarchar(4000)," +
+          "@P5 nvarchar(4000),@P6 nvarchar(4000),@P7 varbinary(8000),@P8 nvarchar(4000)"));
+        Assert.IsTrue(ContainsUtf16(payload.Span, "192.0.2.1"));
+        Assert.IsTrue(ContainsUtf16(payload.Span, "1011"));
+
+        Assert.ThrowsExactly<OverflowException>(() =>
+          TdsRequestWriter.BuildExecuteSql(
+            "SELECT @P1",
+            SqlParameters.Create(SqlValue.From(BigInteger.Pow(10, 38))),
+            0));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+          TdsRequestWriter.BuildExecuteSql(
+            "SELECT @P1",
+            SqlParameters.Create(SqlValue.From(TimeSpan.FromDays(1))),
+            0));
+    }
+
+    [TestMethod]
+    public void EncodesHalfAnd128BitIntegerParameters()
+    {
+        SqlParameters parameters = SqlParameters.Create(
+          SqlValue.From((Half)1.5f),
+          SqlValue.From((Int128)1234567890123456789),
+          SqlValue.From((UInt128)12345678901234567890UL));
+
+        var payload = TdsRequestWriter.BuildExecuteSql(
+          "SELECT @P1, @P2, @P3",
+          parameters,
+          0);
+
+        Assert.IsTrue(ContainsUtf16(
+          payload.Span,
+          "@P1 real,@P2 numeric(38,0),@P3 numeric(38,0)"));
+        Assert.ThrowsExactly<OverflowException>(() =>
+          TdsRequestWriter.BuildExecuteSql(
+            "SELECT @P1",
+            SqlParameters.Create(SqlValue.From(Int128.MaxValue)),
+            0));
+        Assert.ThrowsExactly<OverflowException>(() =>
+          TdsRequestWriter.BuildExecuteSql(
+            "SELECT @P1",
+            SqlParameters.Create(SqlValue.From(UInt128.MaxValue)),
+            0));
     }
 
     [TestMethod]

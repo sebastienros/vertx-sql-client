@@ -5,7 +5,11 @@
  */
 
 using System.Buffers;
+using System.Collections;
 using System.Globalization;
+using System.Net;
+using System.Net.NetworkInformation;
+using System.Numerics;
 using System.Text;
 using System.Text.Json;
 using Apex.SqlClient;
@@ -144,6 +148,14 @@ internal static class TdsRequestWriter
           SqlValueKind.DateTimeOffset => "datetimeoffset(7)",
           SqlValueKind.JsonDocument or SqlValueKind.JsonElement => "nvarchar(max)",
           SqlValueKind.Object when value.ToObject() is byte => "tinyint",
+          SqlValueKind.Object when value.ToObject() is sbyte => "smallint",
+          SqlValueKind.Object when value.ToObject() is Half => "real",
+          SqlValueKind.Object when value.ToObject() is BigInteger => "numeric(38,0)",
+          SqlValueKind.Object when value.ToObject() is Int128 or UInt128 => "numeric(38,0)",
+          SqlValueKind.Object when value.ToObject() is TimeSpan => "time(7)",
+          SqlValueKind.Object when value.ToObject() is char or char[] or IPAddress or BitArray =>
+          "nvarchar(4000)",
+          SqlValueKind.Object when value.ToObject() is PhysicalAddress => "varbinary(8000)",
           _ => throw UnsupportedParameter(value),
       };
 
@@ -240,6 +252,42 @@ internal static class TdsRequestWriter
                 payload.WriteByte(1);
                 payload.WriteByte(1);
                 payload.WriteByte(byteValue);
+                break;
+            case SqlValueKind.Object when value.ToObject() is sbyte signedByte:
+                WriteHeader(payload, name, TdsDataType.IntN);
+                payload.WriteByte(2);
+                payload.WriteByte(2);
+                payload.WriteInt16LittleEndian(signedByte);
+                break;
+            case SqlValueKind.Object when value.ToObject() is Half half:
+                WriteFloatingPoint(payload, name, BitConverter.SingleToInt32Bits((float)half));
+                break;
+            case SqlValueKind.Object when value.ToObject() is BigInteger integer:
+                WriteBigInteger(payload, name, integer);
+                break;
+            case SqlValueKind.Object when value.ToObject() is Int128 integer:
+                WriteBigInteger(payload, name, BigInteger.CreateChecked(integer));
+                break;
+            case SqlValueKind.Object when value.ToObject() is UInt128 integer:
+                WriteBigInteger(payload, name, BigInteger.CreateChecked(integer));
+                break;
+            case SqlValueKind.Object when value.ToObject() is TimeSpan duration:
+                WriteTime(payload, name, duration);
+                break;
+            case SqlValueKind.Object when value.ToObject() is char character:
+                WriteNVarCharParameter(payload, name, character.ToString());
+                break;
+            case SqlValueKind.Object when value.ToObject() is char[] characters:
+                WriteNVarCharParameter(payload, name, new string(characters));
+                break;
+            case SqlValueKind.Object when value.ToObject() is IPAddress address:
+                WriteNVarCharParameter(payload, name, address.ToString());
+                break;
+            case SqlValueKind.Object when value.ToObject() is PhysicalAddress address:
+                WriteVarBinaryParameter(payload, name, address.GetAddressBytes());
+                break;
+            case SqlValueKind.Object when value.ToObject() is BitArray bits:
+                WriteNVarCharParameter(payload, name, FormatBits(bits));
                 break;
             default:
                 throw UnsupportedParameter(value);
@@ -386,6 +434,31 @@ internal static class TdsRequestWriter
         payload.WriteInt32LittleEndian(bits[2]);
     }
 
+    private static void WriteBigInteger(
+        ArrayBufferWriter<byte> payload,
+        string name,
+        BigInteger value)
+    {
+        if (BigInteger.Abs(value).ToString(CultureInfo.InvariantCulture).Length > 38)
+        {
+            throw new OverflowException("SQL Server numeric parameters support at most 38 digits.");
+        }
+
+        Span<byte> magnitude = stackalloc byte[16];
+        _ = BigInteger.Abs(value).TryWriteBytes(
+          magnitude,
+          out _,
+          isUnsigned: true,
+          isBigEndian: false);
+        WriteHeader(payload, name, TdsDataType.DecimalN);
+        payload.WriteByte(17);
+        payload.WriteByte(38);
+        payload.WriteByte(0);
+        payload.WriteByte(17);
+        payload.WriteByte(value.Sign < 0 ? (byte)0 : (byte)1);
+        payload.Write(magnitude);
+    }
+
     private static void WriteGuid(
         ArrayBufferWriter<byte> payload,
         string name,
@@ -420,6 +493,24 @@ internal static class TdsRequestWriter
         payload.WriteUInt40LittleEndian(value.Ticks);
     }
 
+    private static void WriteTime(
+        ArrayBufferWriter<byte> payload,
+        string name,
+        TimeSpan value)
+    {
+        if (value < TimeSpan.Zero || value >= TimeSpan.FromDays(1))
+        {
+            throw new ArgumentOutOfRangeException(
+              nameof(value),
+              "SQL Server time parameters must be between 00:00:00 and 24:00:00.");
+        }
+
+        WriteHeader(payload, name, TdsDataType.Time);
+        payload.WriteByte(7);
+        payload.WriteByte(5);
+        payload.WriteUInt40LittleEndian(value.Ticks);
+    }
+
     private static void WriteDateTime(
         ArrayBufferWriter<byte> payload,
         string name,
@@ -448,6 +539,17 @@ internal static class TdsRequestWriter
 
     private static byte GetDecimalScale(decimal value) =>
       (byte)((decimal.GetBits(value)[3] >> 16) & 0x7F);
+
+    private static string FormatBits(BitArray bits)
+    {
+        var characters = new char[bits.Count];
+        for (var i = 0; i < bits.Count; i++)
+        {
+            characters[i] = bits[i] ? '1' : '0';
+        }
+
+        return new string(characters);
+    }
 
     private static void WriteCollation(ArrayBufferWriter<byte> payload)
     {

@@ -5,6 +5,11 @@
  */
 
 using System.Buffers.Binary;
+using System.Collections;
+using System.Globalization;
+using System.Net;
+using System.Net.NetworkInformation;
+using System.Numerics;
 using System.Text;
 using Apex.PgClient.Internal;
 using Apex.SqlClient;
@@ -166,17 +171,61 @@ public sealed class PgRowDecoderTests
             pointBinary,
             copyReadOnlyMemory: false));
         AssertInvalid(() =>
-          decoder.Decode<TimeSpan>(
-            CreateRow([0]),
-            0,
-            Column(1186, SqlDataFormat.Binary),
-            copyReadOnlyMemory: false));
-        AssertInvalid(() =>
           decoder.Decode<int>(
             CreateRow(Int32(42)),
             0,
             Column(23, (SqlDataFormat)2),
             copyReadOnlyMemory: false));
+    }
+
+    [TestMethod]
+    public void GenericDispatchSupportsBclAlternatives()
+    {
+        PgRowDecoder decoder = new(16, 64);
+
+        Assert.AreEqual((byte)255, Decode<byte>(decoder, "255", 21));
+        Assert.AreEqual((sbyte)-128, Decode<sbyte>(decoder, "-128", 21));
+        Assert.AreEqual(
+          BigInteger.Parse("123456789012345678901234567890", CultureInfo.InvariantCulture),
+          Decode<BigInteger>(decoder, "123456789012345678901234567890", 1700));
+        Assert.AreEqual((Half)1.5f, Decode<Half>(decoder, "1.5", 700));
+        Assert.AreEqual(
+          Int128.MaxValue,
+          Decode<Int128>(decoder, Int128.MaxValue.ToString(CultureInfo.InvariantCulture), 1700));
+        Assert.AreEqual(
+          UInt128.MaxValue,
+          Decode<UInt128>(decoder, UInt128.MaxValue.ToString(CultureInfo.InvariantCulture), 1700));
+        Assert.AreEqual(
+          TimeSpan.FromHours(26.5),
+          Decode<TimeSpan>(decoder, "P1DT2H30M", 1186));
+        Assert.AreEqual(
+          TimeSpan.FromHours(12.5),
+          Decode<TimeSpan>(decoder, "12:30:00", 1083));
+        Assert.AreEqual('x', Decode<char>(decoder, "x", 25));
+        CollectionAssert.AreEqual("hello".ToCharArray(), Decode<char[]>(decoder, "hello", 25));
+        Assert.AreEqual(
+          IPAddress.Parse("192.0.2.1"),
+          Decode<IPAddress>(decoder, "192.0.2.1/24", 869));
+        Assert.AreEqual(
+          PhysicalAddress.Parse("08-00-2B-01-02-03"),
+          Decode<PhysicalAddress>(decoder, "08:00:2b:01:02:03", 829));
+        CollectionAssert.AreEqual(
+          new[] { true, false, true, true },
+          ToBooleans(Decode<BitArray>(decoder, "1011", 1560)));
+
+        Assert.IsNull(decoder.Decode<BigInteger?>(
+          CreateNullRow(),
+          0,
+          Column(1700, SqlDataFormat.Text),
+          copyReadOnlyMemory: false));
+        Assert.IsNull(decoder.Decode<IPAddress>(
+          CreateNullRow(),
+          0,
+          Column(869, SqlDataFormat.Text),
+          copyReadOnlyMemory: false));
+        Assert.ThrowsExactly<OverflowException>(() => Decode<byte>(decoder, "256", 21));
+        Assert.ThrowsExactly<OverflowException>(() => Decode<UInt128>(decoder, "-1", 1700));
+        AssertInvalid(() => Decode<IPAddress>(decoder, "192.0.2.1", 25));
     }
 
     [TestMethod]
@@ -406,6 +455,20 @@ public sealed class PgRowDecoderTests
 
     private static void AssertInvalid(Action action) =>
       Assert.ThrowsExactly<InvalidCastException>(action);
+
+    private static T Decode<T>(PgRowDecoder decoder, string value, uint typeId) =>
+      decoder.Decode<T>(
+        CreateRow(Encoding.UTF8.GetBytes(value)),
+        0,
+        Column(typeId, SqlDataFormat.Text),
+        copyReadOnlyMemory: false);
+
+    private static bool[] ToBooleans(BitArray value)
+    {
+        var result = new bool[value.Count];
+        value.CopyTo(result, 0);
+        return result;
+    }
 
     private static SqlColumn Column(
         uint TypeId,

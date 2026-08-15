@@ -5,7 +5,11 @@
  */
 
 using System.Buffers.Binary;
+using System.Collections;
 using System.Globalization;
+using System.Net;
+using System.Net.NetworkInformation;
+using System.Numerics;
 using System.Text;
 using System.Text.Json;
 using Apex.MySqlClient.Internal;
@@ -571,6 +575,61 @@ public sealed class MySqlRowDecoderTests
         Assert.AreEqual(0x0102ul, bits);
     }
 
+    [TestMethod]
+    public void GenericDispatchSupportsBclAlternatives()
+    {
+        BigInteger integer = BigInteger.Parse(
+          "123456789012345678901234567890",
+          CultureInfo.InvariantCulture);
+        MySqlColumnMetadata[] columns =
+        [
+          Column("number", MySqlType.NewDecimal),
+          Column("character", MySqlType.VarString),
+          Column("characters", MySqlType.VarString),
+          Column("address", MySqlType.VarString),
+          BinaryColumn("physical", MySqlType.Blob),
+          Column("bits", MySqlType.Bit, columnLength: 4),
+        ];
+        var decoder = CreateDecoder(columns, binary: false);
+        var row = BuildTextRowRaw(
+        [
+          Encoding.UTF8.GetBytes(integer.ToString(CultureInfo.InvariantCulture)),
+          "x"u8.ToArray(),
+          "hello"u8.ToArray(),
+          "192.0.2.1"u8.ToArray(),
+          [0x08, 0x00, 0x2b, 0x01, 0x02, 0x03],
+          [0b0000_1011],
+        ]);
+
+        Assert.AreEqual(integer, decoder.Decode<BigInteger>(row, 0));
+        Assert.AreEqual('x', decoder.Decode<char>(row, 1));
+        CollectionAssert.AreEqual("hello".ToCharArray(), decoder.Decode<char[]>(row, 2));
+        Assert.AreEqual(IPAddress.Parse("192.0.2.1"), decoder.Decode<IPAddress>(row, 3));
+        Assert.AreEqual(
+          PhysicalAddress.Parse("08-00-2B-01-02-03"),
+          decoder.Decode<PhysicalAddress>(row, 4));
+        BitArray bits = decoder.Decode<BitArray>(row, 5);
+        CollectionAssert.AreEqual(
+          new[] { true, false, true, true },
+          Enumerable.Range(0, bits.Count).Select(index => bits[index]).ToArray());
+
+        var nullDecoder = CreateDecoder([Column("number", MySqlType.NewDecimal)], binary: false);
+        Assert.IsNull(nullDecoder.Decode<BigInteger?>(BuildTextRowRaw([null]), 0));
+        Assert.ThrowsExactly<InvalidCastException>(() =>
+          decoder.Decode<BigInteger>(BuildTextRow("1.5"), 0));
+
+        Assert.AreEqual((Int128)integer, decoder.Decode<Int128>(row, 0));
+        Assert.AreEqual((UInt128)integer, decoder.Decode<UInt128>(row, 0));
+        var halfDecoder = CreateDecoder([Column("half", MySqlType.Float)], binary: false);
+        Assert.AreEqual((Half)1.5f, halfDecoder.Decode<Half>(BuildTextRow("1.5"), 0));
+        var unsignedDecoder = CreateDecoder([Column("number", MySqlType.NewDecimal)], binary: false);
+        Assert.AreEqual(
+          UInt128.MaxValue,
+          unsignedDecoder.Decode<UInt128>(
+            BuildTextRow(UInt128.MaxValue.ToString(CultureInfo.InvariantCulture)),
+            0));
+    }
+
     private static MySqlRowDecoder CreateDecoder(
         MySqlColumnMetadata[] columns,
         bool binary,
@@ -582,7 +641,11 @@ public sealed class MySqlRowDecoderTests
         return decoder;
     }
 
-    private static MySqlColumnMetadata Column(string name, MySqlType type, bool unsigned = false) =>
+    private static MySqlColumnMetadata Column(
+      string name,
+      MySqlType type,
+      bool unsigned = false,
+      uint columnLength = 0) =>
       new(
         name,
         name,
@@ -592,7 +655,7 @@ public sealed class MySqlRowDecoderTests
         type,
         unsigned ? MySqlColumnFlags.Unsigned : MySqlColumnFlags.None,
         MySqlProtocol.Utf8Mb4Collation,
-        0,
+        columnLength,
         0);
 
     private static MySqlColumnMetadata BinaryColumn(string name, MySqlType type) =>

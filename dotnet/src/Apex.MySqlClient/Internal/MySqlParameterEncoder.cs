@@ -5,6 +5,10 @@
  */
 
 using System.Globalization;
+using System.Collections;
+using System.Net;
+using System.Net.NetworkInformation;
+using System.Numerics;
 using System.Text.Json;
 using Apex.SqlClient;
 
@@ -101,7 +105,15 @@ internal static class MySqlParameterEncoder
           uint => (MySqlType.Long, true),
           ulong => (MySqlType.LongLong, true),
           char => (MySqlType.VarString, false),
+          char[] => (MySqlType.VarString, false),
           TimeSpan => (MySqlType.Time, false),
+          Half => (MySqlType.Float, false),
+          BigInteger => (MySqlType.NewDecimal, false),
+          Int128 => (MySqlType.NewDecimal, false),
+          UInt128 => (MySqlType.NewDecimal, false),
+          IPAddress => (MySqlType.VarString, false),
+          PhysicalAddress => (MySqlType.Blob, false),
+          BitArray => (MySqlType.LongLong, true),
           MySqlDecimal => (MySqlType.NewDecimal, false),
           _ => throw new NotSupportedException(
           $"MySQL parameters of type {value.GetType().FullName} are not supported."),
@@ -191,8 +203,32 @@ internal static class MySqlParameterEncoder
             case char typed:
                 writer.WriteLengthEncodedString(typed.ToString());
                 return;
+            case char[] typed:
+                writer.WriteLengthEncodedString(new string(typed));
+                return;
             case TimeSpan typed:
                 WriteTime(writer, typed);
+                return;
+            case Half typed:
+                writer.WriteSingle((float)typed);
+                return;
+            case BigInteger typed:
+                writer.WriteLengthEncodedString(typed.ToString(CultureInfo.InvariantCulture));
+                return;
+            case Int128 typed:
+                writer.WriteLengthEncodedString(typed.ToString(CultureInfo.InvariantCulture));
+                return;
+            case UInt128 typed:
+                writer.WriteLengthEncodedString(typed.ToString(CultureInfo.InvariantCulture));
+                return;
+            case IPAddress typed:
+                writer.WriteLengthEncodedString(typed.ToString());
+                return;
+            case PhysicalAddress typed:
+                writer.WriteLengthEncodedBytes(typed.GetAddressBytes());
+                return;
+            case BitArray typed:
+                WriteBitArray(writer, typed);
                 return;
             case MySqlDecimal typed:
                 writer.WriteLengthEncodedString(typed.ToString());
@@ -253,5 +289,23 @@ internal static class MySqlParameterEncoder
         {
             writer.WriteUInt32((uint)microseconds);
         }
+    }
+
+    private static void WriteBitArray(MySqlPayloadWriter writer, BitArray value)
+    {
+        if (value.Count > 64)
+        {
+            throw new ArgumentOutOfRangeException(
+              nameof(value),
+              "MySQL BIT parameters support at most 64 bits.");
+        }
+
+        ulong bits = 0;
+        for (var i = 0; i < value.Count; i++)
+        {
+            bits = (bits << 1) | (value[i] ? 1UL : 0UL);
+        }
+
+        writer.WriteUInt64(bits);
     }
 }

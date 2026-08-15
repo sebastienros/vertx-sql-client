@@ -44,6 +44,7 @@ Migrated:
 - Prepared-cache concurrency, bounded eviction, and server-side size limits
 - Prepared-cache SQL-length bypass
 - Null parameter encoding across supported PostgreSQL type families
+- BCL alternative scalar and array mappings for numeric, temporal, text, network, MAC, and bit types
 - Geometric scalar parameter encoding
 - Geometric array, interval, time-zone, network, CIDR, and money parameter encoding
 - Subscriber reconnect-policy exhaustion, queued pool replacement after server loss, and partial-page prepared stream errors
@@ -67,6 +68,7 @@ Migrated:
 - Unix-domain-socket parsing, queries, prepared batches, and TLS rejection
 - Clear-password over explicit TLS and SHA-256 over TLS or retrieved RSA public keys
 - ProxySQL prepared queries and serialized prepared batches on a dedicated container network
+- BCL alternative mappings for numeric, text, network, MAC, and bit values
 
 ## Microsoft SQL Server
 
@@ -82,6 +84,7 @@ Migrated:
 - Full nullable scalar getter matrix and XML text decoding
 - Nullable scalar parameter encoding and fixed/max parameter length boundaries
 - Abrupt server close during an in-flight command
+- BCL alternative mappings for numeric, temporal, text, network, MAC, and bit values
 - Optional/Require TLS, certificate trust callbacks and hostname errors, Strict TDS 8.0 ALPN, and safe pool replacement after server loss
 
 ## Not Applicable or Unavailable

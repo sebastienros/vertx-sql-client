@@ -5,7 +5,9 @@
  */
 
 using System.Buffers.Binary;
+using System.Collections;
 using System.Net;
+using System.Net.NetworkInformation;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Text;
@@ -31,8 +33,10 @@ internal static class PgBinaryCodec
             20 => DecodeInt64(value),
             21 => DecodeInt16(value),
             23 => DecodeInt32(value),
-            26 or 142 or 829 or 1560 or 1562 or 2278 or 774 =>
+            26 or 142 or 2278 =>
               throw new PgUnsupportedTypeException(typeId),
+            774 or 829 => DecodePhysicalAddress(value),
+            1560 or 1562 => DecodeBitArray(value),
             700 => DecodeFloat(value),
             701 => DecodeDouble(value),
             790 => DecodeMoney(value),
@@ -59,7 +63,7 @@ internal static class PgBinaryCodec
             1000 or 1001 or 1002 or 1003 or 1005 or 1007 or 1009 or 1015 or
             1016 or 1017 or 1018 or 1019 or 1020 or 1021 or 1022 or 1027 or
             1041 or 1115 or 1182 or 1183 or 1185 or 1187 or 1231 or 1270 or
-            199 or 629 or 651 or 719 or 791 or 2951 or 3807 =>
+            199 or 629 or 651 or 719 or 775 or 791 or 1040 or 1561 or 1563 or 2951 or 3807 =>
               DecodeArrayObject(typeId, memory),
             _ => throw new PgUnsupportedTypeException(typeId),
         };
@@ -89,8 +93,26 @@ internal static class PgBinaryCodec
     internal static decimal DecodeDecimal(ReadOnlySpan<byte> value) =>
       DecodeNumeric(value).ToDecimal();
 
+    internal static BigInteger DecodeBigInteger(ReadOnlySpan<byte> value)
+    {
+        var numeric = DecodeNumeric(value);
+        if (!numeric.IsFinite || numeric.Scale != 0)
+        {
+            throw new InvalidCastException(
+              "PostgreSQL numeric value must be a finite integer to be read as BigInteger.");
+        }
+
+        return numeric.UnscaledValue;
+    }
+
     internal static string DecodeString(ReadOnlySpan<byte> value) =>
       Encoding.UTF8.GetString(value);
+
+    internal static char DecodeChar(ReadOnlySpan<byte> value) =>
+      PgTextCodec.DecodeChar(value);
+
+    internal static char[] DecodeChars(ReadOnlySpan<byte> value) =>
+      PgTextCodec.DecodeChars(value);
 
     internal static PgMoney DecodeMoney(ReadOnlySpan<byte> value) =>
       new(ReadInt64(value) / 100m);
@@ -154,6 +176,21 @@ internal static class PgBinaryCodec
           checked((int)minutes),
           checked((int)finalSeconds),
           checked((int)remainingMicros));
+    }
+
+    internal static TimeSpan DecodeTimeSpan(ReadOnlySpan<byte> value)
+    {
+        var interval = DecodeInterval(value);
+        if (interval.Years != 0 || interval.Months != 0)
+        {
+            throw new InvalidCastException(
+              "PostgreSQL intervals containing years or months cannot be read as TimeSpan.");
+        }
+
+        long microseconds = checked(
+          (((((long)interval.Days * 24) + interval.Hours) * 60 + interval.Minutes) * 60 + interval.Seconds) *
+          1_000_000 + interval.Microseconds);
+        return TimeSpan.FromTicks(checked(microseconds * 10));
     }
 
     internal static PgTimeWithTimeZone DecodeTimeWithTimeZone(
@@ -276,6 +313,38 @@ internal static class PgBinaryCodec
         return new PgInet(address, prefix);
     }
 
+    internal static IPAddress DecodeIPAddress(ReadOnlySpan<byte> value) =>
+      DecodeInet(value).Address;
+
+    internal static PhysicalAddress DecodePhysicalAddress(ReadOnlySpan<byte> value)
+    {
+        if (value.Length is not (6 or 8))
+        {
+            throw new InvalidDataException(
+              "PostgreSQL MACADDR value must contain 6 or 8 bytes.");
+        }
+
+        return new PhysicalAddress(value.ToArray());
+    }
+
+    internal static BitArray DecodeBitArray(ReadOnlySpan<byte> value)
+    {
+        var bitCount = ReadInt32(value);
+        if (bitCount < 0 || value.Length != sizeof(int) + ((bitCount + 7) / 8))
+        {
+            throw new InvalidDataException("Invalid PostgreSQL BIT value length.");
+        }
+
+        var result = new BitArray(bitCount);
+        var bytes = value[sizeof(int)..];
+        for (var i = 0; i < bitCount; i++)
+        {
+            result[i] = (bytes[i / 8] & (1 << (7 - (i % 8)))) != 0;
+        }
+
+        return result;
+    }
+
     internal static JsonElement DecodeJson(ReadOnlyMemory<byte> value)
     {
         using JsonDocument document = JsonDocument.Parse(value);
@@ -386,6 +455,8 @@ internal static class PgBinaryCodec
           650 => DecodeArray<PgCidr?>(arrayTypeId, value),
           718 => DecodeArray<PgCircle?>(arrayTypeId, value),
           869 => DecodeArray<PgInet?>(arrayTypeId, value),
+          774 or 829 => DecodeArray<PhysicalAddress?>(arrayTypeId, value),
+          1560 or 1562 => DecodeArray<BitArray?>(arrayTypeId, value),
           114 or 3802 => DecodeArray<JsonElement?>(arrayTypeId, value),
           var elementType => throw new PgUnsupportedTypeException(elementType),
       };
@@ -400,20 +471,20 @@ internal static class PgBinaryCodec
             16 => ConvertValue<TElement, bool>(DecodeBoolean(value), elementType),
             17 => ConvertReference<TElement, byte[]>(DecodeBytes(value), elementType),
             18 or 19 or 25 or 1043 =>
-              ConvertReference<TElement, string>(DecodeString(value), elementType),
+              ConvertText<TElement>(DecodeString(value), elementType),
             20 => ConvertValue<TElement, long>(DecodeInt64(value), elementType),
-            21 => ConvertValue<TElement, short>(DecodeInt16(value), elementType),
+            21 => ConvertInt16<TElement>(DecodeInt16(value), elementType),
             23 => ConvertValue<TElement, int>(DecodeInt32(value), elementType),
-            700 => ConvertValue<TElement, float>(DecodeFloat(value), elementType),
+            700 => ConvertFloat<TElement>(DecodeFloat(value), elementType),
             701 => ConvertValue<TElement, double>(DecodeDouble(value), elementType),
             790 => ConvertValue<TElement, PgMoney>(DecodeMoney(value), elementType),
             1082 => ConvertValue<TElement, DateOnly>(DecodeDateOnly(value), elementType),
-            1083 => ConvertValue<TElement, TimeOnly>(DecodeTimeOnly(value), elementType),
+            1083 => ConvertTime<TElement>(DecodeTimeOnly(value), elementType),
             1114 => ConvertValue<TElement, DateTime>(DecodeDateTime(value), elementType),
             1184 => ConvertValue<TElement, DateTimeOffset>(DecodeDateTimeOffset(value), elementType),
-            1186 => ConvertValue<TElement, PgInterval>(DecodeInterval(value), elementType),
+            1186 => ConvertInterval<TElement>(DecodeInterval(value), elementType),
             1266 => ConvertValue<TElement, PgTimeWithTimeZone>(DecodeTimeWithTimeZone(value), elementType),
-            1700 => ConvertValue<TElement, PgNumeric>(DecodeNumeric(value), elementType),
+            1700 => ConvertNumeric<TElement>(DecodeNumeric(value), elementType),
             2950 => ConvertValue<TElement, Guid>(DecodeGuid(value), elementType),
             600 => ConvertValue<TElement, PgPoint>(DecodePoint(value), elementType),
             601 => ConvertValue<TElement, PgLineSegment>(DecodeLineSegment(value), elementType),
@@ -423,7 +494,11 @@ internal static class PgBinaryCodec
             628 => ConvertValue<TElement, PgLine>(DecodeLine(value), elementType),
             650 => ConvertValue<TElement, PgCidr>(DecodeCidr(value), elementType),
             718 => ConvertValue<TElement, PgCircle>(DecodeCircle(value), elementType),
-            869 => ConvertValue<TElement, PgInet>(DecodeInet(value), elementType),
+            869 => ConvertInet<TElement>(DecodeInet(value), elementType),
+            774 or 829 => ConvertReference<TElement, PhysicalAddress>(
+              DecodePhysicalAddress(value), elementType),
+            1560 or 1562 => ConvertReference<TElement, BitArray>(
+              DecodeBitArray(value), elementType),
             114 => ConvertValue<TElement, JsonElement>(DecodeJson(memory), elementType),
             3802 => ConvertValue<TElement, JsonElement>(DecodeJsonb(memory), elementType),
             _ => throw new PgUnsupportedTypeException(elementType),
@@ -461,6 +536,106 @@ internal static class PgBinaryCodec
 
         throw CannotReadArrayElement<TElement>(elementType);
     }
+
+    private static TElement ConvertInt16<TElement>(short value, uint elementType)
+    {
+        if (typeof(TElement) == typeof(byte) || typeof(TElement) == typeof(byte?))
+        {
+            return ConvertValue<TElement, byte>(checked((byte)value), elementType);
+        }
+
+        if (typeof(TElement) == typeof(sbyte) || typeof(TElement) == typeof(sbyte?))
+        {
+            return ConvertValue<TElement, sbyte>(checked((sbyte)value), elementType);
+        }
+
+        return ConvertValue<TElement, short>(value, elementType);
+    }
+
+    private static TElement ConvertText<TElement>(string value, uint elementType)
+    {
+        if (typeof(TElement) == typeof(char) || typeof(TElement) == typeof(char?))
+        {
+            char character = value.Length == 1
+              ? value[0]
+              : throw CannotReadArrayElement<TElement>(elementType);
+            return ConvertValue<TElement, char>(character, elementType);
+        }
+
+        if (typeof(TElement) == typeof(char[]))
+        {
+            return ConvertReference<TElement, char[]>(value.ToCharArray(), elementType);
+        }
+
+        return ConvertReference<TElement, string>(value, elementType);
+    }
+
+    private static TElement ConvertNumeric<TElement>(PgNumeric value, uint elementType)
+    {
+      if (typeof(TElement) == typeof(BigInteger) || typeof(TElement) == typeof(BigInteger?) ||
+        typeof(TElement) == typeof(Int128) || typeof(TElement) == typeof(Int128?) ||
+        typeof(TElement) == typeof(UInt128) || typeof(TElement) == typeof(UInt128?))
+        {
+            if (!value.IsFinite || value.Scale != 0)
+            {
+                throw CannotReadArrayElement<TElement>(elementType);
+            }
+
+            if (typeof(TElement) == typeof(Int128) || typeof(TElement) == typeof(Int128?))
+            {
+              return ConvertValue<TElement, Int128>(checked((Int128)value.UnscaledValue), elementType);
+            }
+
+            if (typeof(TElement) == typeof(UInt128) || typeof(TElement) == typeof(UInt128?))
+            {
+              return ConvertValue<TElement, UInt128>(checked((UInt128)value.UnscaledValue), elementType);
+            }
+
+            return ConvertValue<TElement, BigInteger>(value.UnscaledValue, elementType);
+        }
+
+        return ConvertValue<TElement, PgNumeric>(value, elementType);
+    }
+
+    private static TElement ConvertFloat<TElement>(float value, uint elementType) =>
+      typeof(TElement) == typeof(Half) || typeof(TElement) == typeof(Half?)
+      ? ConvertValue<TElement, Half>(checked((Half)value), elementType)
+      : ConvertValue<TElement, float>(value, elementType);
+
+    private static TElement ConvertTime<TElement>(TimeOnly value, uint elementType) =>
+      typeof(TElement) == typeof(TimeSpan) || typeof(TElement) == typeof(TimeSpan?)
+      ? ConvertValue<TElement, TimeSpan>(value.ToTimeSpan(), elementType)
+      : ConvertValue<TElement, TimeOnly>(value, elementType);
+
+    private static TElement ConvertInterval<TElement>(PgInterval value, uint elementType)
+    {
+        if (typeof(TElement) == typeof(TimeSpan) || typeof(TElement) == typeof(TimeSpan?))
+        {
+            var interval = DecodeTimeSpanValue(value);
+            return ConvertValue<TElement, TimeSpan>(interval, elementType);
+        }
+
+        return ConvertValue<TElement, PgInterval>(value, elementType);
+    }
+
+    private static TimeSpan DecodeTimeSpanValue(PgInterval value)
+    {
+        if (value.Years != 0 || value.Months != 0)
+        {
+            throw new InvalidCastException(
+              "PostgreSQL intervals containing years or months cannot be read as TimeSpan.");
+        }
+
+        long microseconds = checked(
+          (((((long)value.Days * 24) + value.Hours) * 60 + value.Minutes) * 60 + value.Seconds) *
+          1_000_000 + value.Microseconds);
+        return TimeSpan.FromTicks(checked(microseconds * 10));
+    }
+
+    private static TElement ConvertInet<TElement>(PgInet value, uint elementType) =>
+      typeof(TElement) == typeof(IPAddress)
+      ? ConvertReference<TElement, IPAddress>(value.Address, elementType)
+      : ConvertValue<TElement, PgInet>(value, elementType);
 
     private static InvalidCastException CannotReadArrayElement<TElement>(
       uint elementType) =>

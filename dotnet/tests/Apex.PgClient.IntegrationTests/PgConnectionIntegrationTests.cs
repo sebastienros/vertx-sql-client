@@ -4,6 +4,11 @@
  * SPDX-License-Identifier: EPL-2.0 OR Apache-2.0
  */
 
+using System.Collections;
+using System.Globalization;
+using System.Net;
+using System.Net.NetworkInformation;
+using System.Numerics;
 using Apex.SqlClient;
 using Apex.SqlClient.SpecificationTests;
 using Testcontainers.PostgreSql;
@@ -77,6 +82,120 @@ public sealed class PgConnectionIntegrationTests
     }
 
     [TestMethod]
+    public async Task RoundTripsBclScalarAlternatives()
+    {
+        var container = _container ??
+          throw new InvalidOperationException("The PostgreSQL container is not running.");
+        PgConnectOptions options = new()
+        {
+            Host = container.Hostname,
+            Port = container.GetMappedPublicPort(5432),
+            Database = "db",
+            Username = "user",
+            Password = "pass",
+        };
+        BigInteger integer = BigInteger.Parse(
+          "123456789012345678901234567890",
+          CultureInfo.InvariantCulture);
+        TimeSpan duration = TimeSpan.FromHours(26.5);
+        IPAddress address = IPAddress.Parse("192.0.2.1");
+        PhysicalAddress physicalAddress = PhysicalAddress.Parse("08-00-2B-01-02-03");
+        BitArray bits = new(new[] { true, false, true, true });
+
+        await using var connection = await PgClient.ConnectAsync(options);
+        var row = (await connection.QueryAsync(
+          """
+          SELECT
+            $1::numeric AS integer_value,
+            $2::interval AS duration_value,
+            $3::text AS character_value,
+            $4::text AS characters_value,
+            $5::int2 AS byte_value,
+            $6::int2 AS sbyte_value,
+            $7::inet AS address_value,
+            $8::macaddr AS physical_address_value,
+            $9::bit(4) AS bits_value,
+            $10::numeric[] AS integer_values,
+            $11::interval[] AS duration_values,
+            $12::inet[] AS address_values,
+            $13::macaddr[] AS physical_address_values,
+            $14::bit(3)[] AS bits_values,
+            $15::int2[] AS sbyte_values,
+            $16::text[] AS character_array_values,
+            $17::float4 AS half_value,
+            $18::numeric AS int128_value,
+            $19::numeric AS uint128_value,
+            $20::float4[] AS half_values,
+            $21::numeric[] AS int128_values,
+            $22::numeric[] AS uint128_values
+          """,
+          SqlParameters.Create(
+            SqlValue.From(integer),
+            SqlValue.From(duration),
+            SqlValue.From('x'),
+            SqlValue.From("hello".ToCharArray()),
+            SqlValue.From((byte)255),
+            SqlValue.From((sbyte)-128),
+            SqlValue.From(address),
+            SqlValue.From(physicalAddress),
+            SqlValue.From(bits),
+            SqlValue.From(new[] { BigInteger.One, new BigInteger(2) }),
+            SqlValue.From(new[] { TimeSpan.FromHours(1), TimeSpan.FromHours(2) }),
+            SqlValue.From(new[] { address, IPAddress.Parse("2001:db8::1") }),
+            SqlValue.From(new[] { physicalAddress }),
+            SqlValue.From(new[] { new BitArray(new[] { true, false, true }) }),
+            SqlValue.From(new sbyte[] { -128, 127 }),
+            SqlValue.From(new[] { "a".ToCharArray(), "bc".ToCharArray() }),
+            SqlValue.From((Half)1.5f),
+            SqlValue.From(Int128.MinValue),
+            SqlValue.From(UInt128.MaxValue),
+            SqlValue.From(new Half[] { (Half)1.5f, (Half)(-2.25f) }),
+            SqlValue.From(new Int128[] { Int128.MinValue, Int128.MaxValue }),
+            SqlValue.From(new UInt128[] { UInt128.Zero, UInt128.MaxValue }))))[0];
+
+        Assert.AreEqual(integer, row.Get<BigInteger>("integer_value"));
+        Assert.AreEqual(duration, row.Get<TimeSpan>("duration_value"));
+        Assert.AreEqual('x', row.Get<char>("character_value"));
+        CollectionAssert.AreEqual("hello".ToCharArray(), row.Get<char[]>("characters_value"));
+        Assert.AreEqual((byte)255, row.Get<byte>("byte_value"));
+        Assert.AreEqual((sbyte)-128, row.Get<sbyte>("sbyte_value"));
+        Assert.AreEqual(address, row.Get<IPAddress>("address_value"));
+        Assert.AreEqual(physicalAddress, row.Get<PhysicalAddress>("physical_address_value"));
+        Assert.IsTrue(row.Get<BitArray>("bits_value")[2]);
+        CollectionAssert.AreEqual(
+          new[] { BigInteger.One, new BigInteger(2) },
+          row.GetArray<BigInteger>("integer_values"));
+        CollectionAssert.AreEqual(
+          new[] { TimeSpan.FromHours(1), TimeSpan.FromHours(2) },
+          row.GetArray<TimeSpan>("duration_values"));
+        CollectionAssert.AreEqual(
+          new[] { address, IPAddress.Parse("2001:db8::1") },
+          row.GetArray<IPAddress>("address_values"));
+        Assert.AreEqual(
+          physicalAddress,
+          row.GetArray<PhysicalAddress>("physical_address_values")![0]);
+        Assert.IsTrue(row.GetArray<BitArray>("bits_values")![0][2]);
+        CollectionAssert.AreEqual(
+          new sbyte[] { -128, 127 },
+          row.GetArray<sbyte>("sbyte_values"));
+        CollectionAssert.AreEqual(
+          "bc".ToCharArray(),
+          row.GetArray<char[]>("character_array_values")![1]);
+        Assert.AreEqual((Half)1.5f, row.Get<Half>("half_value"));
+        Assert.AreEqual(Int128.MinValue, row.Get<Int128>("int128_value"));
+        Assert.AreEqual(UInt128.MaxValue, row.Get<UInt128>("uint128_value"));
+        CollectionAssert.AreEqual(
+          new Half[] { (Half)1.5f, (Half)(-2.25f) },
+          row.GetArray<Half>("half_values"));
+        CollectionAssert.AreEqual(
+          new Int128[] { Int128.MinValue, Int128.MaxValue },
+          row.GetArray<Int128>("int128_values"));
+        CollectionAssert.AreEqual(
+          new UInt128[] { UInt128.Zero, UInt128.MaxValue },
+          row.GetArray<UInt128>("uint128_values"));
+    }
+
+    [TestMethod]
     public async Task SurfacesPostgreSqlErrorFields()
     {
         var container = _container ??
@@ -130,14 +249,14 @@ public sealed class PgConnectionIntegrationTests
         var port = ReserveUnusedPort();
         PgConnectOptions options = new()
         {
-          Host = "127.0.0.1",
-          Port = port,
-          Database = "db",
-          Username = "user",
-          Password = "pass",
-          ConnectTimeout = TimeSpan.FromMilliseconds(100),
-          ReconnectAttempts = 2,
-          ReconnectInterval = TimeSpan.FromMilliseconds(100),
+        Host = "127.0.0.1",
+        Port = port,
+        Database = "db",
+        Username = "user",
+        Password = "pass",
+        ConnectTimeout = TimeSpan.FromMilliseconds(100),
+        ReconnectAttempts = 2,
+        ReconnectInterval = TimeSpan.FromMilliseconds(100),
         };
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
 

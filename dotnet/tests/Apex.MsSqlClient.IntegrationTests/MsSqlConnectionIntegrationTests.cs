@@ -4,6 +4,11 @@
  * SPDX-License-Identifier: EPL-2.0 OR Apache-2.0
  */
 
+using System.Collections;
+using System.Globalization;
+using System.Net;
+using System.Net.NetworkInformation;
+using System.Numerics;
 using Apex.SqlClient;
 
 namespace Apex.MsSqlClient.IntegrationTests;
@@ -438,6 +443,69 @@ public sealed class MsSqlConnectionIntegrationTests
         CollectionAssert.AreEqual(longBinary, encoded.GetBytes("binary_value"));
         Assert.IsTrue(encoded.IsNull(encoded.GetOrdinal("null_value")));
         Assert.AreEqual("int", encoded.GetString("int_base_type"));
+    }
+
+    [TestMethod]
+    public async Task RoundTripsBclScalarAlternatives()
+    {
+        BigInteger integer = BigInteger.Parse(
+          "123456789012345678901234567890",
+          CultureInfo.InvariantCulture);
+        TimeSpan duration = TimeSpan.FromHours(12.5);
+        IPAddress address = IPAddress.Parse("192.0.2.1");
+        PhysicalAddress physicalAddress = PhysicalAddress.Parse("08-00-2B-01-02-03");
+        BitArray bits = new(new[] { true, false, true, true });
+        Int128 int128 = Int128.Parse(
+          "-99999999999999999999999999999999999999",
+          CultureInfo.InvariantCulture);
+        UInt128 uint128 = UInt128.Parse(
+          "99999999999999999999999999999999999999",
+          CultureInfo.InvariantCulture);
+
+        await using var connection =
+          await MsSqlClient.ConnectAsync(MsSqlTestEnvironment.Options);
+        var row = (await connection.QueryAsync(
+          """
+          SELECT
+            CAST(@P1 AS numeric(38,0)) AS integer_value,
+            CAST(@P2 AS time(7)) AS duration_value,
+            CAST(@P3 AS smallint) AS sbyte_value,
+            CAST(@P4 AS nchar(1)) AS character_value,
+            CAST(@P5 AS nvarchar(20)) AS characters_value,
+            CAST(@P6 AS nvarchar(45)) AS address_value,
+            CAST(@P7 AS varbinary(8)) AS physical_address_value,
+            CAST(@P8 AS varchar(64)) AS bits_value,
+            CAST(@P9 AS real) AS half_value,
+            CAST(@P10 AS numeric(38,0)) AS int128_value,
+            CAST(@P11 AS numeric(38,0)) AS uint128_value
+          """,
+          SqlParameters.Create(
+            SqlValue.From(integer),
+            SqlValue.From(duration),
+            SqlValue.From((sbyte)-128),
+            SqlValue.From('x'),
+            SqlValue.From("hello".ToCharArray()),
+            SqlValue.From(address),
+            SqlValue.From(physicalAddress),
+            SqlValue.From(bits),
+            SqlValue.From((Half)1.5f),
+            SqlValue.From(int128),
+            SqlValue.From(uint128))))[0];
+
+        Assert.AreEqual(integer, row.Get<BigInteger>("integer_value"));
+        Assert.AreEqual(duration, row.Get<TimeSpan>("duration_value"));
+        Assert.AreEqual((sbyte)-128, row.Get<sbyte>("sbyte_value"));
+        Assert.AreEqual('x', row.Get<char>("character_value"));
+        CollectionAssert.AreEqual("hello".ToCharArray(), row.Get<char[]>("characters_value"));
+        Assert.AreEqual(address, row.Get<IPAddress>("address_value"));
+        Assert.AreEqual(physicalAddress, row.Get<PhysicalAddress>("physical_address_value"));
+        BitArray decodedBits = row.Get<BitArray>("bits_value");
+        CollectionAssert.AreEqual(
+          new[] { true, false, true, true },
+          Enumerable.Range(0, decodedBits.Count).Select(index => decodedBits[index]).ToArray());
+        Assert.AreEqual((Half)1.5f, row.Get<Half>("half_value"));
+        Assert.AreEqual(int128, row.Get<Int128>("int128_value"));
+        Assert.AreEqual(uint128, row.Get<UInt128>("uint128_value"));
     }
 
     [TestMethod]

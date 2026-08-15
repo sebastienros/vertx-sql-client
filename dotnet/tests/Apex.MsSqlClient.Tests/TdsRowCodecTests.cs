@@ -6,6 +6,11 @@
 
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Collections;
+using System.Globalization;
+using System.Net;
+using System.Net.NetworkInformation;
+using System.Numerics;
 using System.Text;
 using System.Text.Json;
 using Apex.MsSqlClient.Internal;
@@ -410,6 +415,90 @@ public sealed class TdsRowCodecTests
             ]),
             0,
             column));
+    }
+
+    [TestMethod]
+    public void DecodesBclScalarAlternatives()
+    {
+        MsSqlRowDecoder decoder = new();
+        BigInteger integer = BigInteger.Parse(
+          "123456789012345678901234567890",
+          CultureInfo.InvariantCulture);
+        byte[] numeric = new byte[17];
+        numeric[0] = 1;
+        _ = integer.TryWriteBytes(
+          numeric.AsSpan(1),
+          out _,
+          isUnsigned: true,
+          isBigEndian: false);
+        SqlColumn numericColumn = new(
+          "number", TdsDataType.DecimalN, 17, 0, SqlDataFormat.Binary);
+        Assert.AreEqual(
+          integer,
+          decoder.Decode<BigInteger>(CreateDecoderRow(numeric), 0, numericColumn, false));
+        Assert.AreEqual(
+          (Int128)integer,
+          decoder.Decode<Int128>(CreateDecoderRow(numeric), 0, numericColumn, false));
+        Assert.AreEqual(
+          (UInt128)integer,
+          decoder.Decode<UInt128>(CreateDecoderRow(numeric), 0, numericColumn, false));
+
+        SqlColumn realColumn = new(
+          "real", TdsDataType.Float4, 4, 0, SqlDataFormat.Binary);
+        byte[] real = new byte[4];
+        BinaryPrimitives.WriteInt32LittleEndian(real, BitConverter.SingleToInt32Bits(1.5f));
+        Assert.AreEqual(
+          (Half)1.5f,
+          decoder.Decode<Half>(CreateDecoderRow(real), 0, realColumn, false));
+
+        TimeSpan duration = TimeSpan.FromHours(12.5);
+        ArrayBufferWriter<byte> time = new();
+        time.WriteUInt40LittleEndian(duration.Ticks);
+        SqlColumn timeColumn = new(
+          "time", TdsDataType.Time, 5, 7, SqlDataFormat.Binary);
+        Assert.AreEqual(
+          duration,
+          decoder.Decode<TimeSpan>(CreateDecoderRow(time.WrittenSpan.ToArray()), 0, timeColumn, false));
+
+        SqlColumn textColumn = new(
+          "text", TdsDataType.NVarChar, 8000, 0, SqlDataFormat.Binary);
+        Assert.AreEqual(
+          'x',
+          decoder.Decode<char>(CreateDecoderRow(Encoding.Unicode.GetBytes("x")), 0, textColumn, false));
+        CollectionAssert.AreEqual(
+          "hello".ToCharArray(),
+          decoder.Decode<char[]>(CreateDecoderRow(Encoding.Unicode.GetBytes("hello")), 0, textColumn, false));
+        Assert.AreEqual(
+          IPAddress.Parse("192.0.2.1"),
+          decoder.Decode<IPAddress>(
+            CreateDecoderRow(Encoding.Unicode.GetBytes("192.0.2.1")), 0, textColumn, false));
+        BitArray bits = decoder.Decode<BitArray>(
+          CreateDecoderRow(Encoding.Unicode.GetBytes("1011")), 0, textColumn, false);
+        Assert.IsTrue(bits[0]);
+        Assert.IsFalse(bits[1]);
+
+        SqlColumn binaryColumn = new(
+          "mac", TdsDataType.BigVarBinary, 8000, 0, SqlDataFormat.Binary);
+        Assert.AreEqual(
+          PhysicalAddress.Parse("08-00-2B-01-02-03"),
+          decoder.Decode<PhysicalAddress>(
+            CreateDecoderRow([0x08, 0x00, 0x2b, 0x01, 0x02, 0x03]),
+            0,
+            binaryColumn,
+            false));
+        Assert.IsNull(decoder.Decode<BigInteger?>(
+          CreateDecoderRow(null), 0, numericColumn, false));
+
+        SqlColumn smallIntColumn = new(
+          "small", TdsDataType.Int2, 2, 0, SqlDataFormat.Binary);
+        byte[] signed = new byte[2];
+        BinaryPrimitives.WriteInt16LittleEndian(signed, -128);
+        Assert.AreEqual(
+          (sbyte)-128,
+          decoder.Decode<sbyte>(CreateDecoderRow(signed), 0, smallIntColumn, false));
+        BinaryPrimitives.WriteInt16LittleEndian(signed, 128);
+        Assert.ThrowsExactly<OverflowException>(() =>
+          decoder.Decode<sbyte>(CreateDecoderRow(signed), 0, smallIntColumn, false));
     }
 
     private static void WriteColumn(
