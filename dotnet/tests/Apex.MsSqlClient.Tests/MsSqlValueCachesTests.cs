@@ -51,4 +51,27 @@ public sealed class MsSqlValueCachesTests
 
         Assert.AreNotSame(cached, cache.GetString(bytes, 65001));
     }
+
+    [TestMethod]
+    public void ConcurrentReadsAndDisableRemainSafe()
+    {
+        MsSqlStringCache cache = new(capacity: 16, maximumByteLength: 128);
+        byte[][] values =
+        [
+          Encoding.UTF8.GetBytes("first"),
+          Encoding.UTF8.GetBytes("second"),
+          Encoding.UTF8.GetBytes("third"),
+        ];
+
+        Parallel.For(0, 10_000, index =>
+        {
+            if (index == 5_000)
+            {
+                cache.Disable();
+            }
+
+            var value = values[index % values.Length];
+            Assert.AreEqual(Encoding.UTF8.GetString(value), cache.GetString(value, 65001));
+        });
+    }
 }

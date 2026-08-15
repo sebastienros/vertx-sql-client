@@ -4,20 +4,19 @@
  * SPDX-License-Identifier: EPL-2.0 OR Apache-2.0
  */
 
+using System.IO.Hashing;
+
 namespace Apex.MsSqlClient.Internal;
 
 internal sealed class MsSqlStringCache
 {
-    private readonly object _gate = new();
     private readonly int _maximumByteLength;
-    private Entry[] _entries;
-    private bool _enabled;
+    private Table? _table;
 
     internal MsSqlStringCache(int capacity, int maximumByteLength)
     {
         if (capacity <= 0 || maximumByteLength <= 0)
         {
-            _entries = [];
             return;
         }
 
@@ -27,98 +26,57 @@ internal sealed class MsSqlStringCache
             normalizedCapacity <<= 1;
         }
 
-        _entries = new Entry[normalizedCapacity];
+        _table = new Table(normalizedCapacity);
         _maximumByteLength = maximumByteLength;
-        _enabled = true;
     }
 
     internal string GetString(ReadOnlySpan<byte> value, int codePage)
     {
         var encoding = TdsCollationCodec.GetEncoding(codePage);
-        if (value.Length > _maximumByteLength)
+        var table = Volatile.Read(ref _table);
+        if (table is null || value.Length > _maximumByteLength)
         {
             return encoding.GetString(value);
         }
 
-        var hash = Hash(value, codePage);
-        lock (_gate)
+        var hash = XxHash3.HashToUInt64(value, codePage);
+        hash = hash == 0 ? 1 : hash;
+        var index = (int)hash & (table.Entries.Length - 1);
+        var entry = Volatile.Read(ref table.Entries[index]);
+        if (entry is not null &&
+            entry.Hash == hash &&
+            entry.CodePage == codePage &&
+            entry.Bytes is not null &&
+            entry.Bytes.AsSpan().SequenceEqual(value))
         {
-            if (!_enabled)
-            {
-                return encoding.GetString(value);
-            }
-
-            var entries = _entries;
-            var index = (int)hash & (entries.Length - 1);
-            ref var entry = ref entries[index];
-            if (entry._hash == hash &&
-                entry._codePage == codePage &&
-                entry._bytes is not null &&
-                entry._bytes.AsSpan().SequenceEqual(value))
-            {
-                return entry._value!;
-            }
-
-            var decoded = encoding.GetString(value);
-            if (entry._candidateHash == hash &&
-                entry._candidateLength == value.Length &&
-                entry._candidateCodePage == codePage)
-            {
-                entry._hash = hash;
-                entry._codePage = codePage;
-                entry._bytes = value.ToArray();
-                entry._value = decoded;
-                entry._candidateHash = 0;
-                entry._candidateLength = 0;
-                entry._candidateCodePage = 0;
-            }
-            else
-            {
-                entry._candidateHash = hash;
-                entry._candidateLength = value.Length;
-                entry._candidateCodePage = codePage;
-            }
-
-            return decoded;
-        }
-    }
-
-    internal void Disable()
-    {
-        lock (_gate)
-        {
-            _enabled = false;
-            _entries = [];
-        }
-    }
-
-    private static ulong Hash(ReadOnlySpan<byte> value, int codePage)
-    {
-        const ulong offset = 14695981039346656037UL;
-        const ulong prime = 1099511628211UL;
-        var hash = offset;
-        foreach (var item in value)
-        {
-            hash ^= item;
-            hash *= prime;
+            return entry.Value!;
         }
 
-        hash ^= checked((uint)codePage);
-        hash *= prime;
-        hash ^= checked((uint)value.Length);
-        hash *= prime;
-        return hash == 0 ? 1 : hash;
+        var decoded = encoding.GetString(value);
+        if (unchecked((ulong)Volatile.Read(ref table.CandidateHashes[index])) == hash)
+        {
+            Volatile.Write(
+              ref table.Entries[index],
+              new Entry(hash, codePage, value.ToArray(), decoded));
+            Volatile.Write(ref table.CandidateHashes[index], 0);
+        }
+        else
+        {
+            Volatile.Write(ref table.CandidateHashes[index], unchecked((long)hash));
+        }
+
+        return decoded;
     }
 
-    private struct Entry
+    internal void Disable() => Volatile.Write(ref _table, null);
+
+    private sealed record Entry(ulong Hash, int CodePage, byte[] Bytes, string Value);
+
+    private sealed class Table(int capacity)
     {
-        internal ulong _hash;
-        internal int _codePage;
-        internal byte[]? _bytes;
-        internal string? _value;
-        internal ulong _candidateHash;
-        internal int _candidateLength;
-        internal int _candidateCodePage;
+        internal Entry?[] Entries { get; } = new Entry?[capacity];
+
+        internal long[] CandidateHashes { get; } = new long[capacity];
     }
 }
 

@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: EPL-2.0 OR Apache-2.0
  */
 
+using Apex.SqlClient.Internal;
+
 namespace Apex.SqlClient.Tests;
 
 [TestClass]
@@ -39,6 +41,40 @@ public sealed class SqlRowTests
           "hello");
 
         Assert.ThrowsExactly<IndexOutOfRangeException>(() => row.GetOrdinal("MESSAGE"));
+    }
+
+    [TestMethod]
+    public void NameLookupReturnsFirstDuplicate()
+    {
+        SqlColumn[] columns =
+        [
+          new("value", 23, 4, -1, SqlDataFormat.Binary),
+          new("value", 23, 4, -1, SqlDataFormat.Binary),
+        ];
+        var row = new TestRowDecoder().CreateRow(columns, 1, 2);
+
+        Assert.AreEqual(0, row.GetOrdinal("value"));
+        Assert.AreEqual(1, row.GetInt32("value"));
+    }
+
+    [TestMethod]
+    public void OrdinalMapIsSharedForMatchingColumnNames()
+    {
+        SqlColumn[] first =
+        [
+          new("id", 23, 4, -1, SqlDataFormat.Binary),
+          new("message", 25, -1, -1, SqlDataFormat.Text),
+        ];
+        SqlColumn[] second =
+        [
+          new("id", 25, -1, -1, SqlDataFormat.Text),
+          new("message", 23, 4, -1, SqlDataFormat.Binary),
+        ];
+
+        var firstMap = SqlColumnOrdinalMapCache.GetOrAdd(first);
+        var secondMap = SqlColumnOrdinalMapCache.GetOrAdd(second);
+
+        Assert.AreSame(firstMap, secondMap);
     }
 
     [TestMethod]

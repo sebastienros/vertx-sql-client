@@ -32,13 +32,17 @@
         "resolved": "10.0.400",
         "contentHash": "Knli3Y2k/rdBqUlQ8TP+Sbd0J0jV/0kvgLsxieowoVayioZ0JGfqb9go+/dQJqtU53i6IpZzRxAPxbBT5UJBNg=="
       },
+      "apex.sqlclient": {
+        "type": "Project",
+        "dependencies": {
+          "System.IO.Hashing": "[10.0.11, )"
+        }
+      },
       "System.IO.Hashing": {
-        "type": "Transitive",
+        "type": "CentralTransitive",
+        "requested": "[10.0.11, )",
         "resolved": "10.0.11",
         "contentHash": "OzKDcIRkeNJeC8qAsbn8yJXnfTLP1dtkWILe+T56Gf/z+IkAASi7sMqLqJQat08j5z/mRN5xVtoAwbkMNMoBUQ=="
-      },
-      "apex.sqlclient": {
-        "type": "Project"
       }
     }
   }

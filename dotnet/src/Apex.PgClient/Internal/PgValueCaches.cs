@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: EPL-2.0 OR Apache-2.0
  */
 
+using System.IO.Hashing;
 using System.Text;
 
 namespace Apex.PgClient.Internal;
@@ -11,16 +12,13 @@ namespace Apex.PgClient.Internal;
 internal sealed class Utf8StringCache
 {
     private static readonly Encoding s_utf8 = new UTF8Encoding(false, true);
-    private readonly object _gate = new();
-    private Entry[] _entries;
     private readonly int _maximumByteLength;
-    private bool _enabled;
+    private Table? _table;
 
     internal Utf8StringCache(int capacity, int maximumByteLength)
     {
         if (capacity <= 0 || maximumByteLength <= 0)
         {
-            _entries = [];
             return;
         }
 
@@ -30,88 +28,53 @@ internal sealed class Utf8StringCache
             normalizedCapacity <<= 1;
         }
 
-        _entries = new Entry[normalizedCapacity];
+        _table = new Table(normalizedCapacity);
         _maximumByteLength = maximumByteLength;
-        _enabled = true;
     }
 
     internal string GetString(ReadOnlySpan<byte> value)
     {
-        if (value.Length > _maximumByteLength)
+        var table = Volatile.Read(ref _table);
+        if (table is null || value.Length > _maximumByteLength)
         {
             return s_utf8.GetString(value);
         }
 
-        var hash = Hash(value);
-        lock (_gate)
+        var hash = XxHash3.HashToUInt64(value);
+        hash = hash == 0 ? 1 : hash;
+        var index = (int)hash & (table.Entries.Length - 1);
+        var entry = Volatile.Read(ref table.Entries[index]);
+        if (entry is not null &&
+            entry.Hash == hash &&
+            entry.Utf8 is not null &&
+            entry.Utf8.AsSpan().SequenceEqual(value))
         {
-            if (!_enabled)
-            {
-                return s_utf8.GetString(value);
-            }
-
-            var entries = _entries;
-            var index = (int)hash & (entries.Length - 1);
-            ref var entry = ref entries[index];
-            if (entry._hash == hash &&
-                entry._utf8 is not null &&
-                entry._utf8.AsSpan().SequenceEqual(value))
-            {
-                return entry._value!;
-            }
-
-            var decoded = s_utf8.GetString(value);
-            if (entry._candidateHash == hash &&
-                entry._candidateLength == value.Length)
-            {
-                entry._hash = hash;
-                entry._utf8 = value.ToArray();
-                entry._value = decoded;
-                entry._candidateHash = 0;
-                entry._candidateLength = 0;
-            }
-            else
-            {
-                entry._candidateHash = hash;
-                entry._candidateLength = value.Length;
-            }
-
-            return decoded;
-        }
-    }
-
-    internal void Disable()
-    {
-        lock (_gate)
-        {
-            _enabled = false;
-            _entries = [];
-        }
-    }
-
-    private static ulong Hash(ReadOnlySpan<byte> value)
-    {
-        const ulong offset = 14695981039346656037UL;
-        const ulong prime = 1099511628211UL;
-        var hash = offset;
-        foreach (var item in value)
-        {
-            hash ^= item;
-            hash *= prime;
+            return entry.Value!;
         }
 
-        hash ^= (ulong)value.Length;
-        hash *= prime;
-        return hash == 0 ? 1 : hash;
+        var decoded = s_utf8.GetString(value);
+        if (unchecked((ulong)Volatile.Read(ref table.CandidateHashes[index])) == hash)
+        {
+            Volatile.Write(ref table.Entries[index], new Entry(hash, value.ToArray(), decoded));
+            Volatile.Write(ref table.CandidateHashes[index], 0);
+        }
+        else
+        {
+            Volatile.Write(ref table.CandidateHashes[index], unchecked((long)hash));
+        }
+
+        return decoded;
     }
 
-    private struct Entry
+    internal void Disable() => Volatile.Write(ref _table, null);
+
+    private sealed record Entry(ulong Hash, byte[] Utf8, string Value);
+
+    private sealed class Table(int capacity)
     {
-        internal ulong _hash;
-        internal byte[]? _utf8;
-        internal string? _value;
-        internal ulong _candidateHash;
-        internal int _candidateLength;
+        internal Entry?[] Entries { get; } = new Entry?[capacity];
+
+        internal long[] CandidateHashes { get; } = new long[capacity];
     }
 }
 

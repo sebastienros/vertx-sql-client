@@ -168,6 +168,7 @@ internal sealed class SqlRowPageBatch
 {
     private readonly SqlRowPage _page;
     private readonly IReadOnlyList<SqlColumn> _columns;
+    private readonly SqlColumnOrdinalMap _ordinals;
     private readonly SqlRowPageBuilder.RowRange[] _rows;
 
     internal SqlRowPageBatch(
@@ -178,6 +179,7 @@ internal sealed class SqlRowPageBatch
     {
         _page = page;
         _columns = columns;
+        _ordinals = SqlColumnOrdinalMapCache.GetOrAdd(columns);
         _rows = rows;
         Count = count;
     }
@@ -194,6 +196,7 @@ internal sealed class SqlRowPageBatch
         var range = _rows[index];
         return new SqlRow(
           _columns,
+                    _ordinals,
           _page,
           range.Offset,
           range.Length);

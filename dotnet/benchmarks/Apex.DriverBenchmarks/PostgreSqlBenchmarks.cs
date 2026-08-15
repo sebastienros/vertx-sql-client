@@ -15,22 +15,25 @@ namespace Apex.DriverBenchmarks;
 [MemoryDiagnoser]
 public class PostgreSqlBenchmarks
 {
+    private const string RowsSql = "SELECT generate_series(1, 100)::int4";
     private PgConnection _apex = null!;
     private ISqlPreparedStatement _apexPrepared = null!;
+    private ISqlPreparedStatement _apexRowsPrepared = null!;
     private NpgsqlConnection _npgsql = null!;
     private NpgsqlCommand _npgsqlPrepared = null!;
+    private NpgsqlCommand _npgsqlRowsPrepared = null!;
 
     [GlobalSetup]
     public async Task SetupAsync()
     {
-        var connectionString =
+        string connectionString =
             Environment.GetEnvironmentVariable("APEX_PG_CONNECTION_STRING") ??
             throw new InvalidOperationException(
                 "Set APEX_PG_CONNECTION_STRING before running database benchmarks.");
         NpgsqlConnectionStringBuilder builder = new(connectionString);
         _npgsql = new NpgsqlConnection(builder.ConnectionString);
         await _npgsql.OpenAsync();
-        var username = builder.Username ??
+        string username = builder.Username ??
             throw new InvalidOperationException("The benchmark connection string requires Username.");
         _apex = await Apex.PgClient.PgClient.ConnectAsync(new PgConnectOptions
         {
@@ -43,15 +46,20 @@ public class PostgreSqlBenchmarks
             SslMode = builder.SslMode == SslMode.Disable ? PgSslMode.Disable : PgSslMode.Prefer,
         });
         _apexPrepared = await _apex.PrepareAsync("SELECT $1::int4");
+        _apexRowsPrepared = await _apex.PrepareAsync(RowsSql);
         _npgsqlPrepared = new NpgsqlCommand("SELECT $1::int4", _npgsql);
         _npgsqlPrepared.Parameters.Add(new NpgsqlParameter<int> { TypedValue = 42 });
         await _npgsqlPrepared.PrepareAsync();
+        _npgsqlRowsPrepared = new NpgsqlCommand(RowsSql, _npgsql);
+        await _npgsqlRowsPrepared.PrepareAsync();
     }
 
     [GlobalCleanup]
     public async Task CleanupAsync()
     {
+        await _apexRowsPrepared.DisposeAsync();
         await _apexPrepared.DisposeAsync();
+        await _npgsqlRowsPrepared.DisposeAsync();
         await _npgsqlPrepared.DisposeAsync();
         await _apex.DisposeAsync();
         await _npgsql.DisposeAsync();
@@ -69,7 +77,7 @@ public class PostgreSqlBenchmarks
     [Benchmark]
     public async Task<int> ApexSimpleQueryAsync()
     {
-        var rows = await _apex.QueryAsync("SELECT 1");
+        SqlRowSet rows = await _apex.QueryAsync("SELECT 1");
         return rows[0].Get<int>(0);
     }
 
@@ -82,17 +90,15 @@ public class PostgreSqlBenchmarks
     [Benchmark]
     public async Task<int> ApexPreparedQueryAsync()
     {
-        var rows = await _apexPrepared.QueryAsync(SqlParameters.Create(42));
+        SqlRowSet rows = await _apexPrepared.QueryAsync(SqlParameters.Create(42));
         return rows[0].Get<int>(0);
     }
 
     [Benchmark]
     public async Task<int> NpgsqlStream100RowsAsync()
     {
-        await using NpgsqlCommand command =
-          new("SELECT generate_series(1, 100)::int4", _npgsql);
-        await using var reader = await command.ExecuteReaderAsync();
-        var sum = 0;
+        await using NpgsqlDataReader reader = await _npgsqlRowsPrepared.ExecuteReaderAsync();
+        int sum = 0;
         while (await reader.ReadAsync())
         {
             sum += reader.GetInt32(0);
@@ -104,9 +110,9 @@ public class PostgreSqlBenchmarks
     [Benchmark]
     public async Task<int> ApexStream100RowsAsync()
     {
-        var sum = 0;
-        await foreach (var row in _apex.StreamAsync(
-                         "SELECT generate_series(1, 100)::int4",
+        int sum = 0;
+        await foreach (SqlRow row in _apex.StreamAsync(
+                         RowsSql,
                          fetchSize: 16))
         {
             sum += row.Get<int>(0);
@@ -118,9 +124,8 @@ public class PostgreSqlBenchmarks
     [Benchmark]
     public async Task<int> ApexBorrowedReader100RowsAsync()
     {
-        var sum = 0;
-        await using var reader = await _apex.ExecuteReaderAsync(
-          "SELECT generate_series(1, 100)::int4");
+        int sum = 0;
+        await using ISqlRowReader reader = await _apexRowsPrepared.ExecuteReaderAsync();
         while (await reader.ReadAsync())
         {
             sum += reader.GetInt32(0);

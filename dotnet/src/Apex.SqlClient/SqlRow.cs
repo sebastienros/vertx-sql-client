@@ -13,6 +13,7 @@ namespace Apex.SqlClient;
 public readonly struct SqlRow
 {
     private readonly IReadOnlyList<SqlColumn> _columns;
+    private readonly SqlColumnOrdinalMap _ordinals;
     private readonly ISqlRowDecoder _decoder;
     private readonly SqlRowPage? _page;
     private readonly int _offset;
@@ -20,11 +21,13 @@ public readonly struct SqlRow
 
     internal SqlRow(
         IReadOnlyList<SqlColumn> columns,
+      SqlColumnOrdinalMap ordinals,
         SqlRowPage page,
         int offset,
         int length)
     {
         _columns = columns;
+        _ordinals = ordinals;
         _decoder = page.Decoder;
         _page = page;
         _offset = offset;
@@ -43,15 +46,9 @@ public readonly struct SqlRow
     public int GetOrdinal(string name)
     {
         ArgumentException.ThrowIfNullOrEmpty(name);
-        var hash = StringComparer.Ordinal.GetHashCode(name);
-        for (var i = 0; i < _columns.Count; i++)
+        if (_ordinals.TryGetValue(name, out var ordinal))
         {
-            var candidate = _columns[i].Name;
-            if (StringComparer.Ordinal.GetHashCode(candidate) == hash &&
-                string.Equals(candidate, name, StringComparison.Ordinal))
-            {
-                return i;
-            }
+            return ordinal;
         }
 
         throw new IndexOutOfRangeException($"Column '{name}' does not exist.");
