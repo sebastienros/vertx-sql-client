@@ -2,25 +2,86 @@
 
 ## Native microbenchmarks
 
-- `Apex.DriverBenchmarks` uses BenchmarkDotNet for .NET codec allocations and Apex/Npgsql query, prepared-query, and streaming workloads.
-- `dotnet/benchmarks/java` uses JMH for equivalent Vert.x PostgreSQL query workloads.
+- `Apex.DriverBenchmarks` uses BenchmarkDotNet for .NET codec allocations,
+  Apex/Npgsql PostgreSQL workloads, and Apex/Microsoft.Data.SqlClient SQL Server
+  workloads.
+- `dotnet/benchmarks/java` uses JMH for equivalent Vert.x PostgreSQL and SQL
+  Server workloads.
 - Native BenchmarkDotNet and JMH scores are reported separately because their harnesses, runtimes, warmup models, and profilers differ.
 
 ## Common process harness
 
-`Apex.ComparisonHarness` and `io.vertx.benchmarks.ComparisonHarness` execute the same `SELECT 1` workload with the same database, concurrency, warmup, and measurement duration. Both emit JSON containing operations/second, p50/p95/p99 latency, runtime, OS, architecture, and GC counts. The .NET harness also reports process allocation bytes.
+`Apex.ComparisonHarness` and `io.vertx.benchmarks.ComparisonHarness` support
+`query`, `stream100`, `pipeline` (also accepted as `batch`), and `string100` with the same database,
+concurrency, row count, fetch size, batch depth, warmup, and measurement
+duration. The .NET harness additionally supports `borrowed100`. Both emit JSON
+containing operations/second, p50/p95/p99 latency, runtime, OS, architecture,
+and GC counts. The .NET harness also reports process allocation bytes.
+
+Driver selectors are `apex` and `npgsql` for PostgreSQL, `apex-mssql` and
+`microsoft-data-sqlclient` for .NET SQL Server, `vertx` for Java PostgreSQL, and
+`vertx-mssql` for Java SQL Server.
 
 Environment variables:
 
 | Variable | Purpose | Default |
 |---|---|---|
 | `APEX_PG_CONNECTION_STRING` | .NET PostgreSQL connection string | Required |
+| `APEX_MSSQL_CONNECTION_STRING` | .NET standard SQL Server connection string | Required for SQL Server |
 | `APEX_PG_HOST`, `APEX_PG_PORT`, `APEX_PG_DATABASE`, `APEX_PG_USERNAME`, `APEX_PG_PASSWORD` | Vert.x connection fields | Local Vert.x test defaults |
+| `APEX_MSSQL_HOST`, `APEX_MSSQL_PORT`, `APEX_MSSQL_DATABASE`, `APEX_MSSQL_USERNAME`, `APEX_MSSQL_PASSWORD` | Vert.x SQL Server connection fields | Host `localhost`, port `1433`; others required. Vert.x uses `EncryptionMode.ON` and trusts the local benchmark certificate to match the encrypted .NET runs. |
 | `APEX_BENCH_CONCURRENCY` | Concurrent workers/connections | `16` |
+| `APEX_BENCH_WORKLOAD` | `query`, `stream100`, `borrowed100` (.NET), `pipeline`/`batch`, or `string100` | `query` |
+| `APEX_BENCH_FETCH_SIZE` | Safe-stream page/fetch size | `16` |
+| `APEX_BENCH_ROW_COUNT` | Rows for stream/string workloads | `100` |
+| `APEX_BENCH_PIPELINE_DEPTH` | Queries represented by one pipeline/batch invocation | `64` |
 | `APEX_BENCH_WARMUP_SECONDS` | Warmup duration | `2` |
 | `APEX_BENCH_DURATION_SECONDS` | Measurement duration | `10` |
 
 Results must record the exact driver commit/package, SDK/JDK, CPU, OS, database image/version, container limits, and harness settings. Short local runs are diagnostic only and are not release claims.
+
+### SQL Server workload fairness
+
+SQL Server MARS and pipelining are disabled for these Apex comparisons. Every
+worker owns one physical connection, and no benchmark starts overlapping
+commands on it. The `pipeline` label means a batch-equivalent workload:
+Apex.MsSqlClient, Microsoft.Data.SqlClient, and Vert.x execute the same number
+of prepared single-row `UPDATE` commands serially. Operations are counted per
+updated row. This measures each driver's reusable prepared batch-equivalent
+surface without pretending that concurrent TDS requests occurred.
+
+Microsoft.Data.SqlClient is referenced only by benchmark projects. Apex parses
+its own options from `APEX_MSSQL_CONNECTION_STRING`; the direct runtime driver
+does not use the comparator.
+
+### Reproduction commands
+
+```bash
+# BenchmarkDotNet SQL Server suite
+APEX_MSSQL_CONNECTION_STRING='Server=localhost,1433;Database=master;User ID=...;Password=...;Encrypt=True;TrustServerCertificate=True' \
+  dotnet run -c Release --project dotnet/benchmarks/Apex.DriverBenchmarks -- \
+  --filter '*MsSqlBenchmarks*'
+
+# Common .NET SQL Server harness (repeat for each driver/workload)
+APEX_BENCH_WORKLOAD=stream100 \
+  dotnet run -c Release --project dotnet/benchmarks/Apex.ComparisonHarness -- \
+  apex-mssql
+APEX_BENCH_WORKLOAD=pipeline \
+  dotnet run -c Release --project dotnet/benchmarks/Apex.ComparisonHarness -- \
+  microsoft-data-sqlclient
+
+# Build and run Vert.x MSSQL JMH
+mvn -f dotnet/benchmarks/java/pom.xml -DskipTests package
+java -jar dotnet/benchmarks/java/target/benchmarks.jar '.*MsSqlBenchmarks.*'
+
+# Common Java SQL Server harness
+java -cp dotnet/benchmarks/java/target/benchmarks.jar \
+  io.vertx.benchmarks.ComparisonHarness vertx-mssql
+```
+
+Provide the connection/environment variables outside source control. Run all
+five workloads with identical controls and the same SQL Server container before
+drawing comparisons. No SQL Server performance numbers are published here.
 
 ## Final PostgreSQL-first baseline
 

@@ -7,13 +7,20 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text.Json;
+using Apex.MsSqlClient;
 using Apex.PgClient;
 using Apex.SqlClient;
+using Microsoft.Data.SqlClient;
 using Npgsql;
 
 string driver = args.ElementAtOrDefault(0) ?? "apex";
 string workload =
   Environment.GetEnvironmentVariable("APEX_BENCH_WORKLOAD") ?? "query";
+if (workload is not ("query" or "stream100" or "borrowed100" or "pipeline" or "batch" or "string100"))
+{
+  throw new ArgumentException($"Unknown workload '{workload}'.");
+}
+
 int fetchSize = int.Parse(
   Environment.GetEnvironmentVariable("APEX_BENCH_FETCH_SIZE") ?? "16");
 int rowCount = int.Parse(
@@ -26,9 +33,14 @@ TimeSpan warmup = TimeSpan.FromSeconds(double.Parse(
   Environment.GetEnvironmentVariable("APEX_BENCH_WARMUP_SECONDS") ?? "2"));
 TimeSpan duration = TimeSpan.FromSeconds(double.Parse(
   Environment.GetEnvironmentVariable("APEX_BENCH_DURATION_SECONDS") ?? "10"));
+bool sqlServer = driver.Equals("apex-mssql", StringComparison.OrdinalIgnoreCase) ||
+  driver.Equals("microsoft-data-sqlclient", StringComparison.OrdinalIgnoreCase);
+string connectionVariable = sqlServer
+  ? "APEX_MSSQL_CONNECTION_STRING"
+  : "APEX_PG_CONNECTION_STRING";
 string connectionString =
-  Environment.GetEnvironmentVariable("APEX_PG_CONNECTION_STRING") ??
-  throw new InvalidOperationException("Set APEX_PG_CONNECTION_STRING.");
+  Environment.GetEnvironmentVariable(connectionVariable) ??
+  throw new InvalidOperationException($"Set {connectionVariable}.");
 
 IQueryRunner[] runners = await Task.WhenAll(
   Enumerable.Range(0, concurrency)
@@ -118,7 +130,7 @@ static async Task RunWorkerAsync(
     long started = Stopwatch.GetTimestamp();
     try
     {
-      await runner.QueryAsync(cancellationToken);
+      await runner.QueryAsync(CancellationToken.None);
     }
 
     catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -147,6 +159,17 @@ static ValueTask<IQueryRunner> CreateRunnerAsync(
       pipelineDepth,
       connectionString)),
     "npgsql" => WrapAsync(NpgsqlQueryRunner.CreateAsync(
+      workload,
+      rowCount,
+      pipelineDepth,
+      connectionString)),
+    "apex-mssql" => WrapAsync(ApexMsSqlQueryRunner.CreateAsync(
+      workload,
+      fetchSize,
+      rowCount,
+      pipelineDepth,
+      connectionString)),
+    "microsoft-data-sqlclient" => WrapAsync(MicrosoftMsSqlQueryRunner.CreateAsync(
       workload,
       rowCount,
       pipelineDepth,
@@ -213,7 +236,7 @@ internal sealed class ApexQueryRunner(
       PipeliningLimit = 256,
       StringCacheCapacity = stringCacheCapacity,
     });
-    ISqlPreparedStatement? pipelineStatement = workload == "pipeline"
+    ISqlPreparedStatement? pipelineStatement = workload is "pipeline" or "batch"
       ? await connection.PrepareAsync("SELECT 1::int4")
       : null;
     return new ApexQueryRunner(
@@ -230,11 +253,11 @@ internal sealed class ApexQueryRunner(
   }
 
   public int OperationsPerInvocation =>
-    workload == "pipeline" ? pipelineDepth : 1;
+    workload is "pipeline" or "batch" ? pipelineDepth : 1;
 
   public async ValueTask QueryAsync(CancellationToken cancellationToken)
   {
-    if (workload == "pipeline")
+    if (workload is "pipeline" or "batch")
     {
       Task<SqlRowSet>[] pending = new Task<SqlRowSet>[pipelineDepth];
       for (int i = 0; i < pending.Length; i++)
@@ -336,7 +359,7 @@ internal sealed class NpgsqlQueryRunner(
     NpgsqlConnection connection = new(connectionString);
     await connection.OpenAsync();
     NpgsqlBatch? pipelineBatch = null;
-    if (workload == "pipeline")
+    if (workload is "pipeline" or "batch")
     {
       pipelineBatch = new NpgsqlBatch(connection);
       for (int i = 0; i < pipelineDepth; i++)
@@ -361,11 +384,11 @@ internal sealed class NpgsqlQueryRunner(
   }
 
   public int OperationsPerInvocation =>
-    workload == "pipeline" ? pipelineDepth : 1;
+    workload is "pipeline" or "batch" ? pipelineDepth : 1;
 
   public async ValueTask QueryAsync(CancellationToken cancellationToken)
   {
-    if (workload == "pipeline")
+    if (workload is "pipeline" or "batch")
     {
       await using NpgsqlDataReader reader =
         await pipelineBatch!.ExecuteReaderAsync(CancellationToken.None);
@@ -441,6 +464,280 @@ internal sealed class NpgsqlQueryRunner(
       await pipelineBatch.DisposeAsync();
     }
 
+    await connection.DisposeAsync();
+  }
+}
+
+internal sealed class ApexMsSqlQueryRunner(
+  MsSqlConnection connection,
+  string workload,
+  int fetchSize,
+  string rowsSql,
+  int rowCount,
+  int expectedSum,
+  int batchDepth,
+  ISqlPreparedStatement? batchStatement,
+  IReadOnlyList<SqlParameters>? batchParameters) : IQueryRunner
+{
+  public static async ValueTask<ApexMsSqlQueryRunner> CreateAsync(
+    string workload,
+    int fetchSize,
+    int rowCount,
+    int batchDepth,
+    string connectionString)
+  {
+    MsSqlConnection connection = await Apex.MsSqlClient.MsSqlClient.ConnectAsync(
+      MsSqlConnectOptions.Parse(connectionString));
+    ISqlPreparedStatement? batchStatement = null;
+    if (workload is "pipeline" or "batch")
+    {
+      await connection.ExecuteAsync(
+        "CREATE TABLE #apex_batch (value int NOT NULL); " +
+        "INSERT INTO #apex_batch VALUES (0)");
+      batchStatement = await connection.PrepareAsync(
+        "UPDATE #apex_batch SET value = @P1");
+    }
+
+    IReadOnlyList<SqlParameters>? batchParameters = workload is "pipeline" or "batch"
+      ? Enumerable.Range(1, batchDepth)
+        .Select(static value => SqlParameters.Create(value))
+        .ToArray()
+      : null;
+    return new ApexMsSqlQueryRunner(
+      connection,
+      workload,
+      fetchSize,
+      MsSqlRowsSql(rowCount, workload == "string100"),
+      rowCount,
+      checked(rowCount * (rowCount + 1) / 2),
+      batchDepth,
+      batchStatement,
+      batchParameters);
+  }
+
+  public int OperationsPerInvocation =>
+    workload is "pipeline" or "batch" ? batchDepth : 1;
+
+  public async ValueTask QueryAsync(CancellationToken cancellationToken)
+  {
+    if (workload is "pipeline" or "batch")
+    {
+      IReadOnlyList<SqlCommandResult> results =
+        await batchStatement!.ExecuteBatchAsync(batchParameters!, cancellationToken);
+      if (results.Count != batchDepth ||
+          results.Any(static result => result.AffectedRows != 1))
+      {
+        throw new InvalidOperationException(
+          $"Expected {batchDepth} Apex SQL Server batch results but received {results.Count}.");
+      }
+    }
+    else if (workload == "borrowed100")
+    {
+      int sum = 0;
+      await using ISqlRowReader reader =
+        await connection.ExecuteReaderAsync(rowsSql, cancellationToken: cancellationToken);
+      while (await reader.ReadAsync(cancellationToken))
+      {
+        sum += reader.GetInt32(0);
+      }
+
+      ValidateSum(sum);
+    }
+    else if (workload == "stream100")
+    {
+      int sum = 0;
+      await foreach (SqlRow row in connection.StreamAsync(
+                       rowsSql,
+                       fetchSize: fetchSize,
+                       cancellationToken: cancellationToken))
+      {
+        sum += row.Get<int>(0);
+      }
+
+      ValidateSum(sum);
+    }
+    else if (workload == "string100")
+    {
+      int count = 0;
+      await foreach (SqlRow row in connection.StreamAsync(
+                       rowsSql,
+                       fetchSize: fetchSize,
+                       cancellationToken: cancellationToken))
+      {
+        if (row.GetString(0) != "repeated-value")
+        {
+          throw new InvalidOperationException("Unexpected Apex SQL Server string value.");
+        }
+
+        count++;
+      }
+
+      if (count != rowCount)
+      {
+        throw new InvalidOperationException($"Unexpected SQL Server row count {count}.");
+      }
+    }
+    else
+    {
+      SqlRowSet rows = await connection.QueryAsync("SELECT 1", cancellationToken);
+      if (rows[0].Get<int>(0) != 1)
+      {
+        throw new InvalidOperationException("Unexpected Apex SQL Server query result.");
+      }
+    }
+  }
+
+  public async ValueTask DisposeAsync()
+  {
+    if (batchStatement is not null)
+    {
+      await batchStatement.DisposeAsync();
+    }
+
+    await connection.DisposeAsync();
+  }
+
+  private void ValidateSum(int sum)
+  {
+    if (sum != expectedSum)
+    {
+      throw new InvalidOperationException($"Unexpected SQL Server stream sum {sum}.");
+    }
+  }
+
+  internal static string MsSqlRowsSql(int count, bool strings) =>
+    $"""
+    WITH numbers AS (
+      SELECT 1 AS value
+      UNION ALL
+      SELECT value + 1 FROM numbers WHERE value < {count}
+    )
+    SELECT {(strings ? "CAST(N'repeated-value' AS nvarchar(32))" : "value")}
+    FROM numbers
+    OPTION (MAXRECURSION 0)
+    """;
+}
+
+internal sealed class MicrosoftMsSqlQueryRunner(
+  SqlConnection connection,
+  string workload,
+  int rowCount,
+  int expectedSum,
+  int batchDepth,
+  SqlCommand queryCommand,
+  SqlCommand rowsCommand,
+  SqlCommand batchCommand) : IQueryRunner
+{
+  public static async ValueTask<MicrosoftMsSqlQueryRunner> CreateAsync(
+    string workload,
+    int rowCount,
+    int batchDepth,
+    string connectionString)
+  {
+    SqlConnection connection = new(connectionString);
+    await connection.OpenAsync();
+    SqlCommand queryCommand = new("SELECT 1", connection);
+    SqlCommand rowsCommand = new(
+      ApexMsSqlQueryRunner.MsSqlRowsSql(rowCount, workload == "string100"),
+      connection);
+    if (workload is "pipeline" or "batch")
+    {
+      await using SqlCommand setup = new(
+        "CREATE TABLE #microsoft_batch (value int NOT NULL); " +
+        "INSERT INTO #microsoft_batch VALUES (0)",
+        connection);
+      _ = await setup.ExecuteNonQueryAsync();
+    }
+
+    SqlCommand batchCommand = new(
+      "UPDATE #microsoft_batch SET value = @value",
+      connection);
+    batchCommand.Parameters.Add(
+      new SqlParameter("@value", System.Data.SqlDbType.Int));
+    if (workload is "pipeline" or "batch")
+    {
+      await batchCommand.PrepareAsync();
+    }
+
+    return new MicrosoftMsSqlQueryRunner(
+      connection,
+      workload,
+      rowCount,
+      checked(rowCount * (rowCount + 1) / 2),
+      batchDepth,
+      queryCommand,
+      rowsCommand,
+      batchCommand);
+  }
+
+  public int OperationsPerInvocation =>
+    workload is "pipeline" or "batch" ? batchDepth : 1;
+
+  public async ValueTask QueryAsync(CancellationToken cancellationToken)
+  {
+    if (workload is "pipeline" or "batch")
+    {
+      int affected = 0;
+      for (int value = 1; value <= batchDepth; value++)
+      {
+        batchCommand.Parameters[0].Value = value;
+        affected += await batchCommand.ExecuteNonQueryAsync(cancellationToken);
+      }
+
+      if (affected != batchDepth)
+      {
+        throw new InvalidOperationException("Unexpected Microsoft.Data.SqlClient batch result.");
+      }
+    }
+    else if (workload is "stream100" or "borrowed100")
+    {
+      await using SqlDataReader reader =
+        await rowsCommand.ExecuteReaderAsync(cancellationToken);
+      int sum = 0;
+      while (await reader.ReadAsync(cancellationToken))
+      {
+        sum += reader.GetInt32(0);
+      }
+
+      if (sum != expectedSum)
+      {
+        throw new InvalidOperationException($"Unexpected SQL Server stream sum {sum}.");
+      }
+    }
+    else if (workload == "string100")
+    {
+      await using SqlDataReader reader =
+        await rowsCommand.ExecuteReaderAsync(cancellationToken);
+      int count = 0;
+      while (await reader.ReadAsync(cancellationToken))
+      {
+        if (reader.GetString(0) != "repeated-value")
+        {
+          throw new InvalidOperationException(
+            "Unexpected Microsoft.Data.SqlClient string value.");
+        }
+
+        count++;
+      }
+
+      if (count != rowCount)
+      {
+        throw new InvalidOperationException($"Unexpected SQL Server row count {count}.");
+      }
+    }
+    else if (Convert.ToInt32(
+               await queryCommand.ExecuteScalarAsync(cancellationToken)) != 1)
+    {
+      throw new InvalidOperationException(
+        "Unexpected Microsoft.Data.SqlClient query result.");
+    }
+  }
+
+  public async ValueTask DisposeAsync()
+  {
+    await queryCommand.DisposeAsync();
+    await rowsCommand.DisposeAsync();
+    await batchCommand.DisposeAsync();
     await connection.DisposeAsync();
   }
 }
