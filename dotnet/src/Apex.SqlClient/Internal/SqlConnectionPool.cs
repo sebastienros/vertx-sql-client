@@ -797,6 +797,8 @@ internal sealed class SqlConnectionPool<TConnection> : ISqlPool
 
       public double GetDouble(int ordinal) => _inner.GetDouble(ordinal);
 
+      public decimal GetDecimal(int ordinal) => _inner.GetDecimal(ordinal);
+
       public string GetString(int ordinal) => _inner.GetString(ordinal);
 
       public Guid GetGuid(int ordinal) => _inner.GetGuid(ordinal);

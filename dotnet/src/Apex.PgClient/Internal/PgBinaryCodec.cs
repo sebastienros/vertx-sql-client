@@ -20,86 +20,152 @@ internal static class PgBinaryCodec
   private static readonly DateTimeOffset PgTimestampWithTimeZoneEpoch =
     new(2000, 1, 1, 0, 0, 0, TimeSpan.Zero);
 
-  public static object Decode(uint typeId, ReadOnlySpan<byte> value) =>
-    typeId switch
+  public static object Decode(uint typeId, ReadOnlyMemory<byte> memory)
+  {
+    ReadOnlySpan<byte> value = memory.Span;
+    return typeId switch
     {
-      16 => ReadByte(value) != 0,
-      17 => value.ToArray(),
-      20 => ReadInt64(value),
-      21 => ReadInt16(value),
-      23 => ReadInt32(value),
-      26 or 142 or 829 or 1560 or 1562 or 2278 or 774 => throw new PgUnsupportedTypeException(typeId),
-      700 => BitConverter.Int32BitsToSingle(ReadInt32(value)),
-      701 => BitConverter.Int64BitsToDouble(ReadInt64(value)),
-      790 => new PgMoney(ReadInt64(value) / 100m),
-      1082 => DecodeDate(value),
-      1083 => TimeOnly.FromTimeSpan(TimeSpan.FromTicks(ReadInt64(value) * 10)),
-      1114 => DecodeTimestamp(value),
-      1184 => DecodeTimestampWithTimeZone(value),
+      16 => DecodeBoolean(value),
+      17 => DecodeBytes(value),
+      20 => DecodeInt64(value),
+      21 => DecodeInt16(value),
+      23 => DecodeInt32(value),
+      26 or 142 or 829 or 1560 or 1562 or 2278 or 774 =>
+        throw new PgUnsupportedTypeException(typeId),
+      700 => DecodeFloat(value),
+      701 => DecodeDouble(value),
+      790 => DecodeMoney(value),
+      1082 => DecodeDateOnly(value),
+      1083 => DecodeTimeOnly(value),
+      1114 => DecodeDateTime(value),
+      1184 => DecodeDateTimeOffset(value),
       1186 => DecodeInterval(value),
       1266 => DecodeTimeWithTimeZone(value),
       1700 => DecodeNumeric(value),
       2950 => DecodeGuid(value),
       600 => DecodePoint(value),
-      601 => new PgLineSegment(DecodePoint(value), DecodePoint(value[16..])),
+      601 => DecodeLineSegment(value),
       602 => DecodePath(value),
-      603 => new PgBox(DecodePoint(value), DecodePoint(value[16..])),
-      604 => new PgPolygon(DecodePoints(value, hasClosedFlag: false)),
+      603 => DecodeBox(value),
+      604 => DecodePolygon(value),
       628 => DecodeLine(value),
       650 => DecodeCidr(value),
-      718 => new PgCircle(DecodePoint(value), ReadDouble(value[16..])),
+      718 => DecodeCircle(value),
       869 => DecodeInet(value),
-      114 => DecodeJson(value),
-      3802 => DecodeJsonb(value),
-      18 or 19 or 25 or 1042 or 1043 => Encoding.UTF8.GetString(value),
+      114 => DecodeJson(memory),
+      3802 => DecodeJsonb(memory),
+      18 or 19 or 25 or 1042 or 1043 => DecodeString(value),
       1000 or 1001 or 1002 or 1003 or 1005 or 1007 or 1009 or 1015 or
       1016 or 1017 or 1018 or 1019 or 1020 or 1021 or 1022 or 1027 or
       1041 or 1115 or 1182 or 1183 or 1185 or 1187 or 1231 or 1270 or
-      199 or 629 or 651 or 719 or 791 or 2951 or 3807 => DecodeArray(value),
+      199 or 629 or 651 or 719 or 791 or 2951 or 3807 =>
+        DecodeArray(memory),
       _ => throw new PgUnsupportedTypeException(typeId),
     };
-
-  private static object?[] DecodeArray(ReadOnlySpan<byte> value)
-  {
-    int position = 0;
-    int dimensions = ReadInt32(value, ref position);
-    _ = ReadInt32(value, ref position);
-    uint elementType = unchecked((uint)ReadInt32(value, ref position));
-    if (dimensions == 0)
-    {
-      return [];
-    }
-
-    if (dimensions != 1)
-    {
-      throw new NotSupportedException("Multidimensional PostgreSQL arrays are not supported yet.");
-    }
-
-    int count = ReadInt32(value, ref position);
-    _ = ReadInt32(value, ref position);
-    if (count < 0 || count > (value.Length - position) / sizeof(int))
-    {
-      throw new InvalidDataException("PostgreSQL array element count exceeds its payload.");
-    }
-
-    object?[] result = new object?[count];
-    for (int i = 0; i < count; i++)
-    {
-      int length = ReadInt32(value, ref position);
-      if (length < 0)
-      {
-        continue;
-      }
-
-      Ensure(value, position, length);
-      result[i] = Decode(elementType, value.Slice(position, length));
-      position += length;
-    }
-
-    return result;
   }
 
-  private static PgNumeric DecodeNumeric(ReadOnlySpan<byte> value)
+  internal static bool DecodeBoolean(ReadOnlySpan<byte> value) =>
+    ReadByte(value) != 0;
+
+  internal static byte[] DecodeBytes(ReadOnlySpan<byte> value) =>
+    value.ToArray();
+
+  internal static short DecodeInt16(ReadOnlySpan<byte> value) =>
+    ReadInt16(value);
+
+  internal static int DecodeInt32(ReadOnlySpan<byte> value) =>
+    ReadInt32(value);
+
+  internal static long DecodeInt64(ReadOnlySpan<byte> value) =>
+    ReadInt64(value);
+
+  internal static float DecodeFloat(ReadOnlySpan<byte> value) =>
+    BitConverter.Int32BitsToSingle(ReadInt32(value));
+
+  internal static double DecodeDouble(ReadOnlySpan<byte> value) =>
+    BitConverter.Int64BitsToDouble(ReadInt64(value));
+
+  internal static decimal DecodeDecimal(ReadOnlySpan<byte> value) =>
+    DecodeNumeric(value).ToDecimal();
+
+  internal static string DecodeString(ReadOnlySpan<byte> value) =>
+    Encoding.UTF8.GetString(value);
+
+  internal static PgMoney DecodeMoney(ReadOnlySpan<byte> value) =>
+    new(ReadInt64(value) / 100m);
+
+  internal static DateOnly DecodeDateOnly(ReadOnlySpan<byte> value)
+  {
+    int days = ReadInt32(value);
+    return days switch
+    {
+      int.MaxValue => DateOnly.MaxValue,
+      int.MinValue => DateOnly.MinValue,
+      _ => PgDateEpoch.AddDays(days),
+    };
+  }
+
+  internal static TimeOnly DecodeTimeOnly(ReadOnlySpan<byte> value) =>
+    TimeOnly.FromTimeSpan(TimeSpan.FromTicks(ReadInt64(value) * 10));
+
+  internal static DateTime DecodeDateTime(ReadOnlySpan<byte> value)
+  {
+    long microseconds = ReadInt64(value);
+    return microseconds switch
+    {
+      long.MaxValue => DateTime.MaxValue,
+      long.MinValue => DateTime.MinValue,
+      _ => PgTimestampEpoch.AddTicks(microseconds * 10),
+    };
+  }
+
+  internal static DateTimeOffset DecodeDateTimeOffset(ReadOnlySpan<byte> value)
+  {
+    long microseconds = ReadInt64(value);
+    return microseconds switch
+    {
+      long.MaxValue => DateTimeOffset.MaxValue,
+      long.MinValue => DateTimeOffset.MinValue,
+      _ => PgTimestampWithTimeZoneEpoch.AddTicks(microseconds * 10),
+    };
+  }
+
+  internal static PgInterval DecodeInterval(ReadOnlySpan<byte> value)
+  {
+    Ensure(value, 0, 16);
+    long microseconds = ReadInt64(value);
+    int days = ReadInt32(value[8..]);
+    int months = ReadInt32(value[12..]);
+    long seconds = Math.DivRem(
+      microseconds,
+      1_000_000,
+      out long remainingMicros);
+    long hours = Math.DivRem(seconds, 3600, out long remainingSeconds);
+    long minutes = Math.DivRem(
+      remainingSeconds,
+      60,
+      out long finalSeconds);
+    return new PgInterval(
+      months / 12,
+      months % 12,
+      days,
+      checked((int)hours),
+      checked((int)minutes),
+      checked((int)finalSeconds),
+      checked((int)remainingMicros));
+  }
+
+  internal static PgTimeWithTimeZone DecodeTimeWithTimeZone(
+    ReadOnlySpan<byte> value)
+  {
+    Ensure(value, 0, 12);
+    TimeOnly time =
+      TimeOnly.FromTimeSpan(TimeSpan.FromTicks(ReadInt64(value) * 10));
+    TimeSpan offset = TimeSpan.FromSeconds(-ReadInt32(value[8..]));
+    return new PgTimeWithTimeZone(time, offset);
+  }
+
+  internal static PgNumeric DecodeNumeric(ReadOnlySpan<byte> value)
   {
     int position = 0;
     int digitCount = ReadInt16(value, ref position);
@@ -127,7 +193,8 @@ internal static class PgBinaryCodec
       int digit = unchecked((ushort)ReadInt16(value, ref position));
       if (digit > 9999)
       {
-        throw new InvalidDataException("Invalid PostgreSQL numeric base-10000 digit.");
+        throw new InvalidDataException(
+          "Invalid PostgreSQL numeric base-10000 digit.");
       }
 
       coefficient = (coefficient * 10000) + digit;
@@ -160,114 +227,119 @@ internal static class PgBinaryCodec
     return PgNumeric.Create(coefficient, scale);
   }
 
-  private static JsonElement DecodeJsonb(ReadOnlySpan<byte> value)
-  {
-    Ensure(value, 0, 1);
-    if (value[0] != 1)
-    {
-      throw new InvalidDataException($"Unsupported PostgreSQL jsonb version {value[0]}.");
-    }
-
-    return DecodeJson(value[1..]);
-  }
-
-  private static JsonElement DecodeJson(ReadOnlySpan<byte> value)
-  {
-    using JsonDocument document = JsonDocument.Parse(value.ToArray());
-    return document.RootElement.Clone();
-  }
-
-  private static PgInterval DecodeInterval(ReadOnlySpan<byte> value)
+  internal static Guid DecodeGuid(ReadOnlySpan<byte> value)
   {
     Ensure(value, 0, 16);
-    long microseconds = ReadInt64(value);
-    int days = ReadInt32(value[8..]);
-    int months = ReadInt32(value[12..]);
-    long seconds = Math.DivRem(microseconds, 1_000_000, out long remainingMicros);
-    long hours = Math.DivRem(seconds, 3600, out long remainingSeconds);
-    long minutes = Math.DivRem(remainingSeconds, 60, out long finalSeconds);
-    return new PgInterval(
-      months / 12,
-      months % 12,
-      days,
-      checked((int)hours),
-      checked((int)minutes),
-      checked((int)finalSeconds),
-      checked((int)remainingMicros));
+    return new Guid(value[..16], bigEndian: true);
   }
 
-  private static DateOnly DecodeDate(ReadOnlySpan<byte> value)
-  {
-    int days = ReadInt32(value);
-    return days switch
-    {
-      int.MaxValue => DateOnly.MaxValue,
-      int.MinValue => DateOnly.MinValue,
-      _ => PgDateEpoch.AddDays(days),
-    };
-  }
-
-  private static DateTime DecodeTimestamp(ReadOnlySpan<byte> value)
-  {
-    long microseconds = ReadInt64(value);
-    return microseconds switch
-    {
-      long.MaxValue => DateTime.MaxValue,
-      long.MinValue => DateTime.MinValue,
-      _ => PgTimestampEpoch.AddTicks(microseconds * 10),
-    };
-  }
-
-  private static DateTimeOffset DecodeTimestampWithTimeZone(ReadOnlySpan<byte> value)
-  {
-    long microseconds = ReadInt64(value);
-    return microseconds switch
-    {
-      long.MaxValue => DateTimeOffset.MaxValue,
-      long.MinValue => DateTimeOffset.MinValue,
-      _ => PgTimestampWithTimeZoneEpoch.AddTicks(microseconds * 10),
-    };
-  }
-
-  private static PgTimeWithTimeZone DecodeTimeWithTimeZone(ReadOnlySpan<byte> value)
-  {
-    Ensure(value, 0, 12);
-    TimeOnly time = TimeOnly.FromTimeSpan(TimeSpan.FromTicks(ReadInt64(value) * 10));
-    TimeSpan offset = TimeSpan.FromSeconds(-ReadInt32(value[8..]));
-    return new PgTimeWithTimeZone(time, offset);
-  }
-
-  private static Guid DecodeGuid(ReadOnlySpan<byte> value)
-  {
-    Ensure(value, 0, 16);
-    Span<byte> guid = stackalloc byte[16];
-    value.CopyTo(guid);
-    if (BitConverter.IsLittleEndian)
-    {
-      guid[..4].Reverse();
-      guid.Slice(4, 2).Reverse();
-      guid.Slice(6, 2).Reverse();
-    }
-
-    return new Guid(guid);
-  }
-
-  private static PgPoint DecodePoint(ReadOnlySpan<byte> value)
+  internal static PgPoint DecodePoint(ReadOnlySpan<byte> value)
   {
     Ensure(value, 0, 16);
     return new PgPoint(ReadDouble(value), ReadDouble(value[8..]));
   }
 
-  private static PgLine DecodeLine(ReadOnlySpan<byte> value)
-  {
-    Ensure(value, 0, 24);
-    return new PgLine(ReadDouble(value), ReadDouble(value[8..]), ReadDouble(value[16..]));
-  }
+  internal static PgLineSegment DecodeLineSegment(ReadOnlySpan<byte> value) =>
+    new(DecodePoint(value), DecodePoint(value[16..]));
 
-  private static PgPath DecodePath(ReadOnlySpan<byte> value) =>
+  internal static PgPath DecodePath(ReadOnlySpan<byte> value) =>
     new(DecodePoints(value, hasClosedFlag: true, out bool closed), closed);
 
-  private static PgPoint[] DecodePoints(ReadOnlySpan<byte> value, bool hasClosedFlag) =>
+  internal static PgBox DecodeBox(ReadOnlySpan<byte> value) =>
+    new(DecodePoint(value), DecodePoint(value[16..]));
+
+  internal static PgPolygon DecodePolygon(ReadOnlySpan<byte> value) =>
+    new(DecodePoints(value, hasClosedFlag: false));
+
+  internal static PgLine DecodeLine(ReadOnlySpan<byte> value)
+  {
+    Ensure(value, 0, 24);
+    return new PgLine(
+      ReadDouble(value),
+      ReadDouble(value[8..]),
+      ReadDouble(value[16..]));
+  }
+
+  internal static PgCidr DecodeCidr(ReadOnlySpan<byte> value)
+  {
+    (IPAddress address, int prefix, _) = DecodeNetwork(value);
+    return new PgCidr(address, prefix);
+  }
+
+  internal static PgCircle DecodeCircle(ReadOnlySpan<byte> value) =>
+    new(DecodePoint(value), ReadDouble(value[16..]));
+
+  internal static PgInet DecodeInet(ReadOnlySpan<byte> value)
+  {
+    (IPAddress address, int prefix, _) = DecodeNetwork(value);
+    return new PgInet(address, prefix);
+  }
+
+  internal static JsonElement DecodeJson(ReadOnlyMemory<byte> value)
+  {
+    using JsonDocument document = JsonDocument.Parse(value);
+    return document.RootElement.Clone();
+  }
+
+  internal static JsonElement DecodeJsonb(ReadOnlyMemory<byte> value)
+  {
+    ReadOnlySpan<byte> span = value.Span;
+    Ensure(span, 0, 1);
+    if (span[0] != 1)
+    {
+      throw new InvalidDataException(
+        $"Unsupported PostgreSQL jsonb version {span[0]}.");
+    }
+
+    return DecodeJson(value[1..]);
+  }
+
+  internal static object?[] DecodeArray(ReadOnlyMemory<byte> value)
+  {
+    int position = 0;
+    ReadOnlySpan<byte> span = value.Span;
+    int dimensions = ReadInt32(span, ref position);
+    _ = ReadInt32(span, ref position);
+    uint elementType = unchecked((uint)ReadInt32(span, ref position));
+    if (dimensions == 0)
+    {
+      return [];
+    }
+
+    if (dimensions != 1)
+    {
+      throw new NotSupportedException(
+        "Multidimensional PostgreSQL arrays are not supported yet.");
+    }
+
+    int count = ReadInt32(span, ref position);
+    _ = ReadInt32(span, ref position);
+    if (count < 0 || count > (span.Length - position) / sizeof(int))
+    {
+      throw new InvalidDataException(
+        "PostgreSQL array element count exceeds its payload.");
+    }
+
+    object?[] result = new object?[count];
+    for (int i = 0; i < count; i++)
+    {
+      int length = ReadInt32(span, ref position);
+      if (length < 0)
+      {
+        continue;
+      }
+
+      Ensure(span, position, length);
+      result[i] = Decode(elementType, value.Slice(position, length));
+      position += length;
+    }
+
+    return result;
+  }
+
+  private static PgPoint[] DecodePoints(
+    ReadOnlySpan<byte> value,
+    bool hasClosedFlag) =>
     DecodePoints(value, hasClosedFlag, out _);
 
   private static PgPoint[] DecodePoints(
@@ -280,7 +352,8 @@ internal static class PgBinaryCodec
     int count = ReadInt32(value, ref position);
     if (count < 0 || count > (value.Length - position) / 16)
     {
-      throw new InvalidDataException("PostgreSQL point count exceeds its payload.");
+      throw new InvalidDataException(
+        "PostgreSQL point count exceeds its payload.");
     }
 
     PgPoint[] points = new PgPoint[count];
@@ -294,24 +367,18 @@ internal static class PgBinaryCodec
     return points;
   }
 
-  private static PgInet DecodeInet(ReadOnlySpan<byte> value)
-  {
-    (IPAddress address, int prefix, _) = DecodeNetwork(value);
-    return new PgInet(address, prefix);
-  }
-
-  private static PgCidr DecodeCidr(ReadOnlySpan<byte> value)
-  {
-    (IPAddress address, int prefix, _) = DecodeNetwork(value);
-    return new PgCidr(address, prefix);
-  }
-
-  private static (IPAddress Address, int Prefix, bool Cidr) DecodeNetwork(ReadOnlySpan<byte> value)
+  private static (
+    IPAddress Address,
+    int Prefix,
+    bool Cidr) DecodeNetwork(ReadOnlySpan<byte> value)
   {
     Ensure(value, 0, 4);
     int addressLength = value[3];
     Ensure(value, 4, addressLength);
-    return (new IPAddress(value.Slice(4, addressLength)), value[1], value[2] != 0);
+    return (
+      new IPAddress(value.Slice(4, addressLength)),
+      value[1],
+      value[2] != 0);
   }
 
   private static byte ReadByte(ReadOnlySpan<byte> value)
@@ -320,7 +387,9 @@ internal static class PgBinaryCodec
     return value[0];
   }
 
-  private static byte ReadByte(ReadOnlySpan<byte> value, ref int position)
+  private static byte ReadByte(
+    ReadOnlySpan<byte> value,
+    ref int position)
   {
     Ensure(value, position, 1);
     return value[position++];
@@ -332,7 +401,9 @@ internal static class PgBinaryCodec
     return BinaryPrimitives.ReadInt16BigEndian(value);
   }
 
-  private static short ReadInt16(ReadOnlySpan<byte> value, ref int position)
+  private static short ReadInt16(
+    ReadOnlySpan<byte> value,
+    ref int position)
   {
     Ensure(value, position, 2);
     short result = BinaryPrimitives.ReadInt16BigEndian(value[position..]);
@@ -346,7 +417,9 @@ internal static class PgBinaryCodec
     return BinaryPrimitives.ReadInt32BigEndian(value);
   }
 
-  private static int ReadInt32(ReadOnlySpan<byte> value, ref int position)
+  private static int ReadInt32(
+    ReadOnlySpan<byte> value,
+    ref int position)
   {
     Ensure(value, position, 4);
     int result = BinaryPrimitives.ReadInt32BigEndian(value[position..]);
@@ -363,11 +436,15 @@ internal static class PgBinaryCodec
   private static double ReadDouble(ReadOnlySpan<byte> value) =>
     BitConverter.Int64BitsToDouble(ReadInt64(value));
 
-  private static void Ensure(ReadOnlySpan<byte> value, int position, int length)
+  private static void Ensure(
+    ReadOnlySpan<byte> value,
+    int position,
+    int length)
   {
     if (length < 0 || position < 0 || position > value.Length - length)
     {
-      throw new InvalidDataException("PostgreSQL binary value is truncated.");
+      throw new InvalidDataException(
+        "PostgreSQL binary value is truncated.");
     }
   }
 }

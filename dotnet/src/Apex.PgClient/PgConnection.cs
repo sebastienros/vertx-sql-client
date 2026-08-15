@@ -1641,7 +1641,7 @@ public sealed class PgConnection : ISqlConnection
     public bool IsNull(int ordinal)
     {
       EnsureCurrent();
-      return _connection._rowDecoder.IsNull(_current.Payload.Span, ordinal);
+      return _connection._rowDecoder.IsNull(_current.Payload, ordinal);
     }
 
     public int GetOrdinal(string name)
@@ -1661,38 +1661,139 @@ public sealed class PgConnection : ISqlConnection
     public T Get<T>(int ordinal)
     {
       EnsureCurrent();
-      return _connection._rowDecoder.Decode<T>(
-        _current.Payload.Span,
+      return SqlRowDecoder.Decode<T>(
+        _connection._rowDecoder,
+        _current.Payload,
+        ordinal,
+        _columns[ordinal],
+        copyReadOnlyMemory: true);
+    }
+
+    public bool GetBoolean(int ordinal)
+    {
+      EnsureCurrent();
+      return _connection._rowDecoder.DecodeBoolean(
+        _current.Payload,
         ordinal,
         _columns[ordinal]);
     }
 
-    public bool GetBoolean(int ordinal) => Get<bool>(ordinal);
+    public short GetInt16(int ordinal)
+    {
+      EnsureCurrent();
+      return _connection._rowDecoder.DecodeInt16(
+        _current.Payload,
+        ordinal,
+        _columns[ordinal]);
+    }
 
-    public short GetInt16(int ordinal) => Get<short>(ordinal);
+    public int GetInt32(int ordinal)
+    {
+      EnsureCurrent();
+      return _connection._rowDecoder.DecodeInt32(
+        _current.Payload,
+        ordinal,
+        _columns[ordinal]);
+    }
 
-    public int GetInt32(int ordinal) => Get<int>(ordinal);
+    public long GetInt64(int ordinal)
+    {
+      EnsureCurrent();
+      return _connection._rowDecoder.DecodeInt64(
+        _current.Payload,
+        ordinal,
+        _columns[ordinal]);
+    }
 
-    public long GetInt64(int ordinal) => Get<long>(ordinal);
+    public float GetFloat(int ordinal)
+    {
+      EnsureCurrent();
+      return _connection._rowDecoder.DecodeFloat(
+        _current.Payload,
+        ordinal,
+        _columns[ordinal]);
+    }
 
-    public float GetFloat(int ordinal) => Get<float>(ordinal);
+    public double GetDouble(int ordinal)
+    {
+      EnsureCurrent();
+      return _connection._rowDecoder.DecodeDouble(
+        _current.Payload,
+        ordinal,
+        _columns[ordinal]);
+    }
 
-    public double GetDouble(int ordinal) => Get<double>(ordinal);
+    public decimal GetDecimal(int ordinal)
+    {
+      EnsureCurrent();
+      return _connection._rowDecoder.DecodeDecimal(
+        _current.Payload,
+        ordinal,
+        _columns[ordinal]);
+    }
 
-    public string GetString(int ordinal) => Get<string>(ordinal);
+    public string GetString(int ordinal)
+    {
+      EnsureCurrent();
+      return _connection._rowDecoder.DecodeString(
+        _current.Payload,
+        ordinal,
+        _columns[ordinal])!;
+    }
 
-    public Guid GetGuid(int ordinal) => Get<Guid>(ordinal);
+    public Guid GetGuid(int ordinal)
+    {
+      EnsureCurrent();
+      return _connection._rowDecoder.DecodeGuid(
+        _current.Payload,
+        ordinal,
+        _columns[ordinal]);
+    }
 
-    public DateOnly GetDateOnly(int ordinal) => Get<DateOnly>(ordinal);
+    public DateOnly GetDateOnly(int ordinal)
+    {
+      EnsureCurrent();
+      return _connection._rowDecoder.DecodeDateOnly(
+        _current.Payload,
+        ordinal,
+        _columns[ordinal]);
+    }
 
-    public TimeOnly GetTimeOnly(int ordinal) => Get<TimeOnly>(ordinal);
+    public TimeOnly GetTimeOnly(int ordinal)
+    {
+      EnsureCurrent();
+      return _connection._rowDecoder.DecodeTimeOnly(
+        _current.Payload,
+        ordinal,
+        _columns[ordinal]);
+    }
 
-    public DateTime GetDateTime(int ordinal) => Get<DateTime>(ordinal);
+    public DateTime GetDateTime(int ordinal)
+    {
+      EnsureCurrent();
+      return _connection._rowDecoder.DecodeDateTime(
+        _current.Payload,
+        ordinal,
+        _columns[ordinal]);
+    }
 
-    public DateTimeOffset GetDateTimeOffset(int ordinal) =>
-      Get<DateTimeOffset>(ordinal);
+    public DateTimeOffset GetDateTimeOffset(int ordinal)
+    {
+      EnsureCurrent();
+      return _connection._rowDecoder.DecodeDateTimeOffset(
+        _current.Payload,
+        ordinal,
+        _columns[ordinal]);
+    }
 
-    public byte[] GetBytes(int ordinal) => Get<byte[]>(ordinal);
+    public byte[] GetBytes(int ordinal)
+    {
+      EnsureCurrent();
+      return _connection._rowDecoder.DecodeBytes(
+        _current.Payload,
+        ordinal,
+        _columns[ordinal])!;
+    }
 
     public async ValueTask DisposeAsync()
     {

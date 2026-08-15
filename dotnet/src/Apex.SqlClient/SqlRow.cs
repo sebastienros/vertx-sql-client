@@ -13,21 +13,9 @@ namespace Apex.SqlClient;
 public readonly struct SqlRow
 {
   private readonly IReadOnlyList<SqlColumn> _columns;
-  private readonly object?[]? _values;
   private readonly SqlRowPage? _page;
   private readonly int _offset;
   private readonly int _length;
-
-  internal SqlRow(IReadOnlyList<SqlColumn> columns, object?[] values)
-  {
-    if (columns.Count != values.Length)
-    {
-      throw new ArgumentException("Column and value counts must match.", nameof(values));
-    }
-
-    _columns = columns;
-    _values = values;
-  }
 
   internal SqlRow(
     IReadOnlyList<SqlColumn> columns,
@@ -41,19 +29,15 @@ public readonly struct SqlRow
     _length = length;
   }
 
-  public int Count => _values?.Length ?? _page!.Decoder.GetFieldCount(RowSpan);
+  public int Count => _page!.Decoder.GetFieldCount(RowMemory);
 
   public object? this[int ordinal] =>
-    _values is not null
-      ? _values[ordinal]
-      : _page!.Decoder.Decode(RowSpan, ordinal, _columns[ordinal]);
+    _page!.Decoder.DecodeObject(RowMemory, ordinal, _columns[ordinal]);
 
   public object? this[string name] => this[GetOrdinal(name)];
 
   public bool IsNull(int ordinal) =>
-    _values is not null
-      ? _values[ordinal] is null
-      : _page!.Decoder.IsNull(RowSpan, ordinal);
+    _page!.Decoder.IsNull(RowMemory, ordinal);
 
   public int GetOrdinal(string name)
   {
@@ -72,86 +56,87 @@ public readonly struct SqlRow
     throw new IndexOutOfRangeException($"Column '{name}' does not exist.");
   }
 
-  public T Get<T>(int ordinal)
-  {
-    if (_values is null)
-    {
-      return _page!.Decoder.Decode<T>(RowSpan, ordinal, _columns[ordinal]);
-    }
-
-    object? value = _values[ordinal];
-    if (value is null)
-    {
-      if (default(T) is null)
-      {
-        return default!;
-      }
-
-      throw new InvalidCastException($"Column {ordinal} contains NULL.");
-    }
-
-    if (value is T typed)
-    {
-      return typed;
-    }
-
-    throw new InvalidCastException(
-        $"Column {ordinal} contains {value.GetType().FullName}, not {typeof(T).FullName}.");
-  }
+  /// <summary>
+  /// Gets a common CLR or provider-specific value without routing through
+  /// object decoding.
+  /// </summary>
+  public T Get<T>(int ordinal) =>
+    SqlRowDecoder.Decode<T>(
+      _page!.Decoder,
+      RowMemory,
+      ordinal,
+      _columns[ordinal]);
 
   public T Get<T>(string name) => Get<T>(GetOrdinal(name));
 
-  public bool GetBoolean(int ordinal) => Get<bool>(ordinal);
+  public bool GetBoolean(int ordinal) =>
+    _page!.Decoder.DecodeBoolean(RowMemory, ordinal, _columns[ordinal]);
 
   public bool GetBoolean(string name) => GetBoolean(GetOrdinal(name));
 
-  public short GetInt16(int ordinal) => Get<short>(ordinal);
+  public short GetInt16(int ordinal) =>
+    _page!.Decoder.DecodeInt16(RowMemory, ordinal, _columns[ordinal]);
 
   public short GetInt16(string name) => GetInt16(GetOrdinal(name));
 
-  public int GetInt32(int ordinal) => Get<int>(ordinal);
+  public int GetInt32(int ordinal) =>
+    _page!.Decoder.DecodeInt32(RowMemory, ordinal, _columns[ordinal]);
 
   public int GetInt32(string name) => GetInt32(GetOrdinal(name));
 
-  public long GetInt64(int ordinal) => Get<long>(ordinal);
+  public long GetInt64(int ordinal) =>
+    _page!.Decoder.DecodeInt64(RowMemory, ordinal, _columns[ordinal]);
 
   public long GetInt64(string name) => GetInt64(GetOrdinal(name));
 
-  public float GetFloat(int ordinal) => Get<float>(ordinal);
+  public float GetFloat(int ordinal) =>
+    _page!.Decoder.DecodeFloat(RowMemory, ordinal, _columns[ordinal]);
 
   public float GetFloat(string name) => GetFloat(GetOrdinal(name));
 
-  public double GetDouble(int ordinal) => Get<double>(ordinal);
+  public double GetDouble(int ordinal) =>
+    _page!.Decoder.DecodeDouble(RowMemory, ordinal, _columns[ordinal]);
 
   public double GetDouble(string name) => GetDouble(GetOrdinal(name));
 
-  public string GetString(int ordinal) => Get<string>(ordinal);
+  public decimal GetDecimal(int ordinal) =>
+    _page!.Decoder.DecodeDecimal(RowMemory, ordinal, _columns[ordinal]);
+
+  public decimal GetDecimal(string name) => GetDecimal(GetOrdinal(name));
+
+  public string GetString(int ordinal) =>
+    _page!.Decoder.DecodeString(RowMemory, ordinal, _columns[ordinal])!;
 
   public string GetString(string name) => GetString(GetOrdinal(name));
 
-  public Guid GetGuid(int ordinal) => Get<Guid>(ordinal);
+  public Guid GetGuid(int ordinal) =>
+    _page!.Decoder.DecodeGuid(RowMemory, ordinal, _columns[ordinal]);
 
   public Guid GetGuid(string name) => GetGuid(GetOrdinal(name));
 
-  public DateOnly GetDateOnly(int ordinal) => Get<DateOnly>(ordinal);
+  public DateOnly GetDateOnly(int ordinal) =>
+    _page!.Decoder.DecodeDateOnly(RowMemory, ordinal, _columns[ordinal]);
 
   public DateOnly GetDateOnly(string name) => GetDateOnly(GetOrdinal(name));
 
-  public TimeOnly GetTimeOnly(int ordinal) => Get<TimeOnly>(ordinal);
+  public TimeOnly GetTimeOnly(int ordinal) =>
+    _page!.Decoder.DecodeTimeOnly(RowMemory, ordinal, _columns[ordinal]);
 
   public TimeOnly GetTimeOnly(string name) => GetTimeOnly(GetOrdinal(name));
 
-  public DateTime GetDateTime(int ordinal) => Get<DateTime>(ordinal);
+  public DateTime GetDateTime(int ordinal) =>
+    _page!.Decoder.DecodeDateTime(RowMemory, ordinal, _columns[ordinal]);
 
   public DateTime GetDateTime(string name) => GetDateTime(GetOrdinal(name));
 
   public DateTimeOffset GetDateTimeOffset(int ordinal) =>
-    Get<DateTimeOffset>(ordinal);
+    _page!.Decoder.DecodeDateTimeOffset(RowMemory, ordinal, _columns[ordinal]);
 
   public DateTimeOffset GetDateTimeOffset(string name) =>
     GetDateTimeOffset(GetOrdinal(name));
 
-  public byte[] GetBytes(int ordinal) => Get<byte[]>(ordinal);
+  public byte[] GetBytes(int ordinal) =>
+    _page!.Decoder.DecodeBytes(RowMemory, ordinal, _columns[ordinal])!;
 
   public byte[] GetBytes(string name) => GetBytes(GetOrdinal(name));
 
@@ -173,6 +158,6 @@ public readonly struct SqlRow
     return false;
   }
 
-  private ReadOnlySpan<byte> RowSpan =>
-    _page!.Data.AsSpan(_offset, _length);
+  private ReadOnlyMemory<byte> RowMemory =>
+    _page!.Data.AsMemory(_offset, _length);
 }

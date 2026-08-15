@@ -5,7 +5,6 @@
  */
 
 using System.Buffers;
-using System.Buffers.Binary;
 using System.IO.Pipelines;
 
 namespace Apex.PgClient.Internal;
@@ -84,9 +83,9 @@ internal sealed class PgWireReader
       return false;
     }
 
-    Span<byte> header = stackalloc byte[5];
-    buffer.Slice(0, 5).CopyTo(header);
-    int length = BinaryPrimitives.ReadInt32BigEndian(header[1..]);
+    SequenceReader<byte> reader = new(buffer);
+    _ = reader.TryRead(out byte type);
+    _ = reader.TryReadBigEndian(out int length);
     if (length < 4)
     {
       throw new InvalidDataException($"Invalid PostgreSQL message length {length}.");
@@ -114,7 +113,7 @@ internal sealed class PgWireReader
     }
 
     consumed = buffer.GetPosition(totalLength);
-    message = new PgWireMessage(header[0], payload, payloadLength);
+    message = new PgWireMessage(type, payload, payloadLength);
     return true;
   }
 }

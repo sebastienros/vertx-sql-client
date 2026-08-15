@@ -46,9 +46,13 @@ public sealed class SqlClientExtensionsTests
   private static SqlRowSet CreateRows()
   {
     SqlColumn[] columns = [new("id", 23, 4, -1, SqlDataFormat.Text)];
+    TestRowDecoder decoder = new();
     return new SqlRowSet(
       columns,
-      [new SqlRow(columns, [1]), new SqlRow(columns, [2])],
+      [
+        decoder.CreateRow(columns, 1),
+        decoder.CreateRow(columns, 2),
+      ],
       2,
       "SELECT 2");
   }

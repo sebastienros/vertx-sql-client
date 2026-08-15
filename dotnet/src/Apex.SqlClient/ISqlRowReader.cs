@@ -22,6 +22,10 @@ public interface ISqlRowReader : IAsyncDisposable
 
   int GetOrdinal(string name);
 
+  /// <summary>
+  /// Gets a common CLR or provider-specific value without routing through
+  /// object decoding.
+  /// </summary>
   T Get<T>(int ordinal);
 
   T Get<T>(string name) => Get<T>(GetOrdinal(name));
@@ -49,6 +53,10 @@ public interface ISqlRowReader : IAsyncDisposable
   double GetDouble(int ordinal);
 
   double GetDouble(string name) => GetDouble(GetOrdinal(name));
+
+  decimal GetDecimal(int ordinal) => Get<decimal>(ordinal);
+
+  decimal GetDecimal(string name) => GetDecimal(GetOrdinal(name));
 
   string GetString(int ordinal);
 

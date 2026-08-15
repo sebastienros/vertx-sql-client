@@ -49,20 +49,6 @@ internal static class PgConnectionStringParser
     return values;
   }
 
-  public static IReadOnlyDictionary<string, string> ParseQuery(string query)
-  {
-    Dictionary<string, string> values = new(StringComparer.OrdinalIgnoreCase);
-    foreach (string part in query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries))
-    {
-      int separator = part.IndexOf('=');
-      string key = separator < 0 ? part : part[..separator];
-      string value = separator < 0 ? string.Empty : part[(separator + 1)..];
-      values[Decode(key)] = Decode(value);
-    }
-
-    return values;
-  }
-
   private static string ParseQuoted(ReadOnlySpan<char> input, ref int position)
   {
     position++;
@@ -120,7 +106,4 @@ internal static class PgConnectionStringParser
       position++;
     }
   }
-
-  private static string Decode(string value) =>
-    Uri.UnescapeDataString(value.Replace("+", " ", StringComparison.Ordinal));
 }

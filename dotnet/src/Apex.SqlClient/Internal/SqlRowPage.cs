@@ -6,17 +6,6 @@
 
 namespace Apex.SqlClient.Internal;
 
-internal interface ISqlRowDecoder
-{
-  int GetFieldCount(ReadOnlySpan<byte> row);
-
-  bool IsNull(ReadOnlySpan<byte> row, int ordinal);
-
-  object? Decode(ReadOnlySpan<byte> row, int ordinal, SqlColumn column);
-
-  T Decode<T>(ReadOnlySpan<byte> row, int ordinal, SqlColumn column);
-}
-
 internal sealed class SqlRowPage
 {
   internal SqlRowPage(byte[] data, ISqlRowDecoder decoder)

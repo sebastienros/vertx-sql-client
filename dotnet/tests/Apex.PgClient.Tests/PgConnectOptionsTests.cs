@@ -78,9 +78,24 @@ public sealed class PgConnectOptionsTests
   }
 
   [TestMethod]
+  public void PreservesPostgreSqlKeywordEscapingAndAliases()
+  {
+    PgConnectOptions options = PgConnectOptions.Parse(
+      "host=db.example username=app\\ user password='s\\\\ecret' " +
+      "database='app db' custom_option=enabled");
+
+    Assert.AreEqual("app user", options.Username);
+    Assert.AreEqual("s\\ecret", options.Password);
+    Assert.AreEqual("app db", options.Database);
+    Assert.AreEqual("enabled", options.Properties["custom_option"]);
+  }
+
+  [TestMethod]
   public void RejectsMalformedConnectionString()
   {
     Assert.ThrowsExactly<FormatException>(() => PgConnectOptions.Parse("host"));
     Assert.ThrowsExactly<FormatException>(() => PgConnectOptions.Parse("port=invalid"));
+    Assert.ThrowsExactly<FormatException>(() => PgConnectOptions.Parse("host='unterminated"));
+    Assert.ThrowsExactly<FormatException>(() => PgConnectOptions.Parse("host=value\\"));
   }
 }
