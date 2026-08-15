@@ -27,7 +27,7 @@ public sealed class SqlRowTests
     Assert.AreEqual(1, row.Get<int?>(0));
     Assert.AreEqual(1, row.Get<object>(0));
     Assert.AreEqual("hello", row.Get<string>(row.GetOrdinal("message")));
-    Assert.AreEqual("hello", row["message"]);
+    Assert.AreEqual("hello", row.Get<string>("message"));
   }
 
   [TestMethod]

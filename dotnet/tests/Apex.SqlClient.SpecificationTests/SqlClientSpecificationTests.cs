@@ -33,7 +33,7 @@ public abstract class SqlClientSpecificationTests
     SqlRowSet rows = await connection.QueryAsync("SELECT 1");
 
     Assert.AreEqual(1, rows.Count);
-    Assert.AreEqual(1, Convert.ToInt32(rows[0][0]));
+    Assert.AreEqual(1, rows[0].Get<int>(0));
   }
 
   [TestMethod]
@@ -44,7 +44,7 @@ public abstract class SqlClientSpecificationTests
       ParameterizedScalarSql,
       SqlParameters.Create(42));
 
-    Assert.AreEqual(42, Convert.ToInt32(rows[0][0]));
+    Assert.AreEqual(42, rows[0].Get<int>(0));
   }
 
   [TestMethod]
@@ -58,7 +58,7 @@ public abstract class SqlClientSpecificationTests
     }
 
     SqlRowSet rows = await connection.QueryAsync(CountTemporaryValuesSql);
-    Assert.AreEqual(0L, Convert.ToInt64(rows[0][0]));
+    Assert.AreEqual(0L, rows[0].Get<long>(0));
   }
 
   [TestMethod]
@@ -85,7 +85,7 @@ public abstract class SqlClientSpecificationTests
     List<int> values = [];
     await foreach (SqlRow row in connection.StreamAsync(SequenceSql, fetchSize: 3))
     {
-      values.Add(Convert.ToInt32(row[0]));
+      values.Add(row.Get<int>(0));
     }
 
     CollectionAssert.AreEqual(Enumerable.Range(1, 10).ToArray(), values);
@@ -100,7 +100,7 @@ public abstract class SqlClientSpecificationTests
       () => connection.QueryAsync(LongRunningSql, cancellation.Token).AsTask());
 
     SqlRowSet rows = await connection.QueryAsync("SELECT 1");
-    Assert.AreEqual(1, Convert.ToInt32(rows[0][0]));
+    Assert.AreEqual(1, rows[0].Get<int>(0));
   }
 
   [TestMethod]
@@ -113,7 +113,7 @@ public abstract class SqlClientSpecificationTests
 
     SqlRowSet[] results = await Task.WhenAll(queries);
 
-    Assert.IsTrue(results.All(static rows => Convert.ToInt32(rows[0][0]) == 1));
+    Assert.IsTrue(results.All(static rows => rows[0].Get<int>(0) == 1));
     Assert.IsLessThanOrEqualTo(4, pool.Size);
   }
 
@@ -123,10 +123,10 @@ public abstract class SqlClientSpecificationTests
     await using ISqlConnection connection = await OpenConnectionAsync();
     IReadOnlyList<int> mapped = await connection.QueryMappedAsync(
       SequenceSql,
-      static row => Convert.ToInt32(row[0]));
+      static row => row.Get<int>(0));
     int sum = await connection.QueryCollectedAsync(
       SequenceSql,
-      static rows => rows.Sum(static row => Convert.ToInt32(row[0])));
+      static rows => rows.Sum(static row => row.Get<int>(0)));
 
     CollectionAssert.AreEqual(Enumerable.Range(1, 10).ToArray(), mapped.ToArray());
     Assert.AreEqual(55, sum);

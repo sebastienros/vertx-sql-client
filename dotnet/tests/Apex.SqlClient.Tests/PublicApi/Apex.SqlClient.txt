@@ -268,8 +268,6 @@ struct Apex.SqlClient.SqlRow
   Method: System.Decimal GetDecimal(System.String)
   Method: System.Guid GetGuid(Int32)
   Method: System.Guid GetGuid(System.String)
-  Method: System.Object get_Item(Int32)
-  Method: System.Object get_Item(System.String)
   Method: System.String GetString(Int32)
   Method: System.String GetString(System.String)
   Method: System.TimeOnly GetTimeOnly(Int32)
@@ -277,8 +275,6 @@ struct Apex.SqlClient.SqlRow
   Method: T Get[T](Int32)
   Method: T Get[T](System.String)
   Property: Int32 Count
-  Property: System.Object Item [Int32]
-  Property: System.Object Item [System.String]
 class Apex.SqlClient.SqlRowSet : System.Collections.Generic.IEnumerable`1[Apex.SqlClient.SqlRow], System.Collections.Generic.IReadOnlyCollection`1[Apex.SqlClient.SqlRow], System.Collections.Generic.IReadOnlyList`1[Apex.SqlClient.SqlRow], System.Collections.IEnumerable
   Method: Apex.SqlClient.SqlRow get_Item(Int32)
   Method: Apex.SqlClient.SqlRowSet get_Empty()

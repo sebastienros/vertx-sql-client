@@ -342,7 +342,7 @@ public sealed class PgConnectionIntegrationTests
 
     Assert.AreNotSame(first, second);
     Assert.AreSame(second, third);
-    Assert.AreSame(rows[0]["value"], rows[1]["value"]);
+    Assert.AreSame(rows[0].Get<object>("value"), rows[1].Get<object>("value"));
   }
 
   [TestMethod]

@@ -31,7 +31,7 @@ public sealed class MsSqlConnectionIntegrationTests
     SqlRowSet parameterized = await connection.QueryAsync(
       "SELECT @P1 AS id, @P2 AS message",
       SqlParameters.Create(42, "forty-two"));
-    Assert.AreEqual(42, Convert.ToInt32(parameterized[0]["id"]));
+    Assert.AreEqual(42, parameterized[0].Get<int>("id"));
     Assert.AreEqual("forty-two", parameterized[0].GetString("message"));
   }
 
