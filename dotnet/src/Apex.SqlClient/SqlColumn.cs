@@ -16,6 +16,6 @@ public sealed record SqlColumn(
 
 public enum SqlDataFormat : short
 {
-  Text = 0,
-  Binary = 1,
+    Text = 0,
+    Binary = 1,
 }

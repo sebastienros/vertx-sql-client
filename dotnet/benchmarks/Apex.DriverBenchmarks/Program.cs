@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: EPL-2.0 OR Apache-2.0
  */
 
-using BenchmarkDotNet.Running;
 using Apex.DriverBenchmarks;
+using BenchmarkDotNet.Running;
 
 BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args);

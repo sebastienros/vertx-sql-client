@@ -8,16 +8,16 @@ namespace Apex.MsSqlClient;
 
 public static class MsSqlClient
 {
-  public static ValueTask<MsSqlConnection> ConnectAsync(
-    MsSqlConnectOptions options,
-    CancellationToken cancellationToken = default)
-  {
-    ArgumentNullException.ThrowIfNull(options);
-    return MsSqlConnection.ConnectAsync(options, cancellationToken);
-  }
+    public static ValueTask<MsSqlConnection> ConnectAsync(
+        MsSqlConnectOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        return MsSqlConnection.ConnectAsync(options, cancellationToken);
+    }
 
-  public static ValueTask<MsSqlConnection> ConnectAsync(
-    string connectionString,
-    CancellationToken cancellationToken = default) =>
-    ConnectAsync(MsSqlConnectOptions.Parse(connectionString), cancellationToken);
+    public static ValueTask<MsSqlConnection> ConnectAsync(
+        string connectionString,
+        CancellationToken cancellationToken = default) =>
+      ConnectAsync(MsSqlConnectOptions.Parse(connectionString), cancellationToken);
 }

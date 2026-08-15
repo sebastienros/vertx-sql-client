@@ -15,54 +15,54 @@ namespace Apex.MySqlClient.Internal;
 /// </summary>
 internal static class MySqlColumnCodec
 {
-  internal static int PackModifier(MySqlColumnFlags flags, byte decimals) =>
-    (ushort)flags | (decimals << 16);
+    internal static int PackModifier(MySqlColumnFlags flags, byte decimals) =>
+      (ushort)flags | (decimals << 16);
 
-  internal static MySqlColumnFlags GetFlags(int modifier) =>
-    (MySqlColumnFlags)unchecked((ushort)modifier);
+    internal static MySqlColumnFlags GetFlags(int modifier) =>
+      (MySqlColumnFlags)unchecked((ushort)modifier);
 
-  internal static byte GetDecimals(int modifier) => (byte)((modifier >> 16) & 0xFF);
+    internal static byte GetDecimals(int modifier) => (byte)((modifier >> 16) & 0xFF);
 
-  internal static SqlColumn ToColumn(MySqlColumnMetadata metadata, bool binary) =>
-    new(
-      metadata.Name,
-      (byte)metadata.Type,
-      unchecked((short)metadata.CharacterSet),
-      PackModifier(metadata.Flags, metadata.Decimals),
-      binary ? SqlDataFormat.Binary : SqlDataFormat.Text);
+    internal static SqlColumn ToColumn(MySqlColumnMetadata metadata, bool binary) =>
+      new(
+        metadata.Name,
+        (byte)metadata.Type,
+        unchecked((short)metadata.CharacterSet),
+        PackModifier(metadata.Flags, metadata.Decimals),
+        binary ? SqlDataFormat.Binary : SqlDataFormat.Text);
 
-  /// <summary>Reads a protocol 4.1 column definition packet.</summary>
-  internal static MySqlColumnMetadata Read(ReadOnlySpan<byte> payload)
-  {
-    MySqlPayloadReader reader = new(payload);
-    _ = reader.ReadLengthEncodedString();
-    string schema = reader.ReadLengthEncodedString();
-    string table = reader.ReadLengthEncodedString();
-    string originalTable = reader.ReadLengthEncodedString();
-    string name = reader.ReadLengthEncodedString();
-    string originalName = reader.ReadLengthEncodedString();
-    ulong fixedLength = reader.ReadRequiredLengthEncodedInteger();
-    if (fixedLength < 12)
+    /// <summary>Reads a protocol 4.1 column definition packet.</summary>
+    internal static MySqlColumnMetadata Read(ReadOnlySpan<byte> payload)
     {
-      throw new InvalidDataException("MySQL column definition is truncated.");
-    }
+        MySqlPayloadReader reader = new(payload);
+        _ = reader.ReadLengthEncodedString();
+        var schema = reader.ReadLengthEncodedString();
+        var table = reader.ReadLengthEncodedString();
+        var originalTable = reader.ReadLengthEncodedString();
+        var name = reader.ReadLengthEncodedString();
+        var originalName = reader.ReadLengthEncodedString();
+        var fixedLength = reader.ReadRequiredLengthEncodedInteger();
+        if (fixedLength < 12)
+        {
+            throw new InvalidDataException("MySQL column definition is truncated.");
+        }
 
-    int characterSet = reader.ReadUInt16();
-    uint columnLength = reader.ReadUInt32();
-    MySqlType type = (MySqlType)reader.ReadByte();
-    MySqlColumnFlags flags = (MySqlColumnFlags)reader.ReadUInt16();
-    byte decimals = reader.ReadByte();
-    reader.Skip(MySqlPayloadReader.ToLength(fixedLength - 10));
-    return new MySqlColumnMetadata(
-      name,
-      originalName,
-      table,
-      originalTable,
-      schema,
-      type,
-      flags,
-      characterSet,
-      columnLength,
-      decimals);
-  }
+        int characterSet = reader.ReadUInt16();
+        var columnLength = reader.ReadUInt32();
+        MySqlType type = (MySqlType)reader.ReadByte();
+        MySqlColumnFlags flags = (MySqlColumnFlags)reader.ReadUInt16();
+        var decimals = reader.ReadByte();
+        reader.Skip(MySqlPayloadReader.ToLength(fixedLength - 10));
+        return new MySqlColumnMetadata(
+          name,
+          originalName,
+          table,
+          originalTable,
+          schema,
+          type,
+          flags,
+          characterSet,
+          columnLength,
+          decimals);
+    }
 }

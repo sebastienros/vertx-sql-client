@@ -5,11 +5,11 @@ namespace Apex.MsSqlClient.IntegrationTests;
 [TestClass]
 public sealed class AssemblyLifecycle
 {
-  [AssemblyInitialize]
-  public static Task InitializeAsync(TestContext _) =>
-    MsSqlTestEnvironment.StartAsync();
+    [AssemblyInitialize]
+    public static Task InitializeAsync(TestContext _) =>
+      MsSqlTestEnvironment.StartAsync();
 
-  [AssemblyCleanup]
-  public static Task CleanupAsync() =>
-    MsSqlTestEnvironment.StopAsync();
+    [AssemblyCleanup]
+    public static Task CleanupAsync() =>
+      MsSqlTestEnvironment.StopAsync();
 }

@@ -10,46 +10,46 @@ namespace Apex.PgClient;
 
 internal sealed class PgTransaction : ISqlTransaction
 {
-  private readonly PgConnection _connection;
+    private readonly PgConnection _connection;
 
-  public PgTransaction(PgConnection connection)
-  {
-    _connection = connection;
-  }
-
-  public bool IsCompleted { get; private set; }
-
-  public async ValueTask CommitAsync(CancellationToken cancellationToken = default)
-  {
-    ThrowIfCompleted();
-    await _connection.ExecuteTransactionControlAsync("COMMIT", cancellationToken).ConfigureAwait(false);
-    IsCompleted = true;
-  }
-
-  public async ValueTask RollbackAsync(CancellationToken cancellationToken = default)
-  {
-    if (IsCompleted)
+    public PgTransaction(PgConnection connection)
     {
-      return;
+        _connection = connection;
     }
 
-    await _connection.ExecuteTransactionControlAsync("ROLLBACK", cancellationToken).ConfigureAwait(false);
-    IsCompleted = true;
-  }
+    public bool IsCompleted { get; private set; }
 
-  public async ValueTask DisposeAsync()
-  {
-    if (!IsCompleted)
+    public async ValueTask CommitAsync(CancellationToken cancellationToken = default)
     {
-      await RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+        ThrowIfCompleted();
+        await _connection.ExecuteTransactionControlAsync("COMMIT", cancellationToken).ConfigureAwait(false);
+        IsCompleted = true;
     }
-  }
 
-  private void ThrowIfCompleted()
-  {
-    if (IsCompleted)
+    public async ValueTask RollbackAsync(CancellationToken cancellationToken = default)
     {
-      throw new InvalidOperationException("The transaction has already completed.");
+        if (IsCompleted)
+        {
+            return;
+        }
+
+        await _connection.ExecuteTransactionControlAsync("ROLLBACK", cancellationToken).ConfigureAwait(false);
+        IsCompleted = true;
     }
-  }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (!IsCompleted)
+        {
+            await RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
+    private void ThrowIfCompleted()
+    {
+        if (IsCompleted)
+        {
+            throw new InvalidOperationException("The transaction has already completed.");
+        }
+    }
 }

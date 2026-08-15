@@ -11,34 +11,34 @@ namespace Apex.SqlClient.Tests;
 [TestClass]
 public sealed class AsyncAutoResetEventTests
 {
-  [TestMethod]
-  public async Task CompletesWaitingConsumer()
-  {
-    AsyncAutoResetEvent signal = new();
-    ValueTask waiting = signal.WaitAsync();
+    [TestMethod]
+    public async Task CompletesWaitingConsumer()
+    {
+        AsyncAutoResetEvent signal = new();
+        var waiting = signal.WaitAsync();
 
-    Assert.IsFalse(waiting.IsCompleted);
-    signal.Set();
-    await waiting;
-  }
+        Assert.IsFalse(waiting.IsCompleted);
+        signal.Set();
+        await waiting;
+    }
 
-  [TestMethod]
-  public void RemembersOneSignal()
-  {
-    AsyncAutoResetEvent signal = new();
+    [TestMethod]
+    public void RemembersOneSignal()
+    {
+        AsyncAutoResetEvent signal = new();
 
-    signal.Set();
+        signal.Set();
 
-    Assert.IsTrue(signal.WaitAsync().IsCompletedSuccessfully);
-    Assert.IsFalse(signal.WaitAsync().IsCompleted);
-  }
+        Assert.IsTrue(signal.WaitAsync().IsCompletedSuccessfully);
+        Assert.IsFalse(signal.WaitAsync().IsCompleted);
+    }
 
-  [TestMethod]
-  public void RejectsConcurrentWaiters()
-  {
-    AsyncAutoResetEvent signal = new();
-    _ = signal.WaitAsync();
+    [TestMethod]
+    public void RejectsConcurrentWaiters()
+    {
+        AsyncAutoResetEvent signal = new();
+        _ = signal.WaitAsync();
 
-    Assert.ThrowsExactly<InvalidOperationException>(() => signal.WaitAsync());
-  }
+        Assert.ThrowsExactly<InvalidOperationException>(() => signal.WaitAsync());
+    }
 }

@@ -4,7 +4,6 @@
  * SPDX-License-Identifier: EPL-2.0 OR Apache-2.0
  */
 
-using Apex.MySqlClient.Internal;
 using Apex.SqlClient;
 using Apex.SqlClient.Internal;
 
@@ -26,113 +25,113 @@ namespace Apex.MySqlClient;
 /// </remarks>
 internal sealed class MySqlCursor : ISqlCursor
 {
-  private readonly MySqlConnection.MySqlRowReader _reader;
-  private readonly int _defaultFetchSize;
-  private bool _pending;
-  private bool _exhausted;
-  private bool _disposed;
+    private readonly MySqlConnection.MySqlRowReader _reader;
+    private readonly int _defaultFetchSize;
+    private bool _pending;
+    private bool _exhausted;
+    private bool _disposed;
 
-  private MySqlCursor(
-    MySqlConnection.MySqlRowReader reader,
-    int defaultFetchSize,
-    bool pending)
-  {
-    _reader = reader;
-    _defaultFetchSize = defaultFetchSize;
-    _pending = pending;
-    _exhausted = !pending;
-    Columns = reader.Columns;
-  }
-
-  public bool HasMore => !_disposed && (_pending || !_exhausted);
-
-  public IReadOnlyList<SqlColumn> Columns { get; private set; }
-
-  internal static async ValueTask<MySqlCursor> CreateAsync(
-    MySqlConnection.MySqlRowReader reader,
-    int defaultFetchSize,
-    CancellationToken cancellationToken)
-  {
-    try
+    private MySqlCursor(
+        MySqlConnection.MySqlRowReader reader,
+        int defaultFetchSize,
+        bool pending)
     {
-      bool pending = await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
-      return new MySqlCursor(reader, defaultFetchSize, pending);
-    }
-    catch
-    {
-      await reader.DisposeAsync().ConfigureAwait(false);
-      throw;
-    }
-  }
-
-  public async ValueTask<SqlRowSet> ReadAsync(
-    int count,
-    CancellationToken cancellationToken = default)
-  {
-    ObjectDisposedException.ThrowIf(_disposed, this);
-    ArgumentOutOfRangeException.ThrowIfNegative(count);
-    int limit = count == 0 ? _defaultFetchSize : count;
-    if (_exhausted && !_pending)
-    {
-      return new SqlRowSet(Columns, [], 0, string.Empty);
+        _reader = reader;
+        _defaultFetchSize = defaultFetchSize;
+        _pending = pending;
+        _exhausted = !pending;
+        Columns = reader.Columns;
     }
 
-    if (!_pending)
+    public bool HasMore => !_disposed && (_pending || !_exhausted);
+
+    public IReadOnlyList<SqlColumn> Columns { get; private set; }
+
+    internal static async ValueTask<MySqlCursor> CreateAsync(
+        MySqlConnection.MySqlRowReader reader,
+        int defaultFetchSize,
+        CancellationToken cancellationToken)
     {
-      _pending = await _reader.ReadAsync(cancellationToken).ConfigureAwait(false);
-      if (!_pending)
-      {
-        _exhausted = true;
-        return new SqlRowSet(Columns, [], 0, string.Empty);
-      }
+        try
+        {
+            var pending = await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+            return new MySqlCursor(reader, defaultFetchSize, pending);
+        }
+        catch
+        {
+            await reader.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
     }
 
-    MySqlRowDecoder decoder = _reader.Decoder;
-    Columns = _reader.Columns;
-    SqlRowPageBuilder page = new(
-      decoder,
-      rowCapacity: Math.Min(limit, 256),
-      byteCapacity: Math.Max(256, Math.Min(limit, 256) * 16));
-    if (_pending)
+    public async ValueTask<SqlRowSet> ReadAsync(
+        int count,
+        CancellationToken cancellationToken = default)
     {
-      _reader.CopyCurrentTo(page);
-      _pending = false;
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentOutOfRangeException.ThrowIfNegative(count);
+        var limit = count == 0 ? _defaultFetchSize : count;
+        if (_exhausted && !_pending)
+        {
+            return new SqlRowSet(Columns, [], 0, string.Empty);
+        }
+
+        if (!_pending)
+        {
+            _pending = await _reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+            if (!_pending)
+            {
+                _exhausted = true;
+                return new SqlRowSet(Columns, [], 0, string.Empty);
+            }
+        }
+
+        var decoder = _reader.Decoder;
+        Columns = _reader.Columns;
+        SqlRowPageBuilder page = new(
+          decoder,
+          rowCapacity: Math.Min(limit, 256),
+          byteCapacity: Math.Max(256, Math.Min(limit, 256) * 16));
+        if (_pending)
+        {
+            _reader.CopyCurrentTo(page);
+            _pending = false;
+        }
+
+        while (page.Count < limit)
+        {
+            var hasRow = await _reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+            if (!hasRow)
+            {
+                _exhausted = true;
+                break;
+            }
+
+            if (!ReferenceEquals(decoder, _reader.Decoder))
+            {
+                _pending = true;
+                break;
+            }
+
+            _reader.CopyCurrentTo(page);
+        }
+
+        if (page.Count < limit && !_pending)
+        {
+            _exhausted = true;
+        }
+
+        return new SqlRowSet(Columns, page.Build(Columns), 0, string.Empty);
     }
 
-    while (page.Count < limit)
+    public async ValueTask DisposeAsync()
     {
-      bool hasRow = await _reader.ReadAsync(cancellationToken).ConfigureAwait(false);
-      if (!hasRow)
-      {
-        _exhausted = true;
-        break;
-      }
+        if (_disposed)
+        {
+            return;
+        }
 
-      if (!ReferenceEquals(decoder, _reader.Decoder))
-      {
-        _pending = true;
-        break;
-      }
-
-      _reader.CopyCurrentTo(page);
+        _disposed = true;
+        await _reader.DisposeAsync().ConfigureAwait(false);
     }
-
-    if (page.Count < limit && !_pending)
-    {
-      _exhausted = true;
-    }
-
-    return new SqlRowSet(Columns, page.Build(Columns), 0, string.Empty);
-  }
-
-  public async ValueTask DisposeAsync()
-  {
-    if (_disposed)
-    {
-      return;
-    }
-
-    _disposed = true;
-    await _reader.DisposeAsync().ConfigureAwait(false);
-  }
 }

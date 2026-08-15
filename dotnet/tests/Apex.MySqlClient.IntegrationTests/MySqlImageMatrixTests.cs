@@ -19,27 +19,27 @@ namespace Apex.MySqlClient.IntegrationTests;
 [TestClass]
 public sealed class MySqlImageMatrixTests
 {
-  [TestMethod]
-  [DataRow("mysql:8.4", false)]
-  [DataRow("mysql:9.6", false)]
-  [DataRow("mariadb:11.8", true)]
-  public async Task ConnectsQueriesAndReportsExpectedProductForEachSupportedImage(
-    string image,
-    bool isMariaDb)
-  {
-    await using MySqlContainer container = await MySqlContainerFixture.StartAsync(image);
-    MySqlConnectOptions options = MySqlContainerFixture.CreateOptions(container);
+    [TestMethod]
+    [DataRow("mysql:8.4", false)]
+    [DataRow("mysql:9.6", false)]
+    [DataRow("mariadb:11.8", true)]
+    public async Task ConnectsQueriesAndReportsExpectedProductForEachSupportedImage(
+        string image,
+        bool isMariaDb)
+    {
+        await using var container = await MySqlContainerFixture.StartAsync(image);
+        var options = MySqlContainerFixture.CreateOptions(container);
 
-    await using MySqlConnection connection = await MySqlClient.ConnectAsync(options);
-    SqlRowSet rows = await connection.QueryAsync("SELECT 1 AS id, 'hello' AS message");
+        await using var connection = await MySqlClient.ConnectAsync(options);
+        var rows = await connection.QueryAsync("SELECT 1 AS id, 'hello' AS message");
 
-    Assert.AreEqual(1, rows[0].Get<int>("id"));
-    Assert.AreEqual("hello", rows[0].Get<string>("message"));
-    Assert.AreEqual(isMariaDb, connection.ServerVersion.IsMariaDb);
-    Assert.AreEqual(isMariaDb ? "MariaDB" : "MySQL", connection.DatabaseMetadata.ProductName);
+        Assert.AreEqual(1, rows[0].Get<int>("id"));
+        Assert.AreEqual("hello", rows[0].Get<string>("message"));
+        Assert.AreEqual(isMariaDb, connection.ServerVersion.IsMariaDb);
+        Assert.AreEqual(isMariaDb ? "MariaDB" : "MySQL", connection.DatabaseMetadata.ProductName);
 
-    await using ISqlPreparedStatement statement = await connection.PrepareAsync("SELECT ? + 1 AS n");
-    SqlRowSet prepared = await statement.QueryAsync(SqlParameters.Create(41));
-    Assert.AreEqual(42, prepared[0].Get<int>("n"));
-  }
+        await using var statement = await connection.PrepareAsync("SELECT ? + 1 AS n");
+        var prepared = await statement.QueryAsync(SqlParameters.Create(41));
+        Assert.AreEqual(42, prepared[0].Get<int>("n"));
+    }
 }

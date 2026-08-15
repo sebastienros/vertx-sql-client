@@ -9,9 +9,9 @@ namespace Apex.SqlClient;
 /// <summary>A progressively fetched result set.</summary>
 public interface ISqlCursor : IAsyncDisposable
 {
-  bool HasMore { get; }
+    bool HasMore { get; }
 
-  IReadOnlyList<SqlColumn> Columns { get; }
+    IReadOnlyList<SqlColumn> Columns { get; }
 
-  ValueTask<SqlRowSet> ReadAsync(int count, CancellationToken cancellationToken = default);
+    ValueTask<SqlRowSet> ReadAsync(int count, CancellationToken cancellationToken = default);
 }

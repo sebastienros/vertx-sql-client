@@ -11,109 +11,109 @@ namespace Apex.PgClient.Internal;
 
 internal readonly struct PgWireMessage : IDisposable
 {
-  private readonly byte[]? _buffer;
+    private readonly byte[]? _buffer;
 
-  public PgWireMessage(byte type, byte[]? buffer, int payloadLength)
-  {
-    Type = type;
-    _buffer = buffer;
-    PayloadLength = payloadLength;
-  }
-
-  public byte Type { get; }
-
-  public int PayloadLength { get; }
-
-  public ReadOnlyMemory<byte> Payload =>
-    _buffer is null ? ReadOnlyMemory<byte>.Empty : _buffer.AsMemory(0, PayloadLength);
-
-  public void Dispose()
-  {
-    if (_buffer is not null)
+    public PgWireMessage(byte type, byte[]? buffer, int payloadLength)
     {
-      ArrayPool<byte>.Shared.Return(_buffer);
+        Type = type;
+        _buffer = buffer;
+        PayloadLength = payloadLength;
     }
-  }
+
+    public byte Type { get; }
+
+    public int PayloadLength { get; }
+
+    public ReadOnlyMemory<byte> Payload =>
+      _buffer is null ? ReadOnlyMemory<byte>.Empty : _buffer.AsMemory(0, PayloadLength);
+
+    public void Dispose()
+    {
+        if (_buffer is not null)
+        {
+            ArrayPool<byte>.Shared.Return(_buffer);
+        }
+    }
 }
 
 internal sealed class PgWireReader
 {
-  private const int MaximumMessageLength = 64 * 1024 * 1024;
-  private readonly PipeReader _reader;
+    private const int MaximumMessageLength = 64 * 1024 * 1024;
+    private readonly PipeReader _reader;
 
-  public PgWireReader(PipeReader reader)
-  {
-    _reader = reader;
-  }
-
-  public async ValueTask<PgWireMessage> ReadAsync(CancellationToken cancellationToken)
-  {
-    while (true)
+    public PgWireReader(PipeReader reader)
     {
-      ReadResult result = await _reader.ReadAsync(cancellationToken).ConfigureAwait(false);
-      ReadOnlySequence<byte> buffer = result.Buffer;
-
-      if (TryReadMessage(buffer, out PgWireMessage message, out SequencePosition consumed))
-      {
-        _reader.AdvanceTo(consumed);
-        return message;
-      }
-
-      if (result.IsCompleted)
-      {
-        _reader.AdvanceTo(buffer.End);
-        throw new EndOfStreamException("PostgreSQL closed the connection mid-message.");
-      }
-
-      _reader.AdvanceTo(buffer.Start, buffer.End);
-    }
-  }
-
-  public ValueTask CompleteAsync(Exception? exception = null) => _reader.CompleteAsync(exception);
-
-  private static bool TryReadMessage(
-      ReadOnlySequence<byte> buffer,
-      out PgWireMessage message,
-      out SequencePosition consumed)
-  {
-    message = default;
-    consumed = buffer.Start;
-    if (buffer.Length < 5)
-    {
-      return false;
+        _reader = reader;
     }
 
-    SequenceReader<byte> reader = new(buffer);
-    _ = reader.TryRead(out byte type);
-    _ = reader.TryReadBigEndian(out int length);
-    if (length < 4)
+    public async ValueTask<PgWireMessage> ReadAsync(CancellationToken cancellationToken)
     {
-      throw new InvalidDataException($"Invalid PostgreSQL message length {length}.");
+        while (true)
+        {
+            var result = await _reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+            var buffer = result.Buffer;
+
+            if (TryReadMessage(buffer, out var message, out var consumed))
+            {
+                _reader.AdvanceTo(consumed);
+                return message;
+            }
+
+            if (result.IsCompleted)
+            {
+                _reader.AdvanceTo(buffer.End);
+                throw new EndOfStreamException("PostgreSQL closed the connection mid-message.");
+            }
+
+            _reader.AdvanceTo(buffer.Start, buffer.End);
+        }
     }
 
-    if (length > MaximumMessageLength)
-    {
-      throw new InvalidDataException(
-        $"PostgreSQL message length {length} exceeds {MaximumMessageLength} bytes.");
-    }
+    public ValueTask CompleteAsync(Exception? exception = null) => _reader.CompleteAsync(exception);
 
-    long totalLength = 1L + length;
-    if (buffer.Length < totalLength)
+    private static bool TryReadMessage(
+        ReadOnlySequence<byte> buffer,
+        out PgWireMessage message,
+        out SequencePosition consumed)
     {
-      return false;
-    }
+        message = default;
+        consumed = buffer.Start;
+        if (buffer.Length < 5)
+        {
+            return false;
+        }
 
-    int payloadLength = length - 4;
-    byte[]? payload = payloadLength == 0
-      ? null
-      : ArrayPool<byte>.Shared.Rent(payloadLength);
-    if (payload is not null)
-    {
-      buffer.Slice(5, payloadLength).CopyTo(payload);
-    }
+        SequenceReader<byte> reader = new(buffer);
+        _ = reader.TryRead(out var type);
+        _ = reader.TryReadBigEndian(out int length);
+        if (length < 4)
+        {
+            throw new InvalidDataException($"Invalid PostgreSQL message length {length}.");
+        }
 
-    consumed = buffer.GetPosition(totalLength);
-    message = new PgWireMessage(type, payload, payloadLength);
-    return true;
-  }
+        if (length > MaximumMessageLength)
+        {
+            throw new InvalidDataException(
+              $"PostgreSQL message length {length} exceeds {MaximumMessageLength} bytes.");
+        }
+
+        var totalLength = 1L + length;
+        if (buffer.Length < totalLength)
+        {
+            return false;
+        }
+
+        var payloadLength = length - 4;
+        var payload = payloadLength == 0
+          ? null
+          : ArrayPool<byte>.Shared.Rent(payloadLength);
+        if (payload is not null)
+        {
+            buffer.Slice(5, payloadLength).CopyTo(payload);
+        }
+
+        consumed = buffer.GetPosition(totalLength);
+        message = new PgWireMessage(type, payload, payloadLength);
+        return true;
+    }
 }

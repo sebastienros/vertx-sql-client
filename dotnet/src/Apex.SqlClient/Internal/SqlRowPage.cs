@@ -8,194 +8,194 @@ namespace Apex.SqlClient.Internal;
 
 internal sealed class SqlRowPage
 {
-  internal SqlRowPage(byte[] data, ISqlRowDecoder decoder)
-  {
-    Data = data;
-    Decoder = decoder;
-  }
+    internal SqlRowPage(byte[] data, ISqlRowDecoder decoder)
+    {
+        Data = data;
+        Decoder = decoder;
+    }
 
-  internal byte[] Data { get; }
+    internal byte[] Data { get; }
 
-  internal ISqlRowDecoder Decoder { get; }
+    internal ISqlRowDecoder Decoder { get; }
 }
 
 internal sealed class SqlRowPageBuilder
 {
-  private readonly ISqlRowDecoder _decoder;
-  private RowRange[] _rows;
-  private byte[] _buffer;
-  private int _count;
-  private int _length;
+    private readonly ISqlRowDecoder _decoder;
+    private RowRange[] _rows;
+    private byte[] _buffer;
+    private int _count;
+    private int _length;
 
-  internal SqlRowPageBuilder(
-    ISqlRowDecoder decoder,
-    int rowCapacity = 16,
-    int byteCapacity = 1024)
-  {
-    _decoder = decoder;
-    _rows = new RowRange[rowCapacity];
-    _buffer = new byte[byteCapacity];
-  }
-
-  internal int Count => _count;
-
-  internal int ByteLength => _length;
-
-  internal void Add(ReadOnlySpan<byte> row)
-  {
-    EnsureCapacity(row.Length);
-    row.CopyTo(_buffer.AsSpan(_length));
-    if (_count == _rows.Length)
+    internal SqlRowPageBuilder(
+        ISqlRowDecoder decoder,
+        int rowCapacity = 16,
+        int byteCapacity = 1024)
     {
-      Array.Resize(ref _rows, checked(_rows.Length * 2));
+        _decoder = decoder;
+        _rows = new RowRange[rowCapacity];
+        _buffer = new byte[byteCapacity];
     }
 
-    _rows[_count++] = new RowRange(_length, row.Length);
-    _length += row.Length;
-  }
+    internal int Count => _count;
 
-  internal SqlRow[] Build(IReadOnlyList<SqlColumn> columns)
-  {
-    SqlRowPageBatch batch = BuildBatch(columns);
-    if (batch.Count == 0)
+    internal int ByteLength => _length;
+
+    internal void Add(ReadOnlySpan<byte> row)
     {
-      return [];
+        EnsureCapacity(row.Length);
+        row.CopyTo(_buffer.AsSpan(_length));
+        if (_count == _rows.Length)
+        {
+            Array.Resize(ref _rows, checked(_rows.Length * 2));
+        }
+
+        _rows[_count++] = new RowRange(_length, row.Length);
+        _length += row.Length;
     }
 
-    SqlRow[] rows = new SqlRow[batch.Count];
-    for (int i = 0; i < rows.Length; i++)
+    internal SqlRow[] Build(IReadOnlyList<SqlColumn> columns)
     {
-      rows[i] = batch.CreateRow(i);
+        var batch = BuildBatch(columns);
+        if (batch.Count == 0)
+        {
+            return [];
+        }
+
+        SqlRow[] rows = new SqlRow[batch.Count];
+        for (var i = 0; i < rows.Length; i++)
+        {
+            rows[i] = batch.CreateRow(i);
+        }
+
+        return rows;
     }
 
-    return rows;
-  }
+    internal SqlRowPageBatch BuildBatch(IReadOnlyList<SqlColumn> columns) =>
+      new(
+        new SqlRowPage(_buffer, _decoder),
+        columns,
+        _rows,
+        _count);
 
-  internal SqlRowPageBatch BuildBatch(IReadOnlyList<SqlColumn> columns) =>
-    new(
-      new SqlRowPage(_buffer, _decoder),
-      columns,
-      _rows,
-      _count);
-
-  private void EnsureCapacity(int additional)
-  {
-    int required = checked(_length + additional);
-    if (required <= _buffer.Length)
+    private void EnsureCapacity(int additional)
     {
-      return;
+        var required = checked(_length + additional);
+        if (required <= _buffer.Length)
+        {
+            return;
+        }
+
+        var capacity = Math.Max(required, checked(_buffer.Length * 2));
+        Array.Resize(ref _buffer, capacity);
     }
 
-    int capacity = Math.Max(required, checked(_buffer.Length * 2));
-    Array.Resize(ref _buffer, capacity);
-  }
-
-  internal readonly record struct RowRange(int Offset, int Length);
+    internal readonly record struct RowRange(int Offset, int Length);
 }
 
 internal sealed class SqlRowPageCollectionBuilder
 {
-  private const int MaximumPageRows = 256;
-  private const int MaximumPageBytes = 64 * 1024;
-  private readonly ISqlRowDecoder _decoder;
-  private readonly List<SqlRowPageBuilder> _pages = [];
-  private SqlRowPageBuilder _current;
-  private int _count;
+    private const int MaximumPageRows = 256;
+    private const int MaximumPageBytes = 64 * 1024;
+    private readonly ISqlRowDecoder _decoder;
+    private readonly List<SqlRowPageBuilder> _pages = [];
+    private SqlRowPageBuilder _current;
+    private int _count;
 
-  internal SqlRowPageCollectionBuilder(ISqlRowDecoder decoder)
-  {
-    _decoder = decoder;
-    _current = CreatePage();
-  }
-
-  internal void Add(ReadOnlySpan<byte> row)
-  {
-    if (_current.Count > 0 &&
-        (_current.Count == MaximumPageRows ||
-         row.Length > MaximumPageBytes - _current.ByteLength))
+    internal SqlRowPageCollectionBuilder(ISqlRowDecoder decoder)
     {
-      Flush();
+        _decoder = decoder;
+        _current = CreatePage();
     }
 
-    _current.Add(row);
-    _count++;
-  }
-
-  internal SqlRow[] Build(IReadOnlyList<SqlColumn> columns)
-  {
-    Flush();
-    if (_pages.Count == 0)
+    internal void Add(ReadOnlySpan<byte> row)
     {
-      return [];
+        if (_current.Count > 0 &&
+            (_current.Count == MaximumPageRows ||
+             row.Length > MaximumPageBytes - _current.ByteLength))
+        {
+            Flush();
+        }
+
+        _current.Add(row);
+        _count++;
     }
 
-    if (_pages.Count == 1)
+    internal SqlRow[] Build(IReadOnlyList<SqlColumn> columns)
     {
-      return _pages[0].Build(columns);
+        Flush();
+        if (_pages.Count == 0)
+        {
+            return [];
+        }
+
+        if (_pages.Count == 1)
+        {
+            return _pages[0].Build(columns);
+        }
+
+        SqlRow[] rows = new SqlRow[_count];
+        var offset = 0;
+        foreach (var page in _pages)
+        {
+            var pageRows = page.Build(columns);
+            pageRows.CopyTo(rows, offset);
+            offset += pageRows.Length;
+        }
+
+        return rows;
     }
 
-    SqlRow[] rows = new SqlRow[_count];
-    int offset = 0;
-    foreach (SqlRowPageBuilder page in _pages)
+    private void Flush()
     {
-      SqlRow[] pageRows = page.Build(columns);
-      pageRows.CopyTo(rows, offset);
-      offset += pageRows.Length;
+        if (_current.Count == 0)
+        {
+            return;
+        }
+
+        _pages.Add(_current);
+        _current = CreatePage();
     }
 
-    return rows;
-  }
-
-  private void Flush()
-  {
-    if (_current.Count == 0)
-    {
-      return;
-    }
-
-    _pages.Add(_current);
-    _current = CreatePage();
-  }
-
-  private SqlRowPageBuilder CreatePage() =>
-    new(
-      _decoder,
-      rowCapacity: 16,
-      byteCapacity: 1024);
+    private SqlRowPageBuilder CreatePage() =>
+      new(
+        _decoder,
+        rowCapacity: 16,
+        byteCapacity: 1024);
 }
 
 internal sealed class SqlRowPageBatch
 {
-  private readonly SqlRowPage _page;
-  private readonly IReadOnlyList<SqlColumn> _columns;
-  private readonly SqlRowPageBuilder.RowRange[] _rows;
+    private readonly SqlRowPage _page;
+    private readonly IReadOnlyList<SqlColumn> _columns;
+    private readonly SqlRowPageBuilder.RowRange[] _rows;
 
-  internal SqlRowPageBatch(
-    SqlRowPage page,
-    IReadOnlyList<SqlColumn> columns,
-    SqlRowPageBuilder.RowRange[] rows,
-    int count)
-  {
-    _page = page;
-    _columns = columns;
-    _rows = rows;
-    Count = count;
-  }
-
-  internal int Count { get; }
-
-  internal SqlRow CreateRow(int index)
-  {
-    if ((uint)index >= (uint)Count)
+    internal SqlRowPageBatch(
+        SqlRowPage page,
+        IReadOnlyList<SqlColumn> columns,
+        SqlRowPageBuilder.RowRange[] rows,
+        int count)
     {
-      throw new ArgumentOutOfRangeException(nameof(index));
+        _page = page;
+        _columns = columns;
+        _rows = rows;
+        Count = count;
     }
 
-    SqlRowPageBuilder.RowRange range = _rows[index];
-    return new SqlRow(
-      _columns,
-      _page,
-      range.Offset,
-      range.Length);
-  }
+    internal int Count { get; }
+
+    internal SqlRow CreateRow(int index)
+    {
+        if ((uint)index >= (uint)Count)
+        {
+            throw new ArgumentOutOfRangeException(nameof(index));
+        }
+
+        var range = _rows[index];
+        return new SqlRow(
+          _columns,
+          _page,
+          range.Offset,
+          range.Length);
+    }
 }

@@ -14,196 +14,196 @@ namespace Apex.MySqlClient.Internal;
 /// </summary>
 internal sealed class Utf8StringCache
 {
-  private static readonly Encoding Utf8 = new UTF8Encoding(false, true);
-  private readonly object _gate = new();
-  private readonly int _maximumByteLength;
-  private Entry[] _entries;
-  private bool _enabled;
+    private static readonly Encoding s_utf8 = new UTF8Encoding(false, true);
+    private readonly object _gate = new();
+    private readonly int _maximumByteLength;
+    private Entry[] _entries;
+    private bool _enabled;
 
-  internal Utf8StringCache(int capacity, int maximumByteLength)
-  {
-    if (capacity <= 0 || maximumByteLength <= 0)
+    internal Utf8StringCache(int capacity, int maximumByteLength)
     {
-      _entries = [];
-      return;
+        if (capacity <= 0 || maximumByteLength <= 0)
+        {
+            _entries = [];
+            return;
+        }
+
+        var normalizedCapacity = 1;
+        while (normalizedCapacity < capacity)
+        {
+            normalizedCapacity <<= 1;
+        }
+
+        _entries = new Entry[normalizedCapacity];
+        _maximumByteLength = maximumByteLength;
+        _enabled = true;
     }
 
-    int normalizedCapacity = 1;
-    while (normalizedCapacity < capacity)
+    internal string GetString(ReadOnlySpan<byte> value)
     {
-      normalizedCapacity <<= 1;
+        if (value.IsEmpty)
+        {
+            return string.Empty;
+        }
+
+        if (value.Length > _maximumByteLength)
+        {
+            return s_utf8.GetString(value);
+        }
+
+        var hash = Hash(value);
+        lock (_gate)
+        {
+            if (!_enabled)
+            {
+                return s_utf8.GetString(value);
+            }
+
+            var entries = _entries;
+            var index = (int)hash & (entries.Length - 1);
+            ref var entry = ref entries[index];
+            if (entry._hash == hash &&
+                entry._utf8 is not null &&
+                entry._utf8.AsSpan().SequenceEqual(value))
+            {
+                return entry._value!;
+            }
+
+            var decoded = s_utf8.GetString(value);
+            if (entry._candidateHash == hash && entry._candidateLength == value.Length)
+            {
+                entry._hash = hash;
+                entry._utf8 = value.ToArray();
+                entry._value = decoded;
+                entry._candidateHash = 0;
+                entry._candidateLength = 0;
+            }
+            else
+            {
+                entry._candidateHash = hash;
+                entry._candidateLength = value.Length;
+            }
+
+            return decoded;
+        }
     }
 
-    _entries = new Entry[normalizedCapacity];
-    _maximumByteLength = maximumByteLength;
-    _enabled = true;
-  }
-
-  internal string GetString(ReadOnlySpan<byte> value)
-  {
-    if (value.IsEmpty)
+    internal void Disable()
     {
-      return string.Empty;
+        lock (_gate)
+        {
+            _enabled = false;
+            _entries = [];
+        }
     }
 
-    if (value.Length > _maximumByteLength)
+    private static ulong Hash(ReadOnlySpan<byte> value)
     {
-      return Utf8.GetString(value);
+        const ulong offset = 14695981039346656037UL;
+        const ulong prime = 1099511628211UL;
+        var hash = offset;
+        foreach (var item in value)
+        {
+            hash ^= item;
+            hash *= prime;
+        }
+
+        hash ^= (ulong)value.Length;
+        hash *= prime;
+        return hash == 0 ? 1 : hash;
     }
 
-    ulong hash = Hash(value);
-    lock (_gate)
+    private struct Entry
     {
-      if (!_enabled)
-      {
-        return Utf8.GetString(value);
-      }
-
-      Entry[] entries = _entries;
-      int index = (int)hash & (entries.Length - 1);
-      ref Entry entry = ref entries[index];
-      if (entry.Hash == hash &&
-          entry.Utf8 is not null &&
-          entry.Utf8.AsSpan().SequenceEqual(value))
-      {
-        return entry.Value!;
-      }
-
-      string decoded = Utf8.GetString(value);
-      if (entry.CandidateHash == hash && entry.CandidateLength == value.Length)
-      {
-        entry.Hash = hash;
-        entry.Utf8 = value.ToArray();
-        entry.Value = decoded;
-        entry.CandidateHash = 0;
-        entry.CandidateLength = 0;
-      }
-      else
-      {
-        entry.CandidateHash = hash;
-        entry.CandidateLength = value.Length;
-      }
-
-      return decoded;
+        internal ulong _hash;
+        internal byte[]? _utf8;
+        internal string? _value;
+        internal ulong _candidateHash;
+        internal int _candidateLength;
     }
-  }
-
-  internal void Disable()
-  {
-    lock (_gate)
-    {
-      _enabled = false;
-      _entries = [];
-    }
-  }
-
-  private static ulong Hash(ReadOnlySpan<byte> value)
-  {
-    const ulong offset = 14695981039346656037UL;
-    const ulong prime = 1099511628211UL;
-    ulong hash = offset;
-    foreach (byte item in value)
-    {
-      hash ^= item;
-      hash *= prime;
-    }
-
-    hash ^= (ulong)value.Length;
-    hash *= prime;
-    return hash == 0 ? 1 : hash;
-  }
-
-  private struct Entry
-  {
-    internal ulong Hash;
-    internal byte[]? Utf8;
-    internal string? Value;
-    internal ulong CandidateHash;
-    internal int CandidateLength;
-  }
 }
 
 /// <summary>Reuses boxes for the small scalar values that dominate result sets.</summary>
 internal static class BoxedScalarCache
 {
-  private const int Minimum = -128;
-  private const int Maximum = 255;
-  private static readonly object[] SByteValues = CreateSBytes();
-  private static readonly object[] ByteValues = CreateBytes();
-  private static readonly object[] Int16Values = Create(static value => (object)(short)value);
-  private static readonly object[] UInt16Values = CreateUnsigned(static value => (object)(ushort)value);
-  private static readonly object[] Int32Values = Create(static value => value);
-  private static readonly object[] UInt32Values = CreateUnsigned(static value => (object)(uint)value);
-  private static readonly object[] Int64Values = Create(static value => (object)(long)value);
-  private static readonly object[] UInt64Values = CreateUnsigned(static value => (object)(ulong)value);
-  private static readonly object True = true;
-  private static readonly object False = false;
+    private const int Minimum = -128;
+    private const int Maximum = 255;
+    private static readonly object[] s_sByteValues = CreateSBytes();
+    private static readonly object[] s_byteValues = CreateBytes();
+    private static readonly object[] s_int16Values = Create(static value => (object)(short)value);
+    private static readonly object[] s_uInt16Values = CreateUnsigned(static value => (object)(ushort)value);
+    private static readonly object[] s_int32Values = Create(static value => value);
+    private static readonly object[] s_uInt32Values = CreateUnsigned(static value => (object)(uint)value);
+    private static readonly object[] s_int64Values = Create(static value => (object)(long)value);
+    private static readonly object[] s_uInt64Values = CreateUnsigned(static value => (object)(ulong)value);
+    private static readonly object s_true = true;
+    private static readonly object s_false = false;
 
-  internal static object Box(bool value) => value ? True : False;
+    internal static object Box(bool value) => value ? s_true : s_false;
 
-  internal static object Box(sbyte value) => SByteValues[value - sbyte.MinValue];
+    internal static object Box(sbyte value) => s_sByteValues[value - sbyte.MinValue];
 
-  internal static object Box(byte value) => ByteValues[value];
+    internal static object Box(byte value) => s_byteValues[value];
 
-  internal static object Box(short value) =>
-    value is >= Minimum and <= Maximum ? Int16Values[value - Minimum] : value;
+    internal static object Box(short value) =>
+      value is >= Minimum and <= Maximum ? s_int16Values[value - Minimum] : value;
 
-  internal static object Box(ushort value) =>
-    value <= Maximum ? UInt16Values[value] : value;
+    internal static object Box(ushort value) =>
+      value <= Maximum ? s_uInt16Values[value] : value;
 
-  internal static object Box(int value) =>
-    value is >= Minimum and <= Maximum ? Int32Values[value - Minimum] : value;
+    internal static object Box(int value) =>
+      value is >= Minimum and <= Maximum ? s_int32Values[value - Minimum] : value;
 
-  internal static object Box(uint value) =>
-    value <= Maximum ? UInt32Values[value] : value;
+    internal static object Box(uint value) =>
+      value <= Maximum ? s_uInt32Values[value] : value;
 
-  internal static object Box(long value) =>
-    value is >= Minimum and <= Maximum ? Int64Values[value - Minimum] : value;
+    internal static object Box(long value) =>
+      value is >= Minimum and <= Maximum ? s_int64Values[value - Minimum] : value;
 
-  internal static object Box(ulong value) =>
-    value <= Maximum ? UInt64Values[value] : value;
+    internal static object Box(ulong value) =>
+      value <= Maximum ? s_uInt64Values[value] : value;
 
-  private static object[] Create(Func<int, object> factory)
-  {
-    object[] values = new object[Maximum - Minimum + 1];
-    for (int i = 0; i < values.Length; i++)
+    private static object[] Create(Func<int, object> factory)
     {
-      values[i] = factory(i + Minimum);
+        var values = new object[Maximum - Minimum + 1];
+        for (var i = 0; i < values.Length; i++)
+        {
+            values[i] = factory(i + Minimum);
+        }
+
+        return values;
     }
 
-    return values;
-  }
-
-  private static object[] CreateUnsigned(Func<int, object> factory)
-  {
-    object[] values = new object[Maximum + 1];
-    for (int i = 0; i < values.Length; i++)
+    private static object[] CreateUnsigned(Func<int, object> factory)
     {
-      values[i] = factory(i);
+        var values = new object[Maximum + 1];
+        for (var i = 0; i < values.Length; i++)
+        {
+            values[i] = factory(i);
+        }
+
+        return values;
     }
 
-    return values;
-  }
-
-  private static object[] CreateSBytes()
-  {
-    object[] values = new object[byte.MaxValue + 1];
-    for (int i = 0; i < values.Length; i++)
+    private static object[] CreateSBytes()
     {
-      values[i] = (sbyte)(i + sbyte.MinValue);
+        var values = new object[byte.MaxValue + 1];
+        for (var i = 0; i < values.Length; i++)
+        {
+            values[i] = (sbyte)(i + sbyte.MinValue);
+        }
+
+        return values;
     }
 
-    return values;
-  }
-
-  private static object[] CreateBytes()
-  {
-    object[] values = new object[byte.MaxValue + 1];
-    for (int i = 0; i < values.Length; i++)
+    private static object[] CreateBytes()
     {
-      values[i] = (byte)i;
-    }
+        var values = new object[byte.MaxValue + 1];
+        for (var i = 0; i < values.Length; i++)
+        {
+            values[i] = (byte)i;
+        }
 
-    return values;
-  }
+        return values;
+    }
 }

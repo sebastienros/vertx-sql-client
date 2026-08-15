@@ -16,82 +16,82 @@ namespace Apex.PgClient.IntegrationTests;
 [DoNotParallelize]
 public sealed class PgBouncerIntegrationTests
 {
-  [TestMethod]
-  public async Task ExecutesThroughTransactionPool()
-  {
-    INetwork network = new NetworkBuilder().Build();
-    PostgreSqlContainer postgres = new PostgreSqlBuilder("postgres:16-alpine")
-      .WithDatabase("db")
-      .WithUsername("user")
-      .WithPassword("pass")
-      .WithNetwork(network)
-      .WithNetworkAliases("postgres")
-      .Build();
-    IContainer pgbouncer = new ContainerBuilder("edoburu/pgbouncer:latest")
-      .WithEnvironment("DB_HOST", "postgres")
-      .WithEnvironment("DB_PORT", "5432")
-      .WithEnvironment("DB_USER", "user")
-      .WithEnvironment("DB_PASSWORD", "pass")
-      .WithEnvironment("DB_NAME", "db")
-      .WithEnvironment("POOL_MODE", "transaction")
-      .WithEnvironment("AUTH_TYPE", "scram-sha-256")
-      .WithNetwork(network)
-      .WithPortBinding(5432, true)
-      .DependsOn(postgres)
-      .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(5432))
-      .Build();
-
-    await network.CreateAsync(CancellationToken.None);
-    try
+    [TestMethod]
+    public async Task ExecutesThroughTransactionPool()
     {
-      await postgres.StartAsync();
-      await pgbouncer.StartAsync();
-      PgConnectOptions options = new()
-      {
-        Host = pgbouncer.Hostname,
-        Port = pgbouncer.GetMappedPublicPort(5432),
-        Database = "db",
-        Username = "user",
-        Password = "pass",
-        UseLayer7Proxy = true,
-      };
+        var network = new NetworkBuilder().Build();
+        var postgres = new PostgreSqlBuilder("postgres:16-alpine")
+          .WithDatabase("db")
+          .WithUsername("user")
+          .WithPassword("pass")
+          .WithNetwork(network)
+          .WithNetworkAliases("postgres")
+          .Build();
+        var pgbouncer = new ContainerBuilder("edoburu/pgbouncer:latest")
+          .WithEnvironment("DB_HOST", "postgres")
+          .WithEnvironment("DB_PORT", "5432")
+          .WithEnvironment("DB_USER", "user")
+          .WithEnvironment("DB_PASSWORD", "pass")
+          .WithEnvironment("DB_NAME", "db")
+          .WithEnvironment("POOL_MODE", "transaction")
+          .WithEnvironment("AUTH_TYPE", "scram-sha-256")
+          .WithNetwork(network)
+          .WithPortBinding(5432, true)
+          .DependsOn(postgres)
+          .WithWaitStrategy(Wait.ForUnixContainer().UntilInternalTcpPortIsAvailable(5432))
+          .Build();
 
-      await using PgConnection connection = await PgClient.ConnectAsync(options);
-      for (int i = 0; i < 20; i++)
-      {
-        SqlRowSet rows = await connection.QueryAsync(
-          "SELECT $1::int4 AS value",
-          SqlParameters.Create(i));
-        Assert.AreEqual(i, rows[0].Get<int>(0));
-      }
+        await network.CreateAsync(CancellationToken.None);
+        try
+        {
+            await postgres.StartAsync();
+            await pgbouncer.StartAsync();
+            PgConnectOptions options = new()
+            {
+                Host = pgbouncer.Hostname,
+                Port = pgbouncer.GetMappedPublicPort(5432),
+                Database = "db",
+                Username = "user",
+                Password = "pass",
+                UseLayer7Proxy = true,
+            };
 
-      await using ISqlTransaction transaction = await connection.BeginTransactionAsync();
-      await using ISqlPreparedStatement statement =
-        await connection.PrepareAsync("SELECT $1::int4 AS value");
-      Assert.AreEqual(
-        42,
-        (await statement.QueryAsync(SqlParameters.Create(42)))[0].Get<int>(0));
-      await statement.DisposeAsync();
-      await transaction.CommitAsync();
+            await using var connection = await PgClient.ConnectAsync(options);
+            for (var i = 0; i < 20; i++)
+            {
+                var rows = await connection.QueryAsync(
+                  "SELECT $1::int4 AS value",
+                  SqlParameters.Create(i));
+                Assert.AreEqual(i, rows[0].Get<int>(0));
+            }
+
+            await using var transaction = await connection.BeginTransactionAsync();
+            await using var statement =
+              await connection.PrepareAsync("SELECT $1::int4 AS value");
+            Assert.AreEqual(
+              42,
+              (await statement.QueryAsync(SqlParameters.Create(42)))[0].Get<int>(0));
+            await statement.DisposeAsync();
+            await transaction.CommitAsync();
+        }
+        finally
+        {
+            await pgbouncer.DisposeAsync();
+            await postgres.DisposeAsync();
+            await network.DisposeAsync();
+        }
     }
-    finally
+
+    [TestMethod]
+    public async Task RejectsPreparedCacheWithLayer7Proxy()
     {
-      await pgbouncer.DisposeAsync();
-      await postgres.DisposeAsync();
-      await network.DisposeAsync();
+        PgConnectOptions options = new()
+        {
+            UseLayer7Proxy = true,
+            CachePreparedStatements = true,
+        };
+
+        await Assert.ThrowsExactlyAsync<ArgumentException>(
+          () => PgClient.ConnectAsync(options).AsTask());
     }
-  }
-
-  [TestMethod]
-  public async Task RejectsPreparedCacheWithLayer7Proxy()
-  {
-    PgConnectOptions options = new()
-    {
-      UseLayer7Proxy = true,
-      CachePreparedStatements = true,
-    };
-
-    await Assert.ThrowsExactlyAsync<ArgumentException>(
-      () => PgClient.ConnectAsync(options).AsTask());
-  }
 }
