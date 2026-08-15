@@ -2,10 +2,12 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Apex.PgClient\Apex.PgClient.csproj" />
+    <ProjectReference Include="..\..\src\Apex.MySqlClient\Apex.MySqlClient.csproj" />
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Npgsql" />
+    <PackageReference Include="MySqlConnector" />
   </ItemGroup>
 
   <PropertyGroup>

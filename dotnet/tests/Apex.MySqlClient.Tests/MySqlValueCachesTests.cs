@@ -1,0 +1,127 @@
+/*
+ * Copyright (c) 2011-2026 Contributors to the Eclipse Foundation
+ *
+ * SPDX-License-Identifier: EPL-2.0 OR Apache-2.0
+ */
+
+using System.Text;
+using Apex.MySqlClient.Internal;
+
+namespace Apex.MySqlClient.Tests;
+
+[TestClass]
+public sealed class MySqlValueCachesTests
+{
+  [TestMethod]
+  public void CachesRepeatedSmallUtf8AfterSecondObservation()
+  {
+    Utf8StringCache cache = new(capacity: 16, maximumByteLength: 64);
+    byte[] value = Encoding.UTF8.GetBytes("repeated");
+
+    string first = cache.GetString(value);
+    string second = cache.GetString(value);
+    string third = cache.GetString(value);
+
+    Assert.AreNotSame(first, second);
+    Assert.AreSame(second, third);
+  }
+
+  [TestMethod]
+  public void DoesNotCacheValuesAboveMaximumLength()
+  {
+    Utf8StringCache cache = new(capacity: 16, maximumByteLength: 4);
+    byte[] value = Encoding.UTF8.GetBytes("longer");
+
+    string first = cache.GetString(value);
+    string second = cache.GetString(value);
+    string third = cache.GetString(value);
+
+    Assert.AreNotSame(first, second);
+    Assert.AreNotSame(second, third);
+  }
+
+  [TestMethod]
+  public void EmptyValueAlwaysReturnsSharedEmptyString()
+  {
+    Utf8StringCache cache = new(capacity: 16, maximumByteLength: 64);
+
+    Assert.AreSame(string.Empty, cache.GetString(ReadOnlySpan<byte>.Empty));
+  }
+
+  [TestMethod]
+  public void ZeroCapacityCacheNeverRetainsValues()
+  {
+    Utf8StringCache cache = new(capacity: 0, maximumByteLength: 0);
+    byte[] value = Encoding.UTF8.GetBytes("abc");
+
+    string first = cache.GetString(value);
+    string second = cache.GetString(value);
+
+    Assert.AreEqual("abc", first);
+    Assert.AreNotSame(first, second);
+  }
+
+  [TestMethod]
+  public void DirectMappedReplacementNeverReturnsCollisionValue()
+  {
+    Utf8StringCache cache = new(capacity: 1, maximumByteLength: 64);
+    byte[] firstValue = Encoding.UTF8.GetBytes("first");
+    byte[] secondValue = Encoding.UTF8.GetBytes("second");
+    _ = cache.GetString(firstValue);
+    string cachedFirst = cache.GetString(firstValue);
+    _ = cache.GetString(secondValue);
+    string cachedSecond = cache.GetString(secondValue);
+
+    Assert.AreEqual("first", cachedFirst);
+    Assert.AreEqual("second", cachedSecond);
+    Assert.AreEqual("first", cache.GetString(firstValue));
+  }
+
+  [TestMethod]
+  public void DisableClearsCacheAndStopsRetainingValues()
+  {
+    Utf8StringCache cache = new(capacity: 16, maximumByteLength: 64);
+    byte[] value = Encoding.UTF8.GetBytes("repeated");
+    _ = cache.GetString(value);
+    string cached = cache.GetString(value);
+
+    cache.Disable();
+    string afterDisable = cache.GetString(value);
+
+    Assert.AreNotSame(cached, afterDisable);
+    Assert.AreNotSame(afterDisable, cache.GetString(value));
+  }
+
+  [TestMethod]
+  public void ReusesPreboxedCommonScalars()
+  {
+    Assert.AreSame(BoxedScalarCache.Box(true), BoxedScalarCache.Box(true));
+    Assert.AreSame(BoxedScalarCache.Box(false), BoxedScalarCache.Box(false));
+    Assert.AreSame(BoxedScalarCache.Box((sbyte)-1), BoxedScalarCache.Box((sbyte)-1));
+    Assert.AreSame(BoxedScalarCache.Box((byte)200), BoxedScalarCache.Box((byte)200));
+    Assert.AreSame(BoxedScalarCache.Box((short)42), BoxedScalarCache.Box((short)42));
+    Assert.AreSame(BoxedScalarCache.Box((ushort)42), BoxedScalarCache.Box((ushort)42));
+    Assert.AreSame(BoxedScalarCache.Box(42), BoxedScalarCache.Box(42));
+    Assert.AreSame(BoxedScalarCache.Box(42u), BoxedScalarCache.Box(42u));
+    Assert.AreSame(BoxedScalarCache.Box(42L), BoxedScalarCache.Box(42L));
+    Assert.AreSame(BoxedScalarCache.Box(42ul), BoxedScalarCache.Box(42ul));
+  }
+
+  [TestMethod]
+  public void ValuesOutsideBoxRangeAreNotShared()
+  {
+    Assert.AreNotSame(BoxedScalarCache.Box(1000), BoxedScalarCache.Box(1000));
+    Assert.AreNotSame(BoxedScalarCache.Box(1000L), BoxedScalarCache.Box(1000L));
+    Assert.AreNotSame(BoxedScalarCache.Box(1000u), BoxedScalarCache.Box(1000u));
+    Assert.AreNotSame(BoxedScalarCache.Box(1000ul), BoxedScalarCache.Box(1000ul));
+  }
+
+  [TestMethod]
+  public void BoxedScalarsPreserveTheirValue()
+  {
+    Assert.AreEqual((short)-100, BoxedScalarCache.Box((short)-100));
+    Assert.AreEqual(-100, BoxedScalarCache.Box(-100));
+    Assert.AreEqual(-100L, BoxedScalarCache.Box(-100L));
+    Assert.AreEqual((byte)255, BoxedScalarCache.Box((byte)255));
+  }
+}

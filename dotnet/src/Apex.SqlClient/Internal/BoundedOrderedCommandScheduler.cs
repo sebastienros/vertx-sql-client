@@ -46,6 +46,12 @@ internal sealed class BoundedOrderedCommandScheduler : IAsyncDisposable
     Volatile.Read(ref _disposed) != 0 ||
     Volatile.Read(ref _terminalError) is not null;
 
+  public void Fault(Exception exception)
+  {
+    ArgumentNullException.ThrowIfNull(exception);
+    Stop(exception);
+  }
+
   public ValueTask<T> ExecuteAsync<T>(
     Func<CancellationToken, ValueTask> sendAsync,
     Func<CancellationToken, ValueTask<T>> receiveAsync,

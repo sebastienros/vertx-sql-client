@@ -1568,6 +1568,17 @@ public sealed class PgConnection : ISqlConnection
       lock (_gate)
       {
         ThrowIfError();
+        if (_canceled)
+        {
+          if (_hasCurrent)
+          {
+            _advance.Set();
+          }
+
+          return ValueTask.FromException<bool>(
+            new OperationCanceledException(_cancellationToken));
+        }
+
         if (_completed)
         {
           return ValueTask.FromResult(false);

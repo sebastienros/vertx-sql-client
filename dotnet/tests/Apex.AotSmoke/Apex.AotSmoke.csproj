@@ -1,6 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
+    <ProjectReference Include="..\..\src\Apex.MySqlClient\Apex.MySqlClient.csproj" />
     <ProjectReference Include="..\..\src\Apex.PgClient\Apex.PgClient.csproj" />
   </ItemGroup>
 

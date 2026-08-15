@@ -14,6 +14,12 @@
         "resolved": "10.0.10",
         "contentHash": "f5VCIE7AJpd5YvzNTeMGVzQIgyE9tX+AreTYwQF+REbu+DZo/2Ae+jNSwhPEYrVz6RRkd7y8ubXjk6Nn6Ka+Cg=="
       },
+      "apex.mysqlclient": {
+        "type": "Project",
+        "dependencies": {
+          "Apex.SqlClient": "[0.1.0-preview.1, )"
+        }
+      },
       "apex.pgclient": {
         "type": "Project",
         "dependencies": {

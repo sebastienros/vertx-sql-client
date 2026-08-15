@@ -130,19 +130,30 @@ class Apex.SqlClient.SqlColumn : System.IEquatable`1[Apex.SqlClient.SqlColumn]
   Property: UInt32 TypeId
 struct Apex.SqlClient.SqlCommandResult : System.IEquatable`1[Apex.SqlClient.SqlCommandResult]
   Constructor: Void .ctor(Int64, System.String)
+  Constructor: Void .ctor(Int64, System.String, System.Nullable`1[System.UInt64], UInt32, Int32)
   Method: Boolean Equals(Apex.SqlClient.SqlCommandResult)
   Method: Boolean Equals(System.Object)
   Method: Boolean op_Equality(Apex.SqlClient.SqlCommandResult, Apex.SqlClient.SqlCommandResult)
   Method: Boolean op_Inequality(Apex.SqlClient.SqlCommandResult, Apex.SqlClient.SqlCommandResult)
   Method: Int32 GetHashCode()
+  Method: Int32 get_WarningCount()
   Method: Int64 get_AffectedRows()
+  Method: System.Nullable`1[System.UInt64] get_LastInsertId()
   Method: System.String ToString()
   Method: System.String get_CommandTag()
+  Method: UInt32 get_StatusFlags()
   Method: Void Deconstruct(Int64 ByRef, System.String ByRef)
+  Method: Void Deconstruct(Int64 ByRef, System.String ByRef, System.Nullable`1[System.UInt64] ByRef, UInt32 ByRef, Int32 ByRef)
   Method: Void set_AffectedRows(Int64)
   Method: Void set_CommandTag(System.String)
+  Method: Void set_LastInsertId(System.Nullable`1[System.UInt64])
+  Method: Void set_StatusFlags(UInt32)
+  Method: Void set_WarningCount(Int32)
+  Property: Int32 WarningCount
   Property: Int64 AffectedRows
+  Property: System.Nullable`1[System.UInt64] LastInsertId
   Property: System.String CommandTag
+  Property: UInt32 StatusFlags
 class Apex.SqlClient.SqlConnectOptions : System.IEquatable`1[Apex.SqlClient.SqlConnectOptions]
   Method: Apex.SqlClient.SqlConnectOptions <Clone>$()
   Method: Boolean Equals(Apex.SqlClient.SqlConnectOptions)

@@ -18,17 +18,28 @@
 - Every one-shot asynchronous operation accepts a final `CancellationToken`.
 - Cancellation before protocol submission prevents the command from being sent.
 - Cancellation after PostgreSQL submission sends a PostgreSQL cancellation request and drains the response so the connection can be reused only after returning to idle state.
+- Cancellation after MySQL submission issues `KILL QUERY` from a short-lived authenticated
+  connection by default. If the kill cannot be delivered, the physical command connection is
+  closed and cannot return to a pool. Disabling active cancellation waits for and drains the
+  response before reporting cancellation.
 - Commit and rollback use cancellation only before submission. Once sent, they complete deterministically to avoid reporting cancellation after a transaction may already have committed.
 
 ## Query results
 
 - `QueryAsync` buffers a `SqlRowSet`; `StreamAsync` is the backpressured alternative.
 - `SqlParameters` stores ordered `SqlValue` instances. Common scalar `SqlValue` conversions avoid boxing at parameter construction.
-- Column lookup is ordinal and case-sensitive, matching PostgreSQL field names.
+- Column lookup is ordinal and case-sensitive.
 - Mapping and collection helpers execute user delegates synchronously for each buffered or streamed row.
+- MySQL affected rows use matched-row semantics by default. `UseAffectedRows` switches to changed
+  rows. `SqlCommandResult` carries the last insert identifier, status flags, and warning count;
+  `MySqlConnection.LastCommandInfo` additionally exposes the server information string.
 
 ## Errors and diagnostics
 
-- Database errors derive from `SqlClientException`; PostgreSQL errors expose SQLSTATE and structured server fields through `PgException`.
+- Database errors derive from `SqlClientException`. PostgreSQL errors expose SQLSTATE and
+  structured server fields through `PgException`; MySQL errors expose the numeric server code and
+  SQLSTATE through `MySqlException`.
 - Activities and metrics never include passwords or parameter values.
 - A physical connection is never returned to a pool while PostgreSQL reports an active or failed transaction.
+- A physical MySQL connection is never returned while a transaction is active, autocommit is
+  disabled, or cancellation left the session unsynchronized.

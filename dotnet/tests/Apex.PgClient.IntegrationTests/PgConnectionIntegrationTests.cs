@@ -260,6 +260,38 @@ public sealed class PgConnectionIntegrationTests
   }
 
   [TestMethod]
+  public async Task CancellationDoesNotExposeAnUndeliveredBorrowedRow()
+  {
+    PostgreSqlContainer container = _container ??
+      throw new InvalidOperationException("The PostgreSQL container is not running.");
+    PgConnectOptions options = new()
+    {
+      Host = container.Hostname,
+      Port = container.GetMappedPublicPort(5432),
+      Database = "db",
+      Username = "user",
+      Password = "pass",
+    };
+
+    await using PgConnection connection = await PgClient.ConnectAsync(options);
+    using CancellationTokenSource cancellation = new();
+    await using (ISqlRowReader reader =
+                 await connection.ExecuteReaderAsync(
+                   "SELECT 42::int4 AS value",
+                   cancellationToken: cancellation.Token))
+    {
+      await Task.Delay(100);
+      cancellation.Cancel();
+
+      await Assert.ThrowsExactlyAsync<OperationCanceledException>(
+        () => reader.ReadAsync().AsTask());
+    }
+
+    SqlRowSet rows = await connection.QueryAsync("SELECT 43::int4");
+    Assert.AreEqual(43, rows[0].GetInt32(0));
+  }
+
+  [TestMethod]
   public async Task SafeRowsRemainValidAfterConnectionDisposal()
   {
     PostgreSqlContainer container = _container ??
