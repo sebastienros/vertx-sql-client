@@ -527,12 +527,8 @@ internal sealed class MySqlRowDecoder : ISqlRowDecoder
             return DecodeJsonValue<T>(json, ordinal);
         }
 
-        if (BclAlternative<T>.IsSupported)
-        {
-            return DecodeBclAlternative<T>(row, ordinal, column);
-        }
-
-        switch (TypedDecoder<T>.s_kind)
+        var kind = TypedDecoder<T>.s_kind;
+        switch (kind)
         {
             case TypedDecoderKind.Boolean:
                 return Cast<bool, T>(DecodeBoolean(row, ordinal, column));
@@ -641,137 +637,123 @@ internal sealed class MySqlRowDecoder : ISqlRowDecoder
                 return Cast<TimeSpan, T>(DecodeTimeSpan(row, ordinal, column));
             case TypedDecoderKind.NullableTimeSpan:
                 return Cast<TimeSpan?, T>(DecodeNullableTimeSpan(row, ordinal, column));
+            case TypedDecoderKind.Half:
+            case TypedDecoderKind.NullableHalf:
+            case TypedDecoderKind.BigInteger:
+            case TypedDecoderKind.NullableBigInteger:
+            case TypedDecoderKind.Int128:
+            case TypedDecoderKind.NullableInt128:
+            case TypedDecoderKind.UInt128:
+            case TypedDecoderKind.NullableUInt128:
+            case TypedDecoderKind.Char:
+            case TypedDecoderKind.NullableChar:
+            case TypedDecoderKind.Chars:
+            case TypedDecoderKind.IPAddress:
+            case TypedDecoderKind.PhysicalAddress:
+            case TypedDecoderKind.BitArray:
+                return DecodeAlternative<T>(row, ordinal, column, kind);
             default:
                 throw CannotRead(column, typeof(T));
         }
     }
 
-    private T DecodeBclAlternative<T>(
+    private T DecodeAlternative<T>(
         ReadOnlyMemory<byte> row,
         int ordinal,
-        SqlColumn column)
+        SqlColumn column,
+        TypedDecoderKind kind)
     {
         var requestedType = typeof(T);
-        var valueType = Nullable.GetUnderlyingType(requestedType) ?? requestedType;
         var metadata = EnsureColumn(ordinal, column, requestedType);
-        if (valueType == typeof(Half))
+        switch (kind)
         {
-            _ = EnsureType(ordinal, column, requestedType, MySqlType.Float);
-        }
-        else if (valueType == typeof(BigInteger) ||
-                 valueType == typeof(Int128) ||
-                 valueType == typeof(UInt128))
-        {
-            _ = EnsureType(
-              ordinal,
-              column,
-              requestedType,
-              MySqlType.Decimal,
-              MySqlType.NewDecimal);
-        }
-        else if (valueType == typeof(char) || requestedType == typeof(char[]) ||
-                 requestedType == typeof(IPAddress))
-        {
-            EnsureStringType(metadata, column, requestedType);
-        }
-        else if (requestedType == typeof(PhysicalAddress))
-        {
-            EnsureBytesType(metadata, column, requestedType);
-        }
-        else if (requestedType == typeof(BitArray))
-        {
-            _ = EnsureType(ordinal, column, requestedType, MySqlType.Bit);
-        }
-        else
-        {
-            throw CannotRead(column, requestedType);
+            case TypedDecoderKind.Half:
+            case TypedDecoderKind.NullableHalf:
+                _ = EnsureType(ordinal, column, requestedType, MySqlType.Float);
+                break;
+            case TypedDecoderKind.BigInteger:
+            case TypedDecoderKind.NullableBigInteger:
+            case TypedDecoderKind.Int128:
+            case TypedDecoderKind.NullableInt128:
+            case TypedDecoderKind.UInt128:
+            case TypedDecoderKind.NullableUInt128:
+                _ = EnsureType(
+                  ordinal,
+                  column,
+                  requestedType,
+                  MySqlType.Decimal,
+                  MySqlType.NewDecimal);
+                break;
+            case TypedDecoderKind.Char:
+            case TypedDecoderKind.NullableChar:
+            case TypedDecoderKind.Chars:
+            case TypedDecoderKind.IPAddress:
+                EnsureStringType(metadata, column, requestedType);
+                break;
+            case TypedDecoderKind.PhysicalAddress:
+                EnsureBytesType(metadata, column, requestedType);
+                break;
+            case TypedDecoderKind.BitArray:
+                _ = EnsureType(ordinal, column, requestedType, MySqlType.Bit);
+                break;
+            default:
+                throw CannotRead(column, requestedType);
         }
 
         var bytes = GetRequiredField(row, ordinal);
-        if (valueType == typeof(BigInteger))
+        switch (kind)
         {
-            var numeric = MySqlDecimal.Parse(_strings.GetString(bytes));
-            if (numeric.Scale != 0)
-            {
+            case TypedDecoderKind.Half:
+            case TypedDecoderKind.NullableHalf:
+                return CastAlternative<T, Half>(checked((Half)ReadDouble(bytes, metadata)));
+            case TypedDecoderKind.BigInteger:
+            case TypedDecoderKind.NullableBigInteger:
+                                return CastAlternative<T, BigInteger>(
+                                    DecodeIntegralNumeric(bytes, column, requestedType));
+            case TypedDecoderKind.Int128:
+            case TypedDecoderKind.NullableInt128:
+                                return CastAlternative<T, Int128>(checked((Int128)DecodeIntegralNumeric(
+                                    bytes, column, requestedType)));
+            case TypedDecoderKind.UInt128:
+            case TypedDecoderKind.NullableUInt128:
+                                return CastAlternative<T, UInt128>(checked((UInt128)DecodeIntegralNumeric(
+                                    bytes, column, requestedType)));
+            case TypedDecoderKind.Char:
+            case TypedDecoderKind.NullableChar:
+                string text = _strings.GetString(bytes);
+                char character = text.Length == 1
+                  ? text[0]
+                  : throw CannotRead(column, requestedType);
+                return CastAlternative<T, char>(character);
+            case TypedDecoderKind.Chars:
+                return (T)(object)_strings.GetString(bytes).ToCharArray();
+            case TypedDecoderKind.IPAddress:
+                return (T)(object)IPAddress.Parse(_strings.GetString(bytes));
+            case TypedDecoderKind.PhysicalAddress:
+                if (bytes.Length is not (6 or 8))
+                {
+                    throw CannotRead(column, requestedType);
+                }
+
+                return (T)(object)new PhysicalAddress(bytes.ToArray());
+            case TypedDecoderKind.BitArray:
+                int bitCount = checked((int)metadata.ColumnLength);
+                if (bitCount is < 0 or > 64)
+                {
+                    throw CannotRead(column, requestedType);
+                }
+
+                ulong bitValue = MySqlValueCodec.ParseBit(bytes);
+                var bits = new BitArray(bitCount);
+                for (var i = 0; i < bitCount; i++)
+                {
+                    bits[i] = (bitValue & (1UL << (bitCount - 1 - i))) != 0;
+                }
+
+                return (T)(object)bits;
+            default:
                 throw CannotRead(column, requestedType);
-            }
-
-            return CastAlternative<T, BigInteger>(numeric.UnscaledValue);
         }
-
-        if (valueType == typeof(Int128))
-        {
-            var numeric = MySqlDecimal.Parse(_strings.GetString(bytes));
-            if (numeric.Scale != 0)
-            {
-                throw CannotRead(column, requestedType);
-            }
-
-            Int128 value = checked((Int128)numeric.UnscaledValue);
-            return CastAlternative<T, Int128>(value);
-        }
-
-        if (valueType == typeof(UInt128))
-        {
-            var numeric = MySqlDecimal.Parse(_strings.GetString(bytes));
-            if (numeric.Scale != 0)
-            {
-                throw CannotRead(column, requestedType);
-            }
-
-            UInt128 value = checked((UInt128)numeric.UnscaledValue);
-            return CastAlternative<T, UInt128>(value);
-        }
-
-        if (valueType == typeof(Half))
-        {
-            Half value = checked((Half)ReadDouble(bytes, metadata));
-            return CastAlternative<T, Half>(value);
-        }
-
-        if (valueType == typeof(char))
-        {
-            string text = _strings.GetString(bytes);
-            char value = text.Length == 1
-              ? text[0]
-              : throw CannotRead(column, requestedType);
-            return CastAlternative<T, char>(value);
-        }
-
-        if (requestedType == typeof(char[]))
-        {
-            return (T)(object)_strings.GetString(bytes).ToCharArray();
-        }
-
-        if (requestedType == typeof(IPAddress))
-        {
-            return (T)(object)IPAddress.Parse(_strings.GetString(bytes));
-        }
-
-        if (requestedType == typeof(PhysicalAddress))
-        {
-            if (bytes.Length is not (6 or 8))
-            {
-                throw CannotRead(column, requestedType);
-            }
-
-            return (T)(object)new PhysicalAddress(bytes.ToArray());
-        }
-
-        int bitCount = checked((int)metadata.ColumnLength);
-        if (bitCount is < 0 or > 64)
-        {
-            throw CannotRead(column, requestedType);
-        }
-
-        ulong bitValue = MySqlValueCodec.ParseBit(bytes);
-        var bits = new BitArray(bitCount);
-        for (var i = 0; i < bitCount; i++)
-        {
-            bits[i] = (bitValue & (1UL << (bitCount - 1 - i))) != 0;
-        }
-
-        return (T)(object)bits;
     }
 
     private static T CastAlternative<T, TValue>(TValue value)
@@ -786,23 +768,15 @@ internal sealed class MySqlRowDecoder : ISqlRowDecoder
         return Unsafe.As<TValue?, T>(ref nullable);
     }
 
-    private static bool IsBclAlternative(Type type)
+    private BigInteger DecodeIntegralNumeric(
+        ReadOnlySpan<byte> value,
+        SqlColumn column,
+        Type requestedType)
     {
-        var valueType = Nullable.GetUnderlyingType(type) ?? type;
-         return valueType == typeof(Half) ||
-             valueType == typeof(BigInteger) ||
-             valueType == typeof(Int128) ||
-             valueType == typeof(UInt128) ||
-               valueType == typeof(char) ||
-               type == typeof(char[]) ||
-               type == typeof(IPAddress) ||
-               type == typeof(PhysicalAddress) ||
-               type == typeof(BitArray);
-    }
-
-    private static class BclAlternative<T>
-    {
-        internal static bool IsSupported { get; } = IsBclAlternative(typeof(T));
+        var numeric = MySqlDecimal.Parse(_strings.GetString(value));
+        return numeric.Scale == 0
+          ? numeric.UnscaledValue
+          : throw CannotRead(column, requestedType);
     }
 
     internal T Decode<T>(ReadOnlyMemory<byte> row, int ordinal)
@@ -2109,6 +2083,76 @@ internal sealed class MySqlRowDecoder : ISqlRowDecoder
             return TypedDecoderKind.NullableTimeSpan;
         }
 
+        if (type == typeof(Half))
+        {
+            return TypedDecoderKind.Half;
+        }
+
+        if (type == typeof(Half?))
+        {
+            return TypedDecoderKind.NullableHalf;
+        }
+
+        if (type == typeof(BigInteger))
+        {
+            return TypedDecoderKind.BigInteger;
+        }
+
+        if (type == typeof(BigInteger?))
+        {
+            return TypedDecoderKind.NullableBigInteger;
+        }
+
+        if (type == typeof(Int128))
+        {
+            return TypedDecoderKind.Int128;
+        }
+
+        if (type == typeof(Int128?))
+        {
+            return TypedDecoderKind.NullableInt128;
+        }
+
+        if (type == typeof(UInt128))
+        {
+            return TypedDecoderKind.UInt128;
+        }
+
+        if (type == typeof(UInt128?))
+        {
+            return TypedDecoderKind.NullableUInt128;
+        }
+
+        if (type == typeof(char))
+        {
+            return TypedDecoderKind.Char;
+        }
+
+        if (type == typeof(char?))
+        {
+            return TypedDecoderKind.NullableChar;
+        }
+
+        if (type == typeof(char[]))
+        {
+            return TypedDecoderKind.Chars;
+        }
+
+        if (type == typeof(IPAddress))
+        {
+            return TypedDecoderKind.IPAddress;
+        }
+
+        if (type == typeof(PhysicalAddress))
+        {
+            return TypedDecoderKind.PhysicalAddress;
+        }
+
+        if (type == typeof(BitArray))
+        {
+            return TypedDecoderKind.BitArray;
+        }
+
         return TypedDecoderKind.Unsupported;
     }
 
@@ -2160,5 +2204,19 @@ internal sealed class MySqlRowDecoder : ISqlRowDecoder
         NullableUInt64,
         TimeSpan,
         NullableTimeSpan,
+        Half,
+        NullableHalf,
+        BigInteger,
+        NullableBigInteger,
+        Int128,
+        NullableInt128,
+        UInt128,
+        NullableUInt128,
+        Char,
+        NullableChar,
+        Chars,
+        IPAddress,
+        PhysicalAddress,
+        BitArray,
     }
 }

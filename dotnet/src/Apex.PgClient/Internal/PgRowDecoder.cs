@@ -480,12 +480,8 @@ internal sealed class PgRowDecoder : ISqlRowDecoder
             return Unsafe.As<PgPoint, T>(ref value);
         }
 
-        if (BclAlternative<T>.IsSupported)
-        {
-            return DecodeBclAlternative<T>(row, ordinal, column);
-        }
-
-        switch (TypedDecoder<T>.s_kind)
+        var kind = TypedDecoder<T>.s_kind;
+        switch (kind)
         {
             case TypedDecoderKind.Int32:
                 {
@@ -799,55 +795,79 @@ internal sealed class PgRowDecoder : ISqlRowDecoder
                       DecodeNullablePgInet(row, ordinal, column);
                     return Unsafe.As<PgInet?, T>(ref value);
                 }
+            case TypedDecoderKind.Byte:
+            case TypedDecoderKind.NullableByte:
+            case TypedDecoderKind.SByte:
+            case TypedDecoderKind.NullableSByte:
+            case TypedDecoderKind.Half:
+            case TypedDecoderKind.NullableHalf:
+            case TypedDecoderKind.BigInteger:
+            case TypedDecoderKind.NullableBigInteger:
+            case TypedDecoderKind.Int128:
+            case TypedDecoderKind.NullableInt128:
+            case TypedDecoderKind.UInt128:
+            case TypedDecoderKind.NullableUInt128:
+            case TypedDecoderKind.TimeSpan:
+            case TypedDecoderKind.NullableTimeSpan:
+            case TypedDecoderKind.Char:
+            case TypedDecoderKind.NullableChar:
+            case TypedDecoderKind.Chars:
+            case TypedDecoderKind.IPAddress:
+            case TypedDecoderKind.PhysicalAddress:
+            case TypedDecoderKind.BitArray:
+                return DecodeAlternative<T>(row, ordinal, column, kind);
             default:
                 throw CannotRead(column, typeof(T));
         }
     }
 
-    private static T DecodeBclAlternative<T>(
+    private static T DecodeAlternative<T>(
         ReadOnlyMemory<byte> row,
         int ordinal,
-        SqlColumn column)
+        SqlColumn column,
+        TypedDecoderKind kind)
     {
         var requestedType = typeof(T);
-        var valueType = Nullable.GetUnderlyingType(requestedType) ?? requestedType;
-        if (valueType == typeof(byte) || valueType == typeof(sbyte))
+        switch (kind)
         {
-            EnsureType(column, 21, requestedType);
-        }
-        else if (valueType == typeof(Half))
-        {
-            EnsureType(column, 700, requestedType);
-        }
-        else if (valueType == typeof(BigInteger) ||
-                 valueType == typeof(Int128) ||
-                 valueType == typeof(UInt128))
-        {
-            EnsureType(column, 1700, requestedType);
-        }
-        else if (valueType == typeof(TimeSpan))
-        {
-            EnsureOneOfTypes(column, requestedType, 1083, 1186);
-        }
-        else if (valueType == typeof(char) || requestedType == typeof(char[]))
-        {
-            EnsureStringType(column, requestedType);
-        }
-        else if (requestedType == typeof(IPAddress))
-        {
-            EnsureType(column, 869, requestedType);
-        }
-        else if (requestedType == typeof(PhysicalAddress))
-        {
-            EnsureOneOfTypes(column, requestedType, 774, 829);
-        }
-        else if (requestedType == typeof(BitArray))
-        {
-            EnsureOneOfTypes(column, requestedType, 1560, 1562);
-        }
-        else
-        {
-            throw CannotRead(column, requestedType);
+            case TypedDecoderKind.Byte:
+            case TypedDecoderKind.NullableByte:
+            case TypedDecoderKind.SByte:
+            case TypedDecoderKind.NullableSByte:
+                EnsureType(column, 21, requestedType);
+                break;
+            case TypedDecoderKind.Half:
+            case TypedDecoderKind.NullableHalf:
+                EnsureType(column, 700, requestedType);
+                break;
+            case TypedDecoderKind.BigInteger:
+            case TypedDecoderKind.NullableBigInteger:
+            case TypedDecoderKind.Int128:
+            case TypedDecoderKind.NullableInt128:
+            case TypedDecoderKind.UInt128:
+            case TypedDecoderKind.NullableUInt128:
+                EnsureType(column, 1700, requestedType);
+                break;
+            case TypedDecoderKind.TimeSpan:
+            case TypedDecoderKind.NullableTimeSpan:
+                EnsureOneOfTypes(column, requestedType, 1083, 1186);
+                break;
+            case TypedDecoderKind.Char:
+            case TypedDecoderKind.NullableChar:
+            case TypedDecoderKind.Chars:
+                EnsureStringType(column, requestedType);
+                break;
+            case TypedDecoderKind.IPAddress:
+                EnsureType(column, 869, requestedType);
+                break;
+            case TypedDecoderKind.PhysicalAddress:
+                EnsureOneOfTypes(column, requestedType, 774, 829);
+                break;
+            case TypedDecoderKind.BitArray:
+                EnsureOneOfTypes(column, requestedType, 1560, 1562);
+                break;
+            default:
+                throw CannotRead(column, requestedType);
         }
 
         var field = GetField(row, ordinal);
@@ -862,91 +882,62 @@ internal sealed class PgRowDecoder : ISqlRowDecoder
         }
 
         var bytes = field.Value.Span;
-        if (valueType == typeof(byte))
+                switch (kind)
         {
-            byte value = checked((byte)DecodeInt16Value(column.Format, bytes));
-            return CastAlternative<T, byte>(value);
-        }
-
-        if (valueType == typeof(sbyte))
-        {
-            sbyte value = checked((sbyte)DecodeInt16Value(column.Format, bytes));
-            return CastAlternative<T, sbyte>(value);
-        }
-
-        if (valueType == typeof(BigInteger))
-        {
-            BigInteger value = column.Format == SqlDataFormat.Binary
-              ? PgBinaryCodec.DecodeBigInteger(bytes)
-              : PgTextCodec.DecodeBigInteger(bytes);
-            return CastAlternative<T, BigInteger>(value);
-        }
-
-                if (valueType == typeof(Int128))
-                {
-                        BigInteger integer = column.Format == SqlDataFormat.Binary
-                            ? PgBinaryCodec.DecodeBigInteger(bytes)
-                            : PgTextCodec.DecodeBigInteger(bytes);
-                        Int128 value = checked((Int128)integer);
-                        return CastAlternative<T, Int128>(value);
+                        case TypedDecoderKind.Byte:
+                        case TypedDecoderKind.NullableByte:
+                                return CastAlternative<T, byte>(
+                                    checked((byte)DecodeInt16Value(column.Format, bytes)));
+                        case TypedDecoderKind.SByte:
+                        case TypedDecoderKind.NullableSByte:
+                                return CastAlternative<T, sbyte>(
+                                    checked((sbyte)DecodeInt16Value(column.Format, bytes)));
+                        case TypedDecoderKind.Half:
+                        case TypedDecoderKind.NullableHalf:
+                                return CastAlternative<T, Half>(
+                                    checked((Half)DecodeFloatValue(column.Format, bytes)));
+                        case TypedDecoderKind.BigInteger:
+                        case TypedDecoderKind.NullableBigInteger:
+                                return CastAlternative<T, BigInteger>(DecodeBigIntegerValue(column.Format, bytes));
+                        case TypedDecoderKind.Int128:
+                        case TypedDecoderKind.NullableInt128:
+                                return CastAlternative<T, Int128>(
+                                    checked((Int128)DecodeBigIntegerValue(column.Format, bytes)));
+                        case TypedDecoderKind.UInt128:
+                        case TypedDecoderKind.NullableUInt128:
+                                return CastAlternative<T, UInt128>(
+                                    checked((UInt128)DecodeBigIntegerValue(column.Format, bytes)));
+                        case TypedDecoderKind.TimeSpan:
+                        case TypedDecoderKind.NullableTimeSpan:
+                                TimeSpan duration = column.TypeId == 1083
+                                    ? DecodeTimeOnlyValue(column.Format, bytes).ToTimeSpan()
+                                    : column.Format == SqlDataFormat.Binary
+                                        ? PgBinaryCodec.DecodeTimeSpan(bytes)
+                                        : PgTextCodec.DecodeTimeSpan(bytes);
+                                return CastAlternative<T, TimeSpan>(duration);
+                        case TypedDecoderKind.Char:
+                        case TypedDecoderKind.NullableChar:
+                                return CastAlternative<T, char>(PgTextCodec.DecodeChar(bytes));
+                        case TypedDecoderKind.Chars:
+                                return (T)(object)PgTextCodec.DecodeChars(bytes);
+                        case TypedDecoderKind.IPAddress:
+                                IPAddress address = column.Format == SqlDataFormat.Binary
+                                    ? PgBinaryCodec.DecodeIPAddress(bytes)
+                                    : PgTextCodec.DecodeIPAddress(bytes);
+                                return (T)(object)address;
+                        case TypedDecoderKind.PhysicalAddress:
+                                PhysicalAddress physicalAddress = column.Format == SqlDataFormat.Binary
+                                    ? PgBinaryCodec.DecodePhysicalAddress(bytes)
+                                    : PgTextCodec.DecodePhysicalAddress(bytes);
+                                return (T)(object)physicalAddress;
+                        case TypedDecoderKind.BitArray:
+                                BitArray bits = column.Format == SqlDataFormat.Binary
+                                    ? PgBinaryCodec.DecodeBitArray(bytes)
+                                    : PgTextCodec.DecodeBitArray(bytes);
+                                return (T)(object)bits;
+                        default:
+                                throw CannotRead(column, requestedType);
                 }
-
-                if (valueType == typeof(UInt128))
-                {
-                        BigInteger integer = column.Format == SqlDataFormat.Binary
-                            ? PgBinaryCodec.DecodeBigInteger(bytes)
-                            : PgTextCodec.DecodeBigInteger(bytes);
-                        UInt128 value = checked((UInt128)integer);
-                        return CastAlternative<T, UInt128>(value);
-                }
-
-                if (valueType == typeof(Half))
-                {
-                        Half value = checked((Half)DecodeFloatValue(column.Format, bytes));
-                        return CastAlternative<T, Half>(value);
-                }
-
-        if (valueType == typeof(TimeSpan))
-        {
-            TimeSpan value = column.TypeId == 1083
-              ? DecodeTimeOnlyValue(column.Format, bytes).ToTimeSpan()
-              : column.Format == SqlDataFormat.Binary
-                ? PgBinaryCodec.DecodeTimeSpan(bytes)
-                : PgTextCodec.DecodeTimeSpan(bytes);
-            return CastAlternative<T, TimeSpan>(value);
-        }
-
-        if (valueType == typeof(char))
-        {
-            char value = PgTextCodec.DecodeChar(bytes);
-            return CastAlternative<T, char>(value);
-        }
-
-        if (requestedType == typeof(char[]))
-        {
-            return (T)(object)PgTextCodec.DecodeChars(bytes);
-        }
-
-        if (requestedType == typeof(IPAddress))
-        {
-            IPAddress value = column.Format == SqlDataFormat.Binary
-              ? PgBinaryCodec.DecodeIPAddress(bytes)
-              : PgTextCodec.DecodeIPAddress(bytes);
-            return (T)(object)value;
-        }
-
-        if (requestedType == typeof(PhysicalAddress))
-        {
-            PhysicalAddress value = column.Format == SqlDataFormat.Binary
-              ? PgBinaryCodec.DecodePhysicalAddress(bytes)
-              : PgTextCodec.DecodePhysicalAddress(bytes);
-            return (T)(object)value;
-        }
-
-        BitArray bits = column.Format == SqlDataFormat.Binary
-          ? PgBinaryCodec.DecodeBitArray(bytes)
-          : PgTextCodec.DecodeBitArray(bytes);
-        return (T)(object)bits;
     }
 
     private static T CastAlternative<T, TValue>(TValue value)
@@ -961,27 +952,12 @@ internal sealed class PgRowDecoder : ISqlRowDecoder
         return Unsafe.As<TValue?, T>(ref nullable);
     }
 
-    private static bool IsBclAlternative(Type type)
-    {
-        var valueType = Nullable.GetUnderlyingType(type) ?? type;
-        return valueType == typeof(byte) ||
-               valueType == typeof(sbyte) ||
-               valueType == typeof(Half) ||
-               valueType == typeof(BigInteger) ||
-               valueType == typeof(Int128) ||
-               valueType == typeof(UInt128) ||
-               valueType == typeof(TimeSpan) ||
-               valueType == typeof(char) ||
-               type == typeof(char[]) ||
-               type == typeof(IPAddress) ||
-               type == typeof(PhysicalAddress) ||
-               type == typeof(BitArray);
-    }
-
-    private static class BclAlternative<T>
-    {
-        internal static bool IsSupported { get; } = IsBclAlternative(typeof(T));
-    }
+    private static BigInteger DecodeBigIntegerValue(
+        SqlDataFormat format,
+        ReadOnlySpan<byte> value) =>
+      format == SqlDataFormat.Binary
+        ? PgBinaryCodec.DecodeBigInteger(value)
+        : PgTextCodec.DecodeBigInteger(value);
 
     private static TypedDecoderKind ResolveTypedDecoder<T>()
     {
@@ -1259,6 +1235,106 @@ internal sealed class PgRowDecoder : ISqlRowDecoder
         if (type == typeof(PgInet?))
         {
             return TypedDecoderKind.NullablePgInet;
+        }
+
+        if (type == typeof(byte))
+        {
+            return TypedDecoderKind.Byte;
+        }
+
+        if (type == typeof(byte?))
+        {
+            return TypedDecoderKind.NullableByte;
+        }
+
+        if (type == typeof(sbyte))
+        {
+            return TypedDecoderKind.SByte;
+        }
+
+        if (type == typeof(sbyte?))
+        {
+            return TypedDecoderKind.NullableSByte;
+        }
+
+        if (type == typeof(Half))
+        {
+            return TypedDecoderKind.Half;
+        }
+
+        if (type == typeof(Half?))
+        {
+            return TypedDecoderKind.NullableHalf;
+        }
+
+        if (type == typeof(BigInteger))
+        {
+            return TypedDecoderKind.BigInteger;
+        }
+
+        if (type == typeof(BigInteger?))
+        {
+            return TypedDecoderKind.NullableBigInteger;
+        }
+
+        if (type == typeof(Int128))
+        {
+            return TypedDecoderKind.Int128;
+        }
+
+        if (type == typeof(Int128?))
+        {
+            return TypedDecoderKind.NullableInt128;
+        }
+
+        if (type == typeof(UInt128))
+        {
+            return TypedDecoderKind.UInt128;
+        }
+
+        if (type == typeof(UInt128?))
+        {
+            return TypedDecoderKind.NullableUInt128;
+        }
+
+        if (type == typeof(TimeSpan))
+        {
+            return TypedDecoderKind.TimeSpan;
+        }
+
+        if (type == typeof(TimeSpan?))
+        {
+            return TypedDecoderKind.NullableTimeSpan;
+        }
+
+        if (type == typeof(char))
+        {
+            return TypedDecoderKind.Char;
+        }
+
+        if (type == typeof(char?))
+        {
+            return TypedDecoderKind.NullableChar;
+        }
+
+        if (type == typeof(char[]))
+        {
+            return TypedDecoderKind.Chars;
+        }
+
+        if (type == typeof(IPAddress))
+        {
+            return TypedDecoderKind.IPAddress;
+        }
+
+        if (type == typeof(PhysicalAddress))
+        {
+            return TypedDecoderKind.PhysicalAddress;
+        }
+
+        if (type == typeof(BitArray))
+        {
+            return TypedDecoderKind.BitArray;
         }
 
         return TypedDecoderKind.Unsupported;
@@ -1965,6 +2041,26 @@ internal sealed class PgRowDecoder : ISqlRowDecoder
         NullablePgCidr,
         NullablePgCircle,
         NullablePgInet,
+        Byte,
+        NullableByte,
+        SByte,
+        NullableSByte,
+        Half,
+        NullableHalf,
+        BigInteger,
+        NullableBigInteger,
+        Int128,
+        NullableInt128,
+        UInt128,
+        NullableUInt128,
+        TimeSpan,
+        NullableTimeSpan,
+        Char,
+        NullableChar,
+        Chars,
+        IPAddress,
+        PhysicalAddress,
+        BitArray,
     }
 
     private readonly record struct Field(
