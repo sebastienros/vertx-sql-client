@@ -6,151 +6,314 @@
 
 package io.vertx.benchmarks;
 
+import io.vertx.core.Future;
 import io.vertx.core.Vertx;
+import io.vertx.core.net.ClientSSLOptions;
+import io.vertx.mssqlclient.EncryptionMode;
+import io.vertx.mssqlclient.MSSQLConnectOptions;
+import io.vertx.mssqlclient.MSSQLConnection;
 import io.vertx.pgclient.PgConnectOptions;
 import io.vertx.pgclient.PgConnection;
 import io.vertx.sqlclient.PreparedQuery;
 import io.vertx.sqlclient.PreparedStatement;
 import io.vertx.sqlclient.Row;
 import io.vertx.sqlclient.RowSet;
+import io.vertx.sqlclient.RowStream;
+import io.vertx.sqlclient.SqlConnection;
+import io.vertx.sqlclient.Tuple;
 import java.lang.management.GarbageCollectorMXBean;
 import java.lang.management.ManagementFactory;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
 import java.util.concurrent.atomic.LongAdder;
 
 public final class ComparisonHarness {
 
   public static void main(String[] args) throws Exception {
+    String driver = args.length == 0 ? "vertx" : args[0].toLowerCase(Locale.ROOT);
+    boolean msSql = driver.equals("vertx-mssql");
+    if (!msSql && !driver.equals("vertx")) {
+      throw new IllegalArgumentException("Unknown Java driver '" + driver + "'.");
+    }
+    String workload = environment("APEX_BENCH_WORKLOAD", "query");
+    if (!List.of("query", "stream100", "pipeline", "batch", "string100").contains(workload)) {
+      throw new IllegalArgumentException("Unknown workload '" + workload + "'.");
+    }
     int concurrency = Integer.parseInt(environment("APEX_BENCH_CONCURRENCY", "16"));
+    int fetchSize = Integer.parseInt(environment("APEX_BENCH_FETCH_SIZE", "16"));
+    int rowCount = Integer.parseInt(environment("APEX_BENCH_ROW_COUNT", "100"));
     int pipelineDepth = Integer.parseInt(environment("APEX_BENCH_PIPELINE_DEPTH", "64"));
-    boolean pipeline = environment("APEX_BENCH_WORKLOAD", "query").equals("pipeline");
     double warmupSeconds = Double.parseDouble(environment("APEX_BENCH_WARMUP_SECONDS", "2"));
     double durationSeconds = Double.parseDouble(environment("APEX_BENCH_DURATION_SECONDS", "10"));
     Vertx vertx = Vertx.vertx();
-    List<PgConnection> connections = new ArrayList<>(concurrency);
-    List<PreparedStatement> statements = new ArrayList<>(concurrency);
-    List<PreparedQuery<RowSet<Row>>> queries = new ArrayList<>(concurrency);
-    PgConnectOptions options = new PgConnectOptions()
-      .setHost(environment("APEX_PG_HOST", "localhost"))
-      .setPort(Integer.parseInt(environment("APEX_PG_PORT", "5432")))
-      .setDatabase(environment("APEX_PG_DATABASE", "db"))
-      .setUser(environment("APEX_PG_USERNAME", "user"))
-      .setPassword(environment("APEX_PG_PASSWORD", "pass"));
+    List<Runner> runners = new ArrayList<>(concurrency);
     try {
       for (int i = 0; i < concurrency; i++) {
-        connections.add(PgConnection.connect(vertx, options)
-          .toCompletionStage()
-          .toCompletableFuture()
-          .join());
+        runners.add(msSql
+          ? Runner.msSql(vertx, workload, fetchSize, rowCount, pipelineDepth)
+          : Runner.postgreSql(vertx, workload, fetchSize, rowCount, pipelineDepth));
       }
 
-      if (pipeline) {
-        for (PgConnection connection : connections) {
-          PreparedStatement statement = connection.prepare("SELECT 1::INT4")
-            .toCompletionStage()
-            .toCompletableFuture()
-            .join();
-          statements.add(statement);
-          queries.add(statement.query());
-        }
-      }
-
-      run(connections, queries, pipeline, pipelineDepth, warmupSeconds, false);
+      run(driver, runners, warmupSeconds, false);
       System.gc();
       long[] collectionsBefore = collections();
-      Result result = run(
-        connections,
-        queries,
-        pipeline,
-        pipelineDepth,
-        durationSeconds,
-        true);
+      Result result = run(driver, runners, durationSeconds, true);
       long[] collectionsAfter = collections();
       result.gen0Collections = collectionsAfter[0] - collectionsBefore[0];
       result.gen1Collections = collectionsAfter[1] - collectionsBefore[1];
       System.out.println(result.toJson());
     } finally {
-      for (PreparedStatement statement : statements) {
-        statement.close().toCompletionStage().toCompletableFuture().join();
-      }
-      for (PgConnection connection : connections) {
-        connection.close().toCompletionStage().toCompletableFuture().join();
+      for (Runner runner : runners) {
+        runner.close();
       }
       vertx.close().toCompletionStage().toCompletableFuture().join();
     }
   }
 
   private static Result run(
-      List<PgConnection> connections,
-      List<PreparedQuery<RowSet<Row>>> queries,
-      boolean pipeline,
-      int pipelineDepth,
+      String driver,
+      List<Runner> runners,
       double durationSeconds,
       boolean record) throws Exception {
-    long deadline = System.nanoTime() + (long) (durationSeconds * 1_000_000_000L);
+    long startedAt = System.nanoTime();
+    long deadline = startedAt + (long) (durationSeconds * 1_000_000_000L);
     LongAdder operations = new LongAdder();
     List<Long> latencies = Collections.synchronizedList(new ArrayList<>());
-    ExecutorService workers = Executors.newFixedThreadPool(connections.size());
+    ExecutorService workers = Executors.newFixedThreadPool(runners.size());
     try {
-      List<Future<?>> pending = new ArrayList<>(connections.size());
-      for (int workerIndex = 0; workerIndex < connections.size(); workerIndex++) {
-        PgConnection connection = connections.get(workerIndex);
-        PreparedQuery<RowSet<Row>> preparedQuery =
-          pipeline ? queries.get(workerIndex) : null;
+      List<java.util.concurrent.Future<?>> pending = new ArrayList<>(runners.size());
+      for (Runner runner : runners) {
         pending.add(workers.submit(() -> {
           while (System.nanoTime() < deadline) {
             long started = System.nanoTime();
-            if (pipeline) {
-              List<io.vertx.core.Future<RowSet<Row>>> batch = new ArrayList<>(pipelineDepth);
-              for (int i = 0; i < pipelineDepth; i++) {
-                batch.add(preparedQuery.execute());
-              }
-              io.vertx.core.Future.all(batch)
-                .toCompletionStage()
-                .toCompletableFuture()
-                .join();
-              for (io.vertx.core.Future<RowSet<Row>> result : batch) {
-                if (result.result().iterator().next().getInteger(0) != 1) {
-                  throw new IllegalStateException("Unexpected Vert.x pipeline result");
-                }
-              }
-            } else {
-              connection.query("SELECT 1")
-                .execute()
-                .toCompletionStage()
-                .toCompletableFuture()
-                .join();
-            }
+            runner.invoke();
             if (record) {
               latencies.add(System.nanoTime() - started);
             }
-            operations.add(pipeline ? pipelineDepth : 1);
+            operations.add(runner.operationsPerInvocation());
           }
         }));
       }
-      for (Future<?> worker : pending) {
+      for (java.util.concurrent.Future<?> worker : pending) {
         worker.get();
       }
     } finally {
       workers.shutdownNow();
     }
 
+    double elapsedSeconds = (System.nanoTime() - startedAt) / 1_000_000_000d;
     Collections.sort(latencies);
     long count = operations.sum();
     return new Result(
-      connections.size(),
+      driver,
+      runners.size(),
       count,
-      durationSeconds,
-      count / durationSeconds,
+      elapsedSeconds,
+      count / elapsedSeconds,
       percentile(latencies, 0.50),
       percentile(latencies, 0.95),
       percentile(latencies, 0.99));
+  }
+
+  private static final class Runner {
+    private final SqlConnection connection;
+    private final String workload;
+    private final boolean msSql;
+    private final int rowCount;
+    private final int expectedSum;
+    private final int pipelineDepth;
+    private final PreparedStatement streamStatement;
+    private final PreparedStatement pipelineStatement;
+    private final PreparedQuery<RowSet<Row>> pipelineQuery;
+    private final List<Tuple> batch;
+    private final int fetchSize;
+
+    private Runner(
+        SqlConnection connection,
+        String workload,
+        boolean msSql,
+        int fetchSize,
+        int rowCount,
+        int pipelineDepth) {
+      this.connection = connection;
+      this.workload = workload;
+      this.msSql = msSql;
+      this.fetchSize = fetchSize;
+      this.rowCount = rowCount;
+      this.expectedSum = Math.multiplyExact(rowCount, rowCount + 1) / 2;
+      this.pipelineDepth = pipelineDepth;
+      String streamSql = rowsSql(msSql, rowCount, workload.equals("string100"));
+      this.streamStatement = workload.equals("stream100") || workload.equals("string100")
+        ? await(connection.prepare(streamSql))
+        : null;
+      if (msSql && isBatch(workload)) {
+        await(connection.query(
+          "CREATE TABLE #vertx_batch (value int NOT NULL); " +
+            "INSERT INTO #vertx_batch VALUES (0)").execute());
+      }
+      this.pipelineStatement = isBatch(workload)
+        ? await(connection.prepare(
+          msSql ? "UPDATE #vertx_batch SET value = @p1" : "SELECT 1::INT4"))
+        : null;
+      this.pipelineQuery = pipelineStatement == null ? null : pipelineStatement.query();
+      if (msSql && isBatch(workload)) {
+        this.batch = new ArrayList<>(pipelineDepth);
+        for (int value = 1; value <= pipelineDepth; value++) {
+          batch.add(Tuple.of(value));
+        }
+      } else {
+        this.batch = null;
+      }
+    }
+
+    private static Runner msSql(
+        Vertx vertx,
+        String workload,
+        int fetchSize,
+        int rowCount,
+        int pipelineDepth) {
+      MSSQLConnectOptions options = new MSSQLConnectOptions()
+        .setHost(environment("APEX_MSSQL_HOST", "localhost"))
+        .setPort(Integer.parseInt(environment("APEX_MSSQL_PORT", "1433")))
+        .setDatabase(requiredEnvironment("APEX_MSSQL_DATABASE"))
+        .setUser(requiredEnvironment("APEX_MSSQL_USERNAME"))
+        .setPassword(requiredEnvironment("APEX_MSSQL_PASSWORD"))
+        .setEncryptionMode(EncryptionMode.ON)
+        .setSslOptions(new ClientSSLOptions().setTrustAll(true));
+      return new Runner(
+        await(MSSQLConnection.connect(vertx, options)),
+        workload,
+        true,
+        fetchSize,
+        rowCount,
+        pipelineDepth);
+    }
+
+    private static Runner postgreSql(
+        Vertx vertx,
+        String workload,
+        int fetchSize,
+        int rowCount,
+        int pipelineDepth) {
+      PgConnectOptions options = new PgConnectOptions()
+        .setHost(environment("APEX_PG_HOST", "localhost"))
+        .setPort(Integer.parseInt(environment("APEX_PG_PORT", "5432")))
+        .setDatabase(environment("APEX_PG_DATABASE", "db"))
+        .setUser(environment("APEX_PG_USERNAME", "user"))
+        .setPassword(environment("APEX_PG_PASSWORD", "pass"))
+        .setPipeliningLimit(Math.max(256, pipelineDepth));
+      return new Runner(
+        await(PgConnection.connect(vertx, options)),
+        workload,
+        false,
+        fetchSize,
+        rowCount,
+        pipelineDepth);
+    }
+
+    private int operationsPerInvocation() {
+      return isBatch(workload) ? pipelineDepth : 1;
+    }
+
+    private void invoke() {
+      if (isBatch(workload)) {
+        if (msSql) {
+          int affected = 0;
+          for (Tuple parameters : batch) {
+            affected += await(pipelineQuery.execute(parameters)).rowCount();
+          }
+          if (affected != pipelineDepth) {
+            throw new IllegalStateException("Unexpected Vert.x SQL Server batch affected rows");
+          }
+        } else {
+          List<Future<RowSet<Row>>> pending = new ArrayList<>(pipelineDepth);
+          for (int i = 0; i < pipelineDepth; i++) {
+            pending.add(pipelineQuery.execute());
+          }
+          await(Future.all(pending));
+          for (Future<RowSet<Row>> result : pending) {
+            if (result.result().iterator().next().getInteger(0) != 1) {
+              throw new IllegalStateException("Unexpected Vert.x PostgreSQL pipeline result");
+            }
+          }
+        }
+      } else if (workload.equals("stream100")) {
+        int sum = consumeStream(false);
+        if (sum != expectedSum) {
+          throw new IllegalStateException("Unexpected Vert.x stream sum " + sum);
+        }
+      } else if (workload.equals("string100")) {
+        int count = consumeStream(true);
+        if (count != rowCount) {
+          throw new IllegalStateException("Unexpected Vert.x string row count " + count);
+        }
+      } else if (await(connection.query("SELECT 1").execute())
+          .iterator().next().getInteger(0) != 1) {
+        throw new IllegalStateException("Unexpected Vert.x query result");
+      }
+    }
+
+    private int consumeStream(boolean strings) {
+      CompletableFuture<Integer> completion = new CompletableFuture<>();
+      int[] value = new int[1];
+      RowStream<Row> stream = streamStatement.createStream(fetchSize);
+      stream.exceptionHandler(completion::completeExceptionally);
+      stream.handler(row -> {
+        if (strings) {
+          if (!"repeated-value".equals(row.getString(0))) {
+            completion.completeExceptionally(
+              new IllegalStateException("Unexpected Vert.x string value"));
+          }
+          value[0]++;
+        } else {
+          value[0] += row.getInteger(0);
+        }
+      });
+      stream.endHandler(ignored -> completion.complete(value[0]));
+      return completion.join();
+    }
+
+    private void close() {
+      if (streamStatement != null) {
+        await(streamStatement.close());
+      }
+      if (pipelineStatement != null) {
+        await(pipelineStatement.close());
+      }
+      await(connection.close());
+    }
+  }
+
+  private static String rowsSql(boolean msSql, int count, boolean strings) {
+    if (msSql) {
+      return """
+        WITH numbers AS (
+          SELECT 1 AS value
+          UNION ALL
+          SELECT value + 1 FROM numbers WHERE value < %d
+        )
+        SELECT %s FROM numbers OPTION (MAXRECURSION 0)
+        """.formatted(
+          count,
+          strings ? "CAST(N'repeated-value' AS nvarchar(32))" : "value");
+    }
+
+    return strings
+      ? "SELECT 'repeated-value'::text FROM generate_series(1, " + count + ")"
+      : "SELECT generate_series(1, " + count + ")::int4";
+  }
+
+  private static boolean isBatch(String workload) {
+    return workload.equals("pipeline") || workload.equals("batch");
+  }
+
+  private static <T> T await(Future<T> future) {
+    return future.toCompletionStage().toCompletableFuture().join();
   }
 
   private static double percentile(List<Long> ordered, double percentile) {
@@ -182,7 +345,16 @@ public final class ComparisonHarness {
     return value == null || value.isBlank() ? fallback : value;
   }
 
+  private static String requiredEnvironment(String name) {
+    String value = System.getenv(name);
+    if (value == null || value.isBlank()) {
+      throw new IllegalStateException("Set " + name + " before running SQL Server benchmarks.");
+    }
+    return value;
+  }
+
   private static final class Result {
+    private final String driver;
     private final int concurrency;
     private final long operations;
     private final double durationSeconds;
@@ -194,6 +366,7 @@ public final class ComparisonHarness {
     private long gen1Collections;
 
     private Result(
+        String driver,
         int concurrency,
         long operations,
         double durationSeconds,
@@ -201,6 +374,7 @@ public final class ComparisonHarness {
         double p50Milliseconds,
         double p95Milliseconds,
         double p99Milliseconds) {
+      this.driver = driver;
       this.concurrency = concurrency;
       this.operations = operations;
       this.durationSeconds = durationSeconds;
@@ -215,7 +389,7 @@ public final class ComparisonHarness {
         Locale.ROOT,
         """
         {
-          "Driver": "vertx",
+          "Driver": "%s",
           "Concurrency": %d,
           "Operations": %d,
           "DurationSeconds": %.6f,
@@ -231,6 +405,7 @@ public final class ComparisonHarness {
           "Architecture": "%s"
         }
         """,
+        driver,
         concurrency,
         operations,
         durationSeconds,
