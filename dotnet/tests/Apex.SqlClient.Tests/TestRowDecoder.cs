@@ -5,6 +5,7 @@
  */
 
 using System.Buffers.Binary;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using Apex.SqlClient.Internal;
@@ -302,11 +303,55 @@ internal sealed class TestRowDecoder : ISqlRowDecoder
     SqlColumn column) =>
     Throw<object?[]?>(column);
 
-  public T DecodeProviderSpecific<T>(
+  public T Decode<T>(
     ReadOnlyMemory<byte> row,
     int ordinal,
-    SqlColumn column) =>
-    Throw<T>(column);
+    SqlColumn column,
+    bool copyReadOnlyMemory)
+  {
+    if (typeof(T) == typeof(int))
+    {
+      int value = DecodeInt32(row, ordinal, column);
+      return Unsafe.As<int, T>(ref value);
+    }
+
+    if (typeof(T) == typeof(int?))
+    {
+      int? value = DecodeNullableInt32(row, ordinal, column);
+      return Unsafe.As<int?, T>(ref value);
+    }
+
+    if (typeof(T) == typeof(string))
+    {
+      string? value = DecodeString(row, ordinal, column);
+      return Unsafe.As<string?, T>(ref value);
+    }
+
+    if (typeof(T) == typeof(byte[]))
+    {
+      byte[]? value = DecodeBytes(row, ordinal, column);
+      return Unsafe.As<byte[]?, T>(ref value);
+    }
+
+    if (typeof(T) == typeof(ReadOnlyMemory<byte>))
+    {
+      ReadOnlyMemory<byte> value =
+        DecodeReadOnlyMemory(row, ordinal, column);
+      if (copyReadOnlyMemory)
+      {
+        value = value.ToArray();
+      }
+
+      return Unsafe.As<ReadOnlyMemory<byte>, T>(ref value);
+    }
+
+    if (typeof(T) == typeof(object))
+    {
+      return (T)DecodeObject(row, ordinal, column)!;
+    }
+
+    return Throw<T>(column);
+  }
 
   private static Field GetRequiredField(
     ReadOnlyMemory<byte> row,

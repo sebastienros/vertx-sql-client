@@ -65,7 +65,8 @@ public readonly struct SqlRow
       _page!.Decoder,
       RowMemory,
       ordinal,
-      _columns[ordinal]);
+      _columns[ordinal],
+      copyReadOnlyMemory: false);
 
   public T Get<T>(string name) => Get<T>(GetOrdinal(name));
 

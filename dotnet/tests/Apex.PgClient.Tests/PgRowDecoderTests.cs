@@ -100,6 +100,86 @@ public sealed class PgRowDecoderTests
   }
 
   [TestMethod]
+  public void GenericDispatchUsesExactTypedPaths()
+  {
+    PgRowDecoder decoder = new(16, 64);
+    Guid expected =
+      Guid.Parse("12345678-1234-5678-9012-123456789abc");
+    SqlColumn intBinary = Column(23, SqlDataFormat.Binary);
+    SqlColumn intText = Column(23, SqlDataFormat.Text);
+    SqlColumn guidBinary = Column(2950, SqlDataFormat.Binary);
+    SqlColumn guidText = Column(2950, SqlDataFormat.Text);
+    SqlColumn pointBinary = Column(600, SqlDataFormat.Binary);
+
+    Assert.AreEqual(
+      42,
+      decoder.Decode<int>(
+        CreateRow(Int32(42)),
+        0,
+        intBinary,
+        copyReadOnlyMemory: false));
+    Assert.AreEqual(
+      42,
+      decoder.Decode<int>(
+        CreateRow("42"u8),
+        0,
+        intText,
+        copyReadOnlyMemory: false));
+    Assert.AreEqual(
+      expected,
+      decoder.Decode<Guid>(
+        CreateRow(expected.ToByteArray(bigEndian: true)),
+        0,
+        guidBinary,
+        copyReadOnlyMemory: false));
+    Assert.AreEqual(
+      expected,
+      decoder.Decode<Guid>(
+        CreateRow(Encoding.UTF8.GetBytes(expected.ToString("D"))),
+        0,
+        guidText,
+        copyReadOnlyMemory: false));
+    Assert.AreEqual(
+      new PgPoint(1.5, -2.25),
+      decoder.Decode<PgPoint>(
+        CreateRow(Point(1.5, -2.25)),
+        0,
+        pointBinary,
+        copyReadOnlyMemory: false));
+    Assert.AreEqual(
+      42,
+      decoder.Decode<object>(
+        CreateRow(Int32(42)),
+        0,
+        intBinary,
+        copyReadOnlyMemory: false));
+    Assert.IsNull(
+      decoder.Decode<int?>(
+        CreateNullRow(),
+        0,
+        intBinary,
+        copyReadOnlyMemory: false));
+    AssertInvalid(() =>
+      decoder.Decode<int>(
+        CreateRow(Point(1.5, -2.25)),
+        0,
+        pointBinary,
+        copyReadOnlyMemory: false));
+    AssertInvalid(() =>
+      decoder.Decode<TimeSpan>(
+        CreateRow([0]),
+        0,
+        Column(1186, SqlDataFormat.Binary),
+        copyReadOnlyMemory: false));
+    AssertInvalid(() =>
+      decoder.Decode<int>(
+        CreateRow(Int32(42)),
+        0,
+        Column(23, (SqlDataFormat)2),
+        copyReadOnlyMemory: false));
+  }
+
+  [TestMethod]
   public void GenericProviderValuesAreTypedAndNullable()
   {
     PgRowDecoder decoder = new(16, 64);
@@ -108,21 +188,24 @@ public sealed class PgRowDecoderTests
 
     Assert.AreEqual(
       new PgPoint(1.5, -2.25),
-      decoder.DecodeProviderSpecific<PgPoint>(
+      decoder.Decode<PgPoint>(
         row,
         0,
-        column));
+        column,
+        copyReadOnlyMemory: false));
     Assert.AreEqual(
       new PgPoint(1.5, -2.25),
-      decoder.DecodeProviderSpecific<PgPoint?>(
+      decoder.Decode<PgPoint?>(
         row,
         0,
-        column));
+        column,
+        copyReadOnlyMemory: false));
     Assert.IsNull(
-      decoder.DecodeProviderSpecific<PgPoint?>(
+      decoder.Decode<PgPoint?>(
         CreateNullRow(),
         0,
-        column));
+        column,
+        copyReadOnlyMemory: false));
   }
 
   [TestMethod]
@@ -144,20 +227,39 @@ public sealed class PgRowDecoderTests
   }
 
   [TestMethod]
-  public void BinaryReadOnlyMemoryBorrowsTheRowPage()
+  public void GenericReadOnlyMemoryCanBorrowOrCopy()
   {
     PgRowDecoder decoder = new(16, 64);
     byte[] row = CreateRow([1, 2, 3]);
-    ReadOnlyMemory<byte> value = decoder.DecodeReadOnlyMemory(
+    SqlColumn column = Column(17, SqlDataFormat.Binary);
+    ReadOnlyMemory<byte> borrowed =
+      decoder.Decode<ReadOnlyMemory<byte>>(
+        row,
+        0,
+        column,
+        copyReadOnlyMemory: false);
+    ReadOnlyMemory<byte> copied =
+      decoder.Decode<ReadOnlyMemory<byte>>(
+        row,
+        0,
+        column,
+        copyReadOnlyMemory: true);
+    ReadOnlyMemory<byte> direct = decoder.DecodeReadOnlyMemory(
       row,
       0,
-      Column(17, SqlDataFormat.Binary));
+      column);
 
     row[sizeof(short) + sizeof(int)] = 9;
 
     CollectionAssert.AreEqual(
       new byte[] { 9, 2, 3 },
-      value.ToArray());
+      borrowed.ToArray());
+    CollectionAssert.AreEqual(
+      new byte[] { 9, 2, 3 },
+      direct.ToArray());
+    CollectionAssert.AreEqual(
+      new byte[] { 1, 2, 3 },
+      copied.ToArray());
   }
 
   [TestMethod]
@@ -175,7 +277,7 @@ public sealed class PgRowDecoderTests
   }
 
   [TestMethod]
-  public void TypedScalarAndProviderStructDecodingDoesNotAllocate()
+  public void GenericTypedDecodingDoesNotAllocateAfterWarmup()
   {
     PgRowDecoder decoder = new(16, 64);
     byte[] intRow = CreateRow(Int32(42));
@@ -191,16 +293,26 @@ public sealed class PgRowDecoderTests
     SqlColumn guidColumn = Column(2950, SqlDataFormat.Binary);
     for (int i = 0; i < 1000; i++)
     {
-      _ = decoder.DecodeInt32(intRow, 0, intColumn);
-      _ = decoder.DecodeDecimal(
+      _ = decoder.Decode<int>(
+        intRow,
+        0,
+        intColumn,
+        copyReadOnlyMemory: false);
+      _ = decoder.Decode<decimal>(
         decimalRow,
         0,
-        decimalColumn);
-      _ = decoder.DecodeGuid(guidRow, 0, guidColumn);
-      _ = decoder.DecodeProviderSpecific<PgPoint>(
+        decimalColumn,
+        copyReadOnlyMemory: false);
+      _ = decoder.Decode<Guid>(
+        guidRow,
+        0,
+        guidColumn,
+        copyReadOnlyMemory: false);
+      _ = decoder.Decode<PgPoint>(
         pointRow,
         0,
-        pointColumn);
+        pointColumn,
+        copyReadOnlyMemory: false);
     }
 
     long before = GC.GetAllocatedBytesForCurrentThread();
@@ -210,16 +322,26 @@ public sealed class PgRowDecoderTests
     Guid lastGuid = default;
     for (int i = 0; i < 10_000; i++)
     {
-      intSum += decoder.DecodeInt32(intRow, 0, intColumn);
-      decimalSum += decoder.DecodeDecimal(
+      intSum += decoder.Decode<int>(
+        intRow,
+        0,
+        intColumn,
+        copyReadOnlyMemory: false);
+      decimalSum += decoder.Decode<decimal>(
         decimalRow,
         0,
-        decimalColumn);
-      lastGuid = decoder.DecodeGuid(guidRow, 0, guidColumn);
-      pointSum += decoder.DecodeProviderSpecific<PgPoint>(
+        decimalColumn,
+        copyReadOnlyMemory: false);
+      lastGuid = decoder.Decode<Guid>(
+        guidRow,
+        0,
+        guidColumn,
+        copyReadOnlyMemory: false);
+      pointSum += decoder.Decode<PgPoint>(
         pointRow,
         0,
-        pointColumn).X;
+        pointColumn,
+        copyReadOnlyMemory: false).X;
     }
     long allocated =
       GC.GetAllocatedBytesForCurrentThread() - before;

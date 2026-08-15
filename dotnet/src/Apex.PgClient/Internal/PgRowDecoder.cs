@@ -435,34 +435,45 @@ internal sealed class PgRowDecoder : ISqlRowDecoder
       : PgTextCodec.DecodeArray(column.TypeId, field.Value);
   }
 
-  public T DecodeProviderSpecific<T>(
+  public T Decode<T>(
     ReadOnlyMemory<byte> row,
     int ordinal,
-    SqlColumn column)
+    SqlColumn column,
+    bool copyReadOnlyMemory)
   {
-    if (typeof(T) == typeof(PgNumeric))
+    if (typeof(T) == typeof(string))
     {
-      PgNumeric value = DecodePgNumeric(row, ordinal, column);
-      return Unsafe.As<PgNumeric, T>(ref value);
+      string? value = DecodeString(row, ordinal, column);
+      return Unsafe.As<string?, T>(ref value);
     }
 
-    if (typeof(T) == typeof(PgMoney))
+    if (typeof(T) == typeof(object))
     {
-      PgMoney value = DecodePgMoney(row, ordinal, column);
-      return Unsafe.As<PgMoney, T>(ref value);
+      return (T)DecodeObject(row, ordinal, column)!;
     }
 
-    if (typeof(T) == typeof(PgInterval))
+    if (typeof(T) == typeof(byte[]))
     {
-      PgInterval value = DecodePgInterval(row, ordinal, column);
-      return Unsafe.As<PgInterval, T>(ref value);
+      byte[]? value = DecodeBytes(row, ordinal, column);
+      return Unsafe.As<byte[]?, T>(ref value);
     }
 
-    if (typeof(T) == typeof(PgTimeWithTimeZone))
+    if (typeof(T) == typeof(object?[]))
     {
-      PgTimeWithTimeZone value =
-        DecodePgTimeWithTimeZone(row, ordinal, column);
-      return Unsafe.As<PgTimeWithTimeZone, T>(ref value);
+      object?[]? value = DecodeArray(row, ordinal, column);
+      return Unsafe.As<object?[]?, T>(ref value);
+    }
+
+    if (typeof(T) == typeof(int))
+    {
+      int value = DecodeInt32(row, ordinal, column);
+      return Unsafe.As<int, T>(ref value);
+    }
+
+    if (typeof(T) == typeof(Guid))
+    {
+      Guid value = DecodeGuid(row, ordinal, column);
+      return Unsafe.As<Guid, T>(ref value);
     }
 
     if (typeof(T) == typeof(PgPoint))
@@ -471,135 +482,614 @@ internal sealed class PgRowDecoder : ISqlRowDecoder
       return Unsafe.As<PgPoint, T>(ref value);
     }
 
-    if (typeof(T) == typeof(PgLineSegment))
+    switch (TypedDecoder<T>.Kind)
     {
-      PgLineSegment value =
-        DecodePgLineSegment(row, ordinal, column);
-      return Unsafe.As<PgLineSegment, T>(ref value);
+      case TypedDecoderKind.Int32:
+        {
+          int value = DecodeInt32(row, ordinal, column);
+          return Unsafe.As<int, T>(ref value);
+        }
+      case TypedDecoderKind.String:
+        {
+          string? value = DecodeString(row, ordinal, column);
+          return Unsafe.As<string?, T>(ref value);
+        }
+      case TypedDecoderKind.Int64:
+        {
+          long value = DecodeInt64(row, ordinal, column);
+          return Unsafe.As<long, T>(ref value);
+        }
+      case TypedDecoderKind.Boolean:
+        {
+          bool value = DecodeBoolean(row, ordinal, column);
+          return Unsafe.As<bool, T>(ref value);
+        }
+      case TypedDecoderKind.Int16:
+        {
+          short value = DecodeInt16(row, ordinal, column);
+          return Unsafe.As<short, T>(ref value);
+        }
+      case TypedDecoderKind.Float:
+        {
+          float value = DecodeFloat(row, ordinal, column);
+          return Unsafe.As<float, T>(ref value);
+        }
+      case TypedDecoderKind.Double:
+        {
+          double value = DecodeDouble(row, ordinal, column);
+          return Unsafe.As<double, T>(ref value);
+        }
+      case TypedDecoderKind.Decimal:
+        {
+          decimal value = DecodeDecimal(row, ordinal, column);
+          return Unsafe.As<decimal, T>(ref value);
+        }
+      case TypedDecoderKind.Guid:
+        {
+          Guid value = DecodeGuid(row, ordinal, column);
+          return Unsafe.As<Guid, T>(ref value);
+        }
+      case TypedDecoderKind.DateOnly:
+        {
+          DateOnly value = DecodeDateOnly(row, ordinal, column);
+          return Unsafe.As<DateOnly, T>(ref value);
+        }
+      case TypedDecoderKind.TimeOnly:
+        {
+          TimeOnly value = DecodeTimeOnly(row, ordinal, column);
+          return Unsafe.As<TimeOnly, T>(ref value);
+        }
+      case TypedDecoderKind.DateTime:
+        {
+          DateTime value = DecodeDateTime(row, ordinal, column);
+          return Unsafe.As<DateTime, T>(ref value);
+        }
+      case TypedDecoderKind.DateTimeOffset:
+        {
+          DateTimeOffset value =
+            DecodeDateTimeOffset(row, ordinal, column);
+          return Unsafe.As<DateTimeOffset, T>(ref value);
+        }
+      case TypedDecoderKind.Bytes:
+        {
+          byte[]? value = DecodeBytes(row, ordinal, column);
+          return Unsafe.As<byte[]?, T>(ref value);
+        }
+      case TypedDecoderKind.ReadOnlyMemory:
+        {
+          ReadOnlyMemory<byte> value =
+            DecodeReadOnlyMemory(row, ordinal, column);
+          if (copyReadOnlyMemory)
+          {
+            value = value.ToArray();
+          }
+
+          return Unsafe.As<ReadOnlyMemory<byte>, T>(ref value);
+        }
+      case TypedDecoderKind.JsonElement:
+        {
+          JsonElement value =
+            DecodeJsonElement(row, ordinal, column);
+          return Unsafe.As<JsonElement, T>(ref value);
+        }
+      case TypedDecoderKind.Array:
+        {
+          object?[]? value = DecodeArray(row, ordinal, column);
+          return Unsafe.As<object?[]?, T>(ref value);
+        }
+      case TypedDecoderKind.Object:
+        return (T)DecodeObject(row, ordinal, column)!;
+      case TypedDecoderKind.NullableInt32:
+        {
+          int? value = DecodeNullableInt32(row, ordinal, column);
+          return Unsafe.As<int?, T>(ref value);
+        }
+      case TypedDecoderKind.NullableInt64:
+        {
+          long? value = DecodeNullableInt64(row, ordinal, column);
+          return Unsafe.As<long?, T>(ref value);
+        }
+      case TypedDecoderKind.NullableBoolean:
+        {
+          bool? value =
+            DecodeNullableBoolean(row, ordinal, column);
+          return Unsafe.As<bool?, T>(ref value);
+        }
+      case TypedDecoderKind.NullableInt16:
+        {
+          short? value = DecodeNullableInt16(row, ordinal, column);
+          return Unsafe.As<short?, T>(ref value);
+        }
+      case TypedDecoderKind.NullableFloat:
+        {
+          float? value = DecodeNullableFloat(row, ordinal, column);
+          return Unsafe.As<float?, T>(ref value);
+        }
+      case TypedDecoderKind.NullableDouble:
+        {
+          double? value =
+            DecodeNullableDouble(row, ordinal, column);
+          return Unsafe.As<double?, T>(ref value);
+        }
+      case TypedDecoderKind.NullableDecimal:
+        {
+          decimal? value =
+            DecodeNullableDecimal(row, ordinal, column);
+          return Unsafe.As<decimal?, T>(ref value);
+        }
+      case TypedDecoderKind.NullableGuid:
+        {
+          Guid? value = DecodeNullableGuid(row, ordinal, column);
+          return Unsafe.As<Guid?, T>(ref value);
+        }
+      case TypedDecoderKind.NullableDateOnly:
+        {
+          DateOnly? value =
+            DecodeNullableDateOnly(row, ordinal, column);
+          return Unsafe.As<DateOnly?, T>(ref value);
+        }
+      case TypedDecoderKind.NullableTimeOnly:
+        {
+          TimeOnly? value =
+            DecodeNullableTimeOnly(row, ordinal, column);
+          return Unsafe.As<TimeOnly?, T>(ref value);
+        }
+      case TypedDecoderKind.NullableDateTime:
+        {
+          DateTime? value =
+            DecodeNullableDateTime(row, ordinal, column);
+          return Unsafe.As<DateTime?, T>(ref value);
+        }
+      case TypedDecoderKind.NullableDateTimeOffset:
+        {
+          DateTimeOffset? value =
+            DecodeNullableDateTimeOffset(row, ordinal, column);
+          return Unsafe.As<DateTimeOffset?, T>(ref value);
+        }
+      case TypedDecoderKind.NullableReadOnlyMemory:
+        {
+          ReadOnlyMemory<byte>? value =
+            DecodeNullableReadOnlyMemory(row, ordinal, column);
+          if (copyReadOnlyMemory && value.HasValue)
+          {
+            value = value.Value.ToArray();
+          }
+
+          return Unsafe.As<ReadOnlyMemory<byte>?, T>(ref value);
+        }
+      case TypedDecoderKind.NullableJsonElement:
+        {
+          JsonElement? value =
+            DecodeNullableJsonElement(row, ordinal, column);
+          return Unsafe.As<JsonElement?, T>(ref value);
+        }
+      case TypedDecoderKind.PgNumeric:
+        {
+          PgNumeric value = DecodePgNumeric(row, ordinal, column);
+          return Unsafe.As<PgNumeric, T>(ref value);
+        }
+      case TypedDecoderKind.PgMoney:
+        {
+          PgMoney value = DecodePgMoney(row, ordinal, column);
+          return Unsafe.As<PgMoney, T>(ref value);
+        }
+      case TypedDecoderKind.PgInterval:
+        {
+          PgInterval value =
+            DecodePgInterval(row, ordinal, column);
+          return Unsafe.As<PgInterval, T>(ref value);
+        }
+      case TypedDecoderKind.PgTimeWithTimeZone:
+        {
+          PgTimeWithTimeZone value =
+            DecodePgTimeWithTimeZone(row, ordinal, column);
+          return Unsafe.As<PgTimeWithTimeZone, T>(ref value);
+        }
+      case TypedDecoderKind.PgPoint:
+        {
+          PgPoint value = DecodePgPoint(row, ordinal, column);
+          return Unsafe.As<PgPoint, T>(ref value);
+        }
+      case TypedDecoderKind.PgLineSegment:
+        {
+          PgLineSegment value =
+            DecodePgLineSegment(row, ordinal, column);
+          return Unsafe.As<PgLineSegment, T>(ref value);
+        }
+      case TypedDecoderKind.PgPath:
+        {
+          PgPath? value = DecodePgPath(row, ordinal, column);
+          return Unsafe.As<PgPath?, T>(ref value);
+        }
+      case TypedDecoderKind.PgBox:
+        {
+          PgBox value = DecodePgBox(row, ordinal, column);
+          return Unsafe.As<PgBox, T>(ref value);
+        }
+      case TypedDecoderKind.PgPolygon:
+        {
+          PgPolygon? value =
+            DecodePgPolygon(row, ordinal, column);
+          return Unsafe.As<PgPolygon?, T>(ref value);
+        }
+      case TypedDecoderKind.PgLine:
+        {
+          PgLine value = DecodePgLine(row, ordinal, column);
+          return Unsafe.As<PgLine, T>(ref value);
+        }
+      case TypedDecoderKind.PgCidr:
+        {
+          PgCidr value = DecodePgCidr(row, ordinal, column);
+          return Unsafe.As<PgCidr, T>(ref value);
+        }
+      case TypedDecoderKind.PgCircle:
+        {
+          PgCircle value = DecodePgCircle(row, ordinal, column);
+          return Unsafe.As<PgCircle, T>(ref value);
+        }
+      case TypedDecoderKind.PgInet:
+        {
+          PgInet value = DecodePgInet(row, ordinal, column);
+          return Unsafe.As<PgInet, T>(ref value);
+        }
+      case TypedDecoderKind.NullablePgNumeric:
+        {
+          PgNumeric? value =
+            DecodeNullablePgNumeric(row, ordinal, column);
+          return Unsafe.As<PgNumeric?, T>(ref value);
+        }
+      case TypedDecoderKind.NullablePgMoney:
+        {
+          PgMoney? value =
+            DecodeNullablePgMoney(row, ordinal, column);
+          return Unsafe.As<PgMoney?, T>(ref value);
+        }
+      case TypedDecoderKind.NullablePgInterval:
+        {
+          PgInterval? value =
+            DecodeNullablePgInterval(row, ordinal, column);
+          return Unsafe.As<PgInterval?, T>(ref value);
+        }
+      case TypedDecoderKind.NullablePgTimeWithTimeZone:
+        {
+          PgTimeWithTimeZone? value =
+            DecodeNullablePgTimeWithTimeZone(
+              row,
+              ordinal,
+              column);
+          return Unsafe.As<PgTimeWithTimeZone?, T>(ref value);
+        }
+      case TypedDecoderKind.NullablePgPoint:
+        {
+          PgPoint? value =
+            DecodeNullablePgPoint(row, ordinal, column);
+          return Unsafe.As<PgPoint?, T>(ref value);
+        }
+      case TypedDecoderKind.NullablePgLineSegment:
+        {
+          PgLineSegment? value =
+            DecodeNullablePgLineSegment(row, ordinal, column);
+          return Unsafe.As<PgLineSegment?, T>(ref value);
+        }
+      case TypedDecoderKind.NullablePgBox:
+        {
+          PgBox? value =
+            DecodeNullablePgBox(row, ordinal, column);
+          return Unsafe.As<PgBox?, T>(ref value);
+        }
+      case TypedDecoderKind.NullablePgLine:
+        {
+          PgLine? value =
+            DecodeNullablePgLine(row, ordinal, column);
+          return Unsafe.As<PgLine?, T>(ref value);
+        }
+      case TypedDecoderKind.NullablePgCidr:
+        {
+          PgCidr? value =
+            DecodeNullablePgCidr(row, ordinal, column);
+          return Unsafe.As<PgCidr?, T>(ref value);
+        }
+      case TypedDecoderKind.NullablePgCircle:
+        {
+          PgCircle? value =
+            DecodeNullablePgCircle(row, ordinal, column);
+          return Unsafe.As<PgCircle?, T>(ref value);
+        }
+      case TypedDecoderKind.NullablePgInet:
+        {
+          PgInet? value =
+            DecodeNullablePgInet(row, ordinal, column);
+          return Unsafe.As<PgInet?, T>(ref value);
+        }
+      default:
+        throw CannotRead(column, typeof(T));
+    }
+  }
+
+  private static TypedDecoderKind ResolveTypedDecoder<T>()
+  {
+    Type type = typeof(T);
+    if (type == typeof(int))
+    {
+      return TypedDecoderKind.Int32;
     }
 
-    if (typeof(T) == typeof(PgPath))
+    if (type == typeof(string))
     {
-      PgPath? value = DecodePgPath(row, ordinal, column);
-      return Unsafe.As<PgPath?, T>(ref value);
+      return TypedDecoderKind.String;
     }
 
-    if (typeof(T) == typeof(PgBox))
+    if (type == typeof(long))
     {
-      PgBox value = DecodePgBox(row, ordinal, column);
-      return Unsafe.As<PgBox, T>(ref value);
+      return TypedDecoderKind.Int64;
     }
 
-    if (typeof(T) == typeof(PgPolygon))
+    if (type == typeof(bool))
     {
-      PgPolygon? value = DecodePgPolygon(row, ordinal, column);
-      return Unsafe.As<PgPolygon?, T>(ref value);
+      return TypedDecoderKind.Boolean;
     }
 
-    if (typeof(T) == typeof(PgLine))
+    if (type == typeof(short))
     {
-      PgLine value = DecodePgLine(row, ordinal, column);
-      return Unsafe.As<PgLine, T>(ref value);
+      return TypedDecoderKind.Int16;
     }
 
-    if (typeof(T) == typeof(PgCidr))
+    if (type == typeof(float))
     {
-      PgCidr value = DecodePgCidr(row, ordinal, column);
-      return Unsafe.As<PgCidr, T>(ref value);
+      return TypedDecoderKind.Float;
     }
 
-    if (typeof(T) == typeof(PgCircle))
+    if (type == typeof(double))
     {
-      PgCircle value = DecodePgCircle(row, ordinal, column);
-      return Unsafe.As<PgCircle, T>(ref value);
+      return TypedDecoderKind.Double;
     }
 
-    if (typeof(T) == typeof(PgInet))
+    if (type == typeof(decimal))
     {
-      PgInet value = DecodePgInet(row, ordinal, column);
-      return Unsafe.As<PgInet, T>(ref value);
+      return TypedDecoderKind.Decimal;
     }
 
-    if (typeof(T) == typeof(PgNumeric?))
+    if (type == typeof(Guid))
     {
-      PgNumeric? value =
-        DecodeNullablePgNumeric(row, ordinal, column);
-      return Unsafe.As<PgNumeric?, T>(ref value);
+      return TypedDecoderKind.Guid;
     }
 
-    if (typeof(T) == typeof(PgMoney?))
+    if (type == typeof(DateOnly))
     {
-      PgMoney? value =
-        DecodeNullablePgMoney(row, ordinal, column);
-      return Unsafe.As<PgMoney?, T>(ref value);
+      return TypedDecoderKind.DateOnly;
     }
 
-    if (typeof(T) == typeof(PgInterval?))
+    if (type == typeof(TimeOnly))
     {
-      PgInterval? value =
-        DecodeNullablePgInterval(row, ordinal, column);
-      return Unsafe.As<PgInterval?, T>(ref value);
+      return TypedDecoderKind.TimeOnly;
     }
 
-    if (typeof(T) == typeof(PgTimeWithTimeZone?))
+    if (type == typeof(DateTime))
     {
-      PgTimeWithTimeZone? value =
-        DecodeNullablePgTimeWithTimeZone(
-          row,
-          ordinal,
-          column);
-      return Unsafe.As<PgTimeWithTimeZone?, T>(ref value);
+      return TypedDecoderKind.DateTime;
     }
 
-    if (typeof(T) == typeof(PgPoint?))
+    if (type == typeof(DateTimeOffset))
     {
-      PgPoint? value =
-        DecodeNullablePgPoint(row, ordinal, column);
-      return Unsafe.As<PgPoint?, T>(ref value);
+      return TypedDecoderKind.DateTimeOffset;
     }
 
-    if (typeof(T) == typeof(PgLineSegment?))
+    if (type == typeof(byte[]))
     {
-      PgLineSegment? value =
-        DecodeNullablePgLineSegment(row, ordinal, column);
-      return Unsafe.As<PgLineSegment?, T>(ref value);
+      return TypedDecoderKind.Bytes;
     }
 
-    if (typeof(T) == typeof(PgBox?))
+    if (type == typeof(ReadOnlyMemory<byte>))
     {
-      PgBox? value = DecodeNullablePgBox(row, ordinal, column);
-      return Unsafe.As<PgBox?, T>(ref value);
+      return TypedDecoderKind.ReadOnlyMemory;
     }
 
-    if (typeof(T) == typeof(PgLine?))
+    if (type == typeof(JsonElement))
     {
-      PgLine? value =
-        DecodeNullablePgLine(row, ordinal, column);
-      return Unsafe.As<PgLine?, T>(ref value);
+      return TypedDecoderKind.JsonElement;
     }
 
-    if (typeof(T) == typeof(PgCidr?))
+    if (type == typeof(object?[]))
     {
-      PgCidr? value =
-        DecodeNullablePgCidr(row, ordinal, column);
-      return Unsafe.As<PgCidr?, T>(ref value);
+      return TypedDecoderKind.Array;
     }
 
-    if (typeof(T) == typeof(PgCircle?))
+    if (type == typeof(object))
     {
-      PgCircle? value =
-        DecodeNullablePgCircle(row, ordinal, column);
-      return Unsafe.As<PgCircle?, T>(ref value);
+      return TypedDecoderKind.Object;
     }
 
-    if (typeof(T) == typeof(PgInet?))
+    if (type == typeof(int?))
     {
-      PgInet? value =
-        DecodeNullablePgInet(row, ordinal, column);
-      return Unsafe.As<PgInet?, T>(ref value);
+      return TypedDecoderKind.NullableInt32;
     }
 
-    throw CannotRead(column, typeof(T));
+    if (type == typeof(long?))
+    {
+      return TypedDecoderKind.NullableInt64;
+    }
+
+    if (type == typeof(bool?))
+    {
+      return TypedDecoderKind.NullableBoolean;
+    }
+
+    if (type == typeof(short?))
+    {
+      return TypedDecoderKind.NullableInt16;
+    }
+
+    if (type == typeof(float?))
+    {
+      return TypedDecoderKind.NullableFloat;
+    }
+
+    if (type == typeof(double?))
+    {
+      return TypedDecoderKind.NullableDouble;
+    }
+
+    if (type == typeof(decimal?))
+    {
+      return TypedDecoderKind.NullableDecimal;
+    }
+
+    if (type == typeof(Guid?))
+    {
+      return TypedDecoderKind.NullableGuid;
+    }
+
+    if (type == typeof(DateOnly?))
+    {
+      return TypedDecoderKind.NullableDateOnly;
+    }
+
+    if (type == typeof(TimeOnly?))
+    {
+      return TypedDecoderKind.NullableTimeOnly;
+    }
+
+    if (type == typeof(DateTime?))
+    {
+      return TypedDecoderKind.NullableDateTime;
+    }
+
+    if (type == typeof(DateTimeOffset?))
+    {
+      return TypedDecoderKind.NullableDateTimeOffset;
+    }
+
+    if (type == typeof(ReadOnlyMemory<byte>?))
+    {
+      return TypedDecoderKind.NullableReadOnlyMemory;
+    }
+
+    if (type == typeof(JsonElement?))
+    {
+      return TypedDecoderKind.NullableJsonElement;
+    }
+
+    if (type == typeof(PgNumeric))
+    {
+      return TypedDecoderKind.PgNumeric;
+    }
+
+    if (type == typeof(PgMoney))
+    {
+      return TypedDecoderKind.PgMoney;
+    }
+
+    if (type == typeof(PgInterval))
+    {
+      return TypedDecoderKind.PgInterval;
+    }
+
+    if (type == typeof(PgTimeWithTimeZone))
+    {
+      return TypedDecoderKind.PgTimeWithTimeZone;
+    }
+
+    if (type == typeof(PgPoint))
+    {
+      return TypedDecoderKind.PgPoint;
+    }
+
+    if (type == typeof(PgLineSegment))
+    {
+      return TypedDecoderKind.PgLineSegment;
+    }
+
+    if (type == typeof(PgPath))
+    {
+      return TypedDecoderKind.PgPath;
+    }
+
+    if (type == typeof(PgBox))
+    {
+      return TypedDecoderKind.PgBox;
+    }
+
+    if (type == typeof(PgPolygon))
+    {
+      return TypedDecoderKind.PgPolygon;
+    }
+
+    if (type == typeof(PgLine))
+    {
+      return TypedDecoderKind.PgLine;
+    }
+
+    if (type == typeof(PgCidr))
+    {
+      return TypedDecoderKind.PgCidr;
+    }
+
+    if (type == typeof(PgCircle))
+    {
+      return TypedDecoderKind.PgCircle;
+    }
+
+    if (type == typeof(PgInet))
+    {
+      return TypedDecoderKind.PgInet;
+    }
+
+    if (type == typeof(PgNumeric?))
+    {
+      return TypedDecoderKind.NullablePgNumeric;
+    }
+
+    if (type == typeof(PgMoney?))
+    {
+      return TypedDecoderKind.NullablePgMoney;
+    }
+
+    if (type == typeof(PgInterval?))
+    {
+      return TypedDecoderKind.NullablePgInterval;
+    }
+
+    if (type == typeof(PgTimeWithTimeZone?))
+    {
+      return TypedDecoderKind.NullablePgTimeWithTimeZone;
+    }
+
+    if (type == typeof(PgPoint?))
+    {
+      return TypedDecoderKind.NullablePgPoint;
+    }
+
+    if (type == typeof(PgLineSegment?))
+    {
+      return TypedDecoderKind.NullablePgLineSegment;
+    }
+
+    if (type == typeof(PgBox?))
+    {
+      return TypedDecoderKind.NullablePgBox;
+    }
+
+    if (type == typeof(PgLine?))
+    {
+      return TypedDecoderKind.NullablePgLine;
+    }
+
+    if (type == typeof(PgCidr?))
+    {
+      return TypedDecoderKind.NullablePgCidr;
+    }
+
+    if (type == typeof(PgCircle?))
+    {
+      return TypedDecoderKind.NullablePgCircle;
+    }
+
+    if (type == typeof(PgInet?))
+    {
+      return TypedDecoderKind.NullablePgInet;
+    }
+
+    return TypedDecoderKind.Unsupported;
   }
 
   internal void DisableCache() => _strings.Disable();
@@ -1223,6 +1713,73 @@ internal sealed class PgRowDecoder : ISqlRowDecoder
       throw new InvalidDataException(
         "PostgreSQL row is truncated.");
     }
+  }
+
+  private static class TypedDecoder<T>
+  {
+    internal static readonly TypedDecoderKind Kind =
+      ResolveTypedDecoder<T>();
+  }
+
+  private enum TypedDecoderKind : byte
+  {
+    Unsupported,
+    Int32,
+    String,
+    Int64,
+    Boolean,
+    Int16,
+    Float,
+    Double,
+    Decimal,
+    Guid,
+    DateOnly,
+    TimeOnly,
+    DateTime,
+    DateTimeOffset,
+    Bytes,
+    ReadOnlyMemory,
+    JsonElement,
+    Array,
+    Object,
+    NullableInt32,
+    NullableInt64,
+    NullableBoolean,
+    NullableInt16,
+    NullableFloat,
+    NullableDouble,
+    NullableDecimal,
+    NullableGuid,
+    NullableDateOnly,
+    NullableTimeOnly,
+    NullableDateTime,
+    NullableDateTimeOffset,
+    NullableReadOnlyMemory,
+    NullableJsonElement,
+    PgNumeric,
+    PgMoney,
+    PgInterval,
+    PgTimeWithTimeZone,
+    PgPoint,
+    PgLineSegment,
+    PgPath,
+    PgBox,
+    PgPolygon,
+    PgLine,
+    PgCidr,
+    PgCircle,
+    PgInet,
+    NullablePgNumeric,
+    NullablePgMoney,
+    NullablePgInterval,
+    NullablePgTimeWithTimeZone,
+    NullablePgPoint,
+    NullablePgLineSegment,
+    NullablePgBox,
+    NullablePgLine,
+    NullablePgCidr,
+    NullablePgCircle,
+    NullablePgInet,
   }
 
   private readonly record struct Field(
