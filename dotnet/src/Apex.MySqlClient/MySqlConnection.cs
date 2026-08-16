@@ -65,7 +65,8 @@ public sealed partial class MySqlConnection : ISqlConnection
         _scheduler = new BoundedOrderedCommandScheduler(
           options.PipeliningLimit,
           (int)Math.Max(16, Math.Min(4096, (long)options.PipeliningLimit * 4)),
-          IsFatalConnectionError);
+                    IsFatalConnectionError,
+          FlushSchedulerBatchAsync);
         _statementCache = options.CachePreparedStatements && options.PreparedStatementCacheSize > 0
           ? new LruCache<string, MySqlStatement>(options.PreparedStatementCacheSize, StringComparer.Ordinal)
           : null;
@@ -82,6 +83,11 @@ public sealed partial class MySqlConnection : ISqlConnection
 
     /// <summary>Gets the server side identifier of this session, used by <c>KILL QUERY</c>.</summary>
     public uint ConnectionId => _connectionId;
+
+    private async ValueTask FlushSchedulerBatchAsync(CancellationToken cancellationToken)
+    {
+        await _writer.FlushAsync(cancellationToken).ConfigureAwait(false);
+    }
 
     /// <summary>Gets the session status flags reported by the most recent command.</summary>
     public MySqlServerStatus ServerStatus => _status;

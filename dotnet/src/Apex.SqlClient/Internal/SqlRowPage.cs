@@ -99,25 +99,26 @@ internal sealed class SqlRowPageCollectionBuilder
     private const int MaximumPageBytes = 64 * 1024;
     private readonly ISqlRowDecoder _decoder;
     private readonly List<SqlRowPageBuilder> _pages = [];
-    private SqlRowPageBuilder _current;
+    private SqlRowPageBuilder? _current;
     private int _count;
 
     internal SqlRowPageCollectionBuilder(ISqlRowDecoder decoder)
     {
         _decoder = decoder;
-        _current = CreatePage();
     }
 
     internal void Add(ReadOnlySpan<byte> row)
     {
-        if (_current.Count > 0 &&
-            (_current.Count == MaximumPageRows ||
-             row.Length > MaximumPageBytes - _current.ByteLength))
+        var current = _current ??= CreatePage();
+        if (current.Count > 0 &&
+            (current.Count == MaximumPageRows ||
+             row.Length > MaximumPageBytes - current.ByteLength))
         {
             Flush();
+            current = _current = CreatePage();
         }
 
-        _current.Add(row);
+        current.Add(row);
         _count++;
     }
 
@@ -148,13 +149,14 @@ internal sealed class SqlRowPageCollectionBuilder
 
     private void Flush()
     {
-        if (_current.Count == 0)
+        var current = _current;
+        if (current is null || current.Count == 0)
         {
             return;
         }
 
-        _pages.Add(_current);
-        _current = CreatePage();
+        _pages.Add(current);
+        _current = null;
     }
 
     private SqlRowPageBuilder CreatePage() =>

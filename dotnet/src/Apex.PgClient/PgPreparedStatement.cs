@@ -13,12 +13,21 @@ internal sealed class PgPreparedStatement : ISqlPreparedStatement
 {
     private readonly PgConnection _connection;
     private readonly string _name;
+    private readonly string _operation;
+    private readonly IReadOnlyList<SqlColumn> _columns;
     private bool _disposed;
 
-    public PgPreparedStatement(PgConnection connection, string name, string sql)
+    public PgPreparedStatement(
+        PgConnection connection,
+        string name,
+        string sql,
+        string operation,
+        IReadOnlyList<SqlColumn> columns)
     {
         _connection = connection;
         _name = name;
+        _operation = operation;
+        _columns = columns;
         Sql = sql;
     }
 
@@ -29,7 +38,12 @@ internal sealed class PgPreparedStatement : ISqlPreparedStatement
         CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        return _connection.ExecutePreparedAsync(_name, Sql, parameters, cancellationToken);
+        return _connection.ExecutePreparedAsync(
+            _name,
+            _operation,
+            _columns,
+            parameters,
+            cancellationToken);
     }
 
     public async ValueTask<SqlCommandResult> ExecuteAsync(
@@ -38,7 +52,12 @@ internal sealed class PgPreparedStatement : ISqlPreparedStatement
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         var rows =
-            await _connection.ExecutePreparedAsync(_name, Sql, parameters, cancellationToken).ConfigureAwait(false);
+                        await _connection.ExecutePreparedAsync(
+                            _name,
+                            _operation,
+                            _columns,
+                            parameters,
+                            cancellationToken).ConfigureAwait(false);
         return new SqlCommandResult(rows.AffectedRows, rows.CommandTag);
     }
 

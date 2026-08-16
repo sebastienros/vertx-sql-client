@@ -15,6 +15,7 @@ internal sealed class BoundedOrderedCommandScheduler : IAsyncDisposable
     private readonly Channel<ICommand> _commands;
     private readonly int _inFlightLimit;
     private readonly Func<Exception, bool> _isFatal;
+    private readonly Func<CancellationToken, ValueTask>? _flushBatchAsync;
     private readonly CancellationTokenSource _shutdown = new();
     private readonly Task _pump;
     private Exception? _terminalError;
@@ -24,13 +25,15 @@ internal sealed class BoundedOrderedCommandScheduler : IAsyncDisposable
     public BoundedOrderedCommandScheduler(
         int inFlightLimit,
         int queueCapacity,
-        Func<Exception, bool>? isFatal = null)
+        Func<Exception, bool>? isFatal = null,
+        Func<CancellationToken, ValueTask>? flushBatchAsync = null)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(inFlightLimit);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(queueCapacity);
 
         _inFlightLimit = inFlightLimit;
         _isFatal = isFatal ?? (_ => false);
+        _flushBatchAsync = flushBatchAsync;
         _commands = Channel.CreateBounded<ICommand>(
           new BoundedChannelOptions(queueCapacity)
           {
@@ -56,7 +59,8 @@ internal sealed class BoundedOrderedCommandScheduler : IAsyncDisposable
         Func<CancellationToken, ValueTask> sendAsync,
         Func<CancellationToken, ValueTask<T>> receiveAsync,
         bool barrier = false,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool flushBatch = false)
     {
         ArgumentNullException.ThrowIfNull(sendAsync);
         ArgumentNullException.ThrowIfNull(receiveAsync);
@@ -78,7 +82,8 @@ internal sealed class BoundedOrderedCommandScheduler : IAsyncDisposable
           sendAsync,
           receiveAsync,
           barrier,
-          cancellationToken);
+          cancellationToken,
+          flushBatch);
         var completion = command.Completion;
         command.Enqueue(_commands.Writer);
         return completion;
@@ -182,6 +187,7 @@ internal sealed class BoundedOrderedCommandScheduler : IAsyncDisposable
 
     private async ValueTask<bool> SendBatchAsync(List<BatchEntry> batch)
     {
+        var flushBatch = false;
         foreach (var entry in batch)
         {
             if (entry.Command.CancellationToken.IsCancellationRequested)
@@ -195,6 +201,7 @@ internal sealed class BoundedOrderedCommandScheduler : IAsyncDisposable
                 using var cancellation = CreateDelegateCancellation(entry.Command);
                 await entry.Command.SendAsync(cancellation.Token).ConfigureAwait(false);
                 entry.WasSent = true;
+                flushBatch |= entry.Command.FlushBatch;
             }
             catch (Exception exception)
             {
@@ -206,6 +213,11 @@ internal sealed class BoundedOrderedCommandScheduler : IAsyncDisposable
                     return false;
                 }
             }
+        }
+
+        if (flushBatch && _flushBatchAsync is not null)
+        {
+            await _flushBatchAsync(_shutdown.Token).ConfigureAwait(false);
         }
 
         return true;
@@ -253,8 +265,18 @@ internal sealed class BoundedOrderedCommandScheduler : IAsyncDisposable
         return true;
     }
 
-    private CancellationTokenSource CreateDelegateCancellation(ICommand command) =>
-      CancellationTokenSource.CreateLinkedTokenSource(command.CancellationToken, _shutdown.Token);
+    private DelegateCancellation CreateDelegateCancellation(ICommand command)
+    {
+        if (!command.CancellationToken.CanBeCanceled)
+        {
+            return new DelegateCancellation(_shutdown.Token, null);
+        }
+
+        var source = CancellationTokenSource.CreateLinkedTokenSource(
+            command.CancellationToken,
+            _shutdown.Token);
+        return new DelegateCancellation(source.Token, source);
+    }
 
     private bool IsFatal(Exception exception) => _isFatal(exception);
 
@@ -297,6 +319,8 @@ internal sealed class BoundedOrderedCommandScheduler : IAsyncDisposable
     {
         bool IsBarrier { get; }
 
+        bool FlushBatch { get; }
+
         int Generation { get; }
 
         CancellationToken CancellationToken { get; }
@@ -327,6 +351,7 @@ internal sealed class BoundedOrderedCommandScheduler : IAsyncDisposable
         private int _generation;
         private int _pendingWriteGeneration;
         private bool _isBarrier;
+        private bool _flushBatch;
         private bool _consumed;
 
         private Command()
@@ -337,6 +362,8 @@ internal sealed class BoundedOrderedCommandScheduler : IAsyncDisposable
         public ValueTask<T> Completion => new(this, _completion.Version);
 
         public bool IsBarrier => _isBarrier;
+
+        public bool FlushBatch => _flushBatch;
 
         public int Generation => Volatile.Read(ref _generation);
 
@@ -401,6 +428,7 @@ internal sealed class BoundedOrderedCommandScheduler : IAsyncDisposable
                     _pendingWrite = default;
                     _pendingWriteGeneration = 0;
                     _isBarrier = false;
+                    _flushBatch = false;
                     _completion.Reset();
                     if (Interlocked.Increment(ref s_poolCount) <= MaximumPoolSize)
                     {
@@ -428,7 +456,8 @@ internal sealed class BoundedOrderedCommandScheduler : IAsyncDisposable
             Func<CancellationToken, ValueTask> sendAsync,
             Func<CancellationToken, ValueTask<T>> receiveAsync,
             bool isBarrier,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            bool flushBatch)
         {
             if (!s_pool.TryDequeue(out var command))
             {
@@ -439,7 +468,13 @@ internal sealed class BoundedOrderedCommandScheduler : IAsyncDisposable
                 Interlocked.Decrement(ref s_poolCount);
             }
 
-            command.Initialize(scheduler, sendAsync, receiveAsync, isBarrier, cancellationToken);
+            command.Initialize(
+                scheduler,
+                sendAsync,
+                receiveAsync,
+                isBarrier,
+                cancellationToken,
+                flushBatch);
             return command;
         }
 
@@ -473,7 +508,8 @@ internal sealed class BoundedOrderedCommandScheduler : IAsyncDisposable
             Func<CancellationToken, ValueTask> sendAsync,
             Func<CancellationToken, ValueTask<T>> receiveAsync,
             bool isBarrier,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            bool flushBatch)
         {
             lock (_lifecycleLock)
             {
@@ -485,6 +521,7 @@ internal sealed class BoundedOrderedCommandScheduler : IAsyncDisposable
                 _pendingWrite = default;
                 _pendingWriteGeneration = 0;
                 _isBarrier = isBarrier;
+                _flushBatch = flushBatch;
                 _consumed = false;
                 var generation = unchecked(_generation + 1);
                 Volatile.Write(ref _generation, generation);
@@ -544,5 +581,14 @@ internal sealed class BoundedOrderedCommandScheduler : IAsyncDisposable
         public bool WasSent { get; set; }
 
         public Exception? SendError { get; set; }
+    }
+
+    private readonly struct DelegateCancellation(
+        CancellationToken token,
+        CancellationTokenSource? source) : IDisposable
+    {
+        public CancellationToken Token { get; } = token;
+
+        public void Dispose() => source?.Dispose();
     }
 }

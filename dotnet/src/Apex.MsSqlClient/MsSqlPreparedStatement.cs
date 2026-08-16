@@ -23,9 +23,12 @@ internal sealed class MsSqlPreparedStatement : ISqlPreparedStatement
     {
         _connection = connection;
         Sql = sql;
+        Operation = GetOperation(sql);
     }
 
     public string Sql { get; }
+
+    internal string Operation { get; }
 
     public ValueTask<SqlRowSet> QueryAsync(
         SqlParameters parameters = default,
@@ -213,6 +216,13 @@ internal sealed class MsSqlPreparedStatement : ISqlPreparedStatement
                 _preparing = false;
             }
         }
+    }
+
+    private static string GetOperation(string sql)
+    {
+        var text = sql.AsSpan().TrimStart();
+        var separator = text.IndexOfAny(" \t\r\n");
+        return (separator < 0 ? text : text[..separator]).ToString().ToUpperInvariant();
     }
 
     private void ThrowIfDisposed()

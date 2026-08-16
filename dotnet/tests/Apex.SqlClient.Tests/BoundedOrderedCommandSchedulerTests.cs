@@ -52,6 +52,46 @@ public sealed class BoundedOrderedCommandSchedulerTests
     }
 
     [TestMethod]
+    public async Task FlushesOnceAfterEachAdmittedGroup()
+    {
+        List<string> events = [];
+        await using BoundedOrderedCommandScheduler scheduler = new(
+          3,
+          4,
+          flushBatchAsync: _ =>
+          {
+              events.Add("flush");
+              return ValueTask.CompletedTask;
+          });
+        (var blocker, var releasePump) = await HoldPumpAsync(scheduler);
+
+        var first = Execute(scheduler, 1, events: events, flushBatch: true);
+        var second = Execute(scheduler, 2, events: events, flushBatch: true);
+        var third = Execute(scheduler, 3, events: events, flushBatch: true);
+        var fourth = Execute(scheduler, 4, events: events, flushBatch: true);
+
+        releasePump.SetResult();
+        await blocker;
+        await Task.WhenAll(first.AsTask(), second.AsTask(), third.AsTask(), fourth.AsTask());
+
+        CollectionAssert.AreEqual(
+          new[]
+          {
+            "send-1",
+            "send-2",
+            "send-3",
+            "flush",
+            "receive-1",
+            "receive-2",
+            "receive-3",
+            "send-4",
+            "flush",
+            "receive-4",
+          },
+          events);
+    }
+
+    [TestMethod]
     public async Task ReceivesAndCompletesResultsInSubmissionOrder()
     {
         await using BoundedOrderedCommandScheduler scheduler = new(3, 3);
@@ -359,7 +399,8 @@ public sealed class BoundedOrderedCommandSchedulerTests
         Func<CancellationToken, ValueTask>? send = null,
         List<string>? events = null,
         bool barrier = false,
-        CancellationToken cancellationToken = default) =>
+        CancellationToken cancellationToken = default,
+        bool flushBatch = false) =>
       scheduler.ExecuteAsync(
         send
         ?? (_ =>
@@ -373,7 +414,8 @@ public sealed class BoundedOrderedCommandSchedulerTests
             return ValueTask.FromResult(value);
         },
         barrier,
-        cancellationToken);
+        cancellationToken,
+        flushBatch);
 
     private static TaskCompletionSource NewGate() =>
       new(TaskCreationOptions.RunContinuationsAsynchronously);

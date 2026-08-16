@@ -310,22 +310,25 @@ public sealed class PgConnectionWireTests
         var statementName = FirstCStringValue(payload);
         Assert.IsTrue(statementName.StartsWith('A'));
         Assert.IsTrue(System.Text.Encoding.UTF8.GetString(payload).Contains("SELECT $1::int4 AS id"));
+        (type, payload) = await ReadMessageAsync(stream);
+        Assert.AreEqual((byte)'D', type);
+        Assert.AreEqual((byte)'S', payload[0]);
+        Assert.AreEqual(statementName, CStringValue(payload[1..]));
         (type, _) = await ReadMessageAsync(stream);
         Assert.AreEqual((byte)'S', type);
         await WriteMessageAsync(stream, (byte)'1', []);
+        await WriteMessageAsync(stream, (byte)'t', Join(Int16(1), Int32(23)));
+        await WriteMessageAsync(stream, (byte)'T', Join(Int16(1), Column("id", 23, 4)));
         await WriteMessageAsync(stream, (byte)'Z', [(byte)'I']);
 
         (type, _) = await ReadMessageAsync(stream);
         Assert.AreEqual((byte)'B', type);
         (type, _) = await ReadMessageAsync(stream);
-        Assert.AreEqual((byte)'D', type);
-        (type, _) = await ReadMessageAsync(stream);
         Assert.AreEqual((byte)'E', type);
         (type, _) = await ReadMessageAsync(stream);
         Assert.AreEqual((byte)'S', type);
         await WriteMessageAsync(stream, (byte)'2', []);
-        await WriteMessageAsync(stream, (byte)'T', Join(Int16(1), Column("id", 23, 4)));
-        await WriteMessageAsync(stream, (byte)'D', DataRow("7"));
+        await WriteMessageAsync(stream, (byte)'D', DataRowBytes(Int32(7)));
         await WriteMessageAsync(stream, (byte)'C', CString("SELECT 1"));
         await WriteMessageAsync(stream, (byte)'Z', [(byte)'I']);
 
@@ -442,6 +445,18 @@ public sealed class PgConnectionWireTests
             var bytes = System.Text.Encoding.UTF8.GetBytes(value);
             parts.Add(Int32(bytes.Length));
             parts.Add(bytes);
+        }
+
+        return Join(parts.ToArray());
+    }
+
+    private static byte[] DataRowBytes(params byte[][] values)
+    {
+        List<byte[]> parts = [Int16(checked((short)values.Length))];
+        foreach (var value in values)
+        {
+            parts.Add(Int32(value.Length));
+            parts.Add(value);
         }
 
         return Join(parts.ToArray());

@@ -173,3 +173,10 @@ Values outside the range of their requested .NET type fail explicitly.
 Parameters support the same BCL alternatives. `BitArray` parameters are sent as
 unsigned 64-bit values for reliable prepared-statement execution. MySQL and SQL
 Server do not expose PostgreSQL-style SQL array mappings.
+
+Prepared executions cache the metadata reported by `COM_STMT_PREPARE`, but Apex
+does not negotiate optional result-set metadata. MySQL's
+`CLIENT_OPTIONAL_RESULTSET_METADATA` requires a session metadata mode that also
+affects ordinary queries, while MariaDB uses a separate 64-bit
+`MARIADB_CLIENT_CACHE_METADATA` capability. Enabling either safely requires a
+protocol-specific mixed prepared/plain-query design.

@@ -127,6 +127,7 @@ internal sealed class PgWireWriter
         parse.WriteCString(sql);
         parse.WriteInt16(0);
         WriteTyped((byte)'P', parse.WrittenSpan);
+        WriteDescribeStatement(name);
         WriteTyped((byte)'S', ReadOnlySpan<byte>.Empty);
         await _writer.FlushAsync(cancellationToken).ConfigureAwait(false);
     }
@@ -134,9 +135,24 @@ internal sealed class PgWireWriter
     public async ValueTask WritePreparedQueryAsync(
         string name,
         SqlParameters parameters,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool describePortal = true,
+        bool flush = true)
     {
-        WriteBindDescribeExecute(string.Empty, name, parameters, 0);
+        WriteBindDescribeExecute(
+          string.Empty,
+          name,
+          parameters,
+          0,
+          describePortal);
+        if (flush)
+        {
+            await _writer.FlushAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    public async ValueTask FlushAsync(CancellationToken cancellationToken)
+    {
         await _writer.FlushAsync(cancellationToken).ConfigureAwait(false);
     }
 
@@ -238,7 +254,8 @@ internal sealed class PgWireWriter
         string portalName,
         string statementName,
         SqlParameters parameters,
-        int fetchSize)
+        int fetchSize,
+        bool describePortal = true)
     {
         ArrayBufferWriter<byte> bind = new();
         bind.WriteCString(portalName);
@@ -264,12 +281,25 @@ internal sealed class PgWireWriter
         bind.WriteInt16(1);
         WriteTyped((byte)'B', bind.WrittenSpan);
 
-        ArrayBufferWriter<byte> describe = new();
-        describe.WriteByte((byte)'P');
-        describe.WriteCString(portalName);
-        WriteTyped((byte)'D', describe.WrittenSpan);
+        if (describePortal)
+        {
+            ArrayBufferWriter<byte> describe = new();
+            describe.WriteByte((byte)'P');
+            describe.WriteCString(portalName);
+            WriteTyped((byte)'D', describe.WrittenSpan);
+        }
         WriteExecute(portalName, fetchSize);
         WriteTyped((byte)'S', ReadOnlySpan<byte>.Empty);
+    }
+
+    private void WriteDescribeStatement(string statementName)
+    {
+        var byteCount = s_utf8.GetByteCount(statementName);
+        Span<byte> describe = stackalloc byte[1 + byteCount + 1];
+        describe[0] = (byte)'S';
+        int written = s_utf8.GetBytes(statementName, describe[1..]);
+        describe[1 + written] = 0;
+        WriteTyped((byte)'D', describe);
     }
 
     private void WriteParseUnnamed(string sql)

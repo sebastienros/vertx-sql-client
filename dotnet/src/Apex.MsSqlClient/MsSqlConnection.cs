@@ -384,7 +384,7 @@ public sealed class MsSqlConnection : ISqlConnection
         CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        var operation = GetOperation(statement.Sql);
+        var operation = statement.Operation;
         using var activity = SqlClientDiagnostics.StartQuery(
           "sqlserver",
           _database,

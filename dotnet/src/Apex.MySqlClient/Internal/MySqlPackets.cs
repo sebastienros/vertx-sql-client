@@ -17,6 +17,7 @@ internal sealed class MySqlStatement
     {
         Id = id;
         Sql = sql;
+        Operation = GetOperation(sql);
         ParameterCount = parameterCount;
         Columns = columns;
     }
@@ -25,12 +26,21 @@ internal sealed class MySqlStatement
 
     internal string Sql { get; }
 
+    internal string Operation { get; }
+
     internal int ParameterCount { get; }
 
     internal MySqlColumnMetadata[] Columns { get; }
 
     /// <summary>Gets or sets a value indicating whether the statement cache owns the statement.</summary>
     internal bool IsCached { get; set; }
+
+    private static string GetOperation(string sql)
+    {
+        var text = sql.AsSpan().TrimStart();
+        var separator = text.IndexOfAny(" \t\r\n");
+        return (separator < 0 ? text : text[..separator]).ToString().ToUpperInvariant();
+    }
 }
 
 /// <summary>The initial handshake sent by the server.</summary>

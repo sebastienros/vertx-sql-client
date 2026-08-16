@@ -66,7 +66,8 @@ public sealed class PgConnection : ISqlConnection
         _scheduler = new BoundedOrderedCommandScheduler(
           options.PipeliningLimit,
           (int)Math.Max(16, Math.Min(4096, (long)options.PipeliningLimit * 4)),
-          IsFatalConnectionError);
+                    IsFatalConnectionError,
+                    _writer.FlushAsync);
         _statementCache = options.CachePreparedStatements && options.PreparedStatementCacheSize > 0
           ? new LruCache<string, string>(
             options.PreparedStatementCacheSize,
@@ -227,6 +228,7 @@ public sealed class PgConnection : ISqlConnection
 
         var name = "A" + Interlocked.Increment(ref _statementSequence)
           .ToString("x", CultureInfo.InvariantCulture);
+        var operation = GetOperation(sql);
         return await _scheduler.ExecuteAsync(
           async token =>
           {
@@ -235,8 +237,13 @@ public sealed class PgConnection : ISqlConnection
           },
           async _ =>
           {
-              await ReadReadyAsync((byte)'1', CancellationToken.None).ConfigureAwait(false);
-              return (ISqlPreparedStatement)new PgPreparedStatement(this, name, sql);
+              var columns = await ReadPreparedAsync(CancellationToken.None).ConfigureAwait(false);
+              return (ISqlPreparedStatement)new PgPreparedStatement(
+                  this,
+                  name,
+                  sql,
+                  operation,
+                  columns);
           },
           barrier: true,
           cancellationToken).ConfigureAwait(false);
@@ -592,12 +599,21 @@ public sealed class PgConnection : ISqlConnection
 
     private async ValueTask<SqlRowSet> ReceiveQueryAsync(CancellationToken cancellationToken)
     {
+        return await ReceiveQueryAsync(cancellationToken, null).ConfigureAwait(false);
+    }
+
+    private async ValueTask<SqlRowSet> ReceiveQueryAsync(
+        CancellationToken cancellationToken,
+        IReadOnlyList<SqlColumn>? columns)
+    {
         Task? cancellationRequest = null;
         using var registration = cancellationToken.Register(
           () => cancellationRequest = TryCancelRequestAsync());
         try
         {
-            var result = await ReadQueryResultsAsync(CancellationToken.None).ConfigureAwait(false);
+            var result = await ReadQueryResultsAsync(
+                CancellationToken.None,
+                columns).ConfigureAwait(false);
             if (cancellationRequest is not null)
             {
                 await cancellationRequest.ConfigureAwait(false);
@@ -619,49 +635,52 @@ public sealed class PgConnection : ISqlConnection
 
     internal async ValueTask<SqlRowSet> ExecutePreparedAsync(
         string name,
-                string sql,
+        string operation,
+        IReadOnlyList<SqlColumn> columns,
         SqlParameters parameters,
         CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-                var operation = GetOperation(sql);
-                using var activity = SqlClientDiagnostics.StartQuery(
-                    "postgresql",
-                    _options.Database,
-                    _options.Host,
-                    _options.Port,
-                    operation);
-                var started = System.Diagnostics.Stopwatch.GetTimestamp();
-                Exception? error = null;
-                try
+        using var activity = SqlClientDiagnostics.StartQuery(
+            "postgresql",
+            _options.Database,
+            _options.Host,
+            _options.Port,
+            operation);
+        var started = System.Diagnostics.Stopwatch.GetTimestamp();
+        Exception? error = null;
+        try
+        {
+            return await _scheduler.ExecuteAsync(
+                async token =>
                 {
-                        return await _scheduler.ExecuteAsync(
-                            async token =>
-                            {
-                                    token.ThrowIfCancellationRequested();
-                                    await _writer.WritePreparedQueryAsync(
-                                name,
-                                parameters,
-                                CancellationToken.None).ConfigureAwait(false);
-                            },
-                            _ => ReceiveQueryAsync(cancellationToken),
-                            barrier: cancellationToken.CanBeCanceled,
-                            cancellationToken: cancellationToken).ConfigureAwait(false);
-                }
-                catch (Exception exception)
-                {
-                        error = exception;
-                        activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Error, exception.Message);
-                        throw;
-                }
-                finally
-                {
-                        SqlClientDiagnostics.RecordQuery(
-                            System.Diagnostics.Stopwatch.GetElapsedTime(started),
-                            "postgresql",
-                            operation,
-                            error);
-                }
+                    token.ThrowIfCancellationRequested();
+                    await _writer.WritePreparedQueryAsync(
+                                    name,
+                                    parameters,
+                                    CancellationToken.None,
+                                    describePortal: false,
+                                    flush: false).ConfigureAwait(false);
+                },
+                _ => ReceiveQueryAsync(cancellationToken, columns),
+                barrier: cancellationToken.CanBeCanceled,
+                cancellationToken: cancellationToken,
+                flushBatch: true).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            error = exception;
+            activity?.SetStatus(System.Diagnostics.ActivityStatusCode.Error, exception.Message);
+            throw;
+        }
+        finally
+        {
+            SqlClientDiagnostics.RecordQuery(
+                System.Diagnostics.Stopwatch.GetElapsedTime(started),
+                "postgresql",
+                operation,
+                error);
+        }
     }
 
     internal async ValueTask ExecuteTransactionControlAsync(
@@ -914,10 +933,16 @@ public sealed class PgConnection : ISqlConnection
         }
     }
 
-    private async ValueTask<SqlRowSet> ReadQueryResultsAsync(CancellationToken cancellationToken)
+    private async ValueTask<SqlRowSet> ReadQueryResultsAsync(
+        CancellationToken cancellationToken,
+        IReadOnlyList<SqlColumn>? initialColumns = null)
     {
         List<ResultBuilder> results = [];
         ResultBuilder current = new(_rowDecoder);
+        if (initialColumns is not null)
+        {
+            current.SetColumns(initialColumns);
+        }
         PgException? error = null;
 
         while (true)
@@ -1092,7 +1117,67 @@ public sealed class PgConnection : ISqlConnection
         }
     }
 
-    private static IReadOnlyList<SqlColumn> ParseColumns(ReadOnlySpan<byte> payload)
+    private async ValueTask<IReadOnlyList<SqlColumn>> ReadPreparedAsync(
+        CancellationToken cancellationToken)
+    {
+        IReadOnlyList<SqlColumn>? columns = null;
+        var parsed = false;
+        var described = false;
+        PgException? error = null;
+        while (true)
+        {
+            using var message = await _reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+            switch (message.Type)
+            {
+                case (byte)'1':
+                    parsed = true;
+                    break;
+                case (byte)'t':
+                    break;
+                case (byte)'T':
+                    columns = ParseColumns(message.Payload.Span, SqlDataFormat.Binary);
+                    described = true;
+                    break;
+                case (byte)'n':
+                    columns = Array.Empty<SqlColumn>();
+                    described = true;
+                    break;
+                case (byte)'E':
+                    error = ParseError(message.Payload.Span);
+                    break;
+                case (byte)'N':
+                    HandleNotice(message.Payload.Span);
+                    break;
+                case (byte)'S':
+                    HandleParameterStatus(message.Payload.Span);
+                    break;
+                case (byte)'A':
+                    HandleNotification(message.Payload.Span);
+                    break;
+                case (byte)'Z':
+                    UpdateTransactionStatus(message.Payload.Span);
+                    if (error is not null)
+                    {
+                        throw error;
+                    }
+
+                    if (!parsed || !described)
+                    {
+                        throw new InvalidDataException(
+                          "PostgreSQL did not describe the prepared statement.");
+                    }
+
+                    return columns!;
+                default:
+                    throw new InvalidDataException(
+                      $"Unexpected PostgreSQL prepare message '{(char)message.Type}'.");
+            }
+        }
+    }
+
+    private static IReadOnlyList<SqlColumn> ParseColumns(
+        ReadOnlySpan<byte> payload,
+        SqlDataFormat? resultFormat = null)
     {
         PgPayloadReader reader = new(payload);
         int count = reader.ReadInt16();
@@ -1105,7 +1190,11 @@ public sealed class PgConnection : ISqlConnection
             var typeId = unchecked((uint)reader.ReadInt32());
             var typeSize = reader.ReadInt16();
             var typeModifier = reader.ReadInt32();
-            SqlDataFormat format = (SqlDataFormat)reader.ReadInt16();
+            SqlDataFormat format = resultFormat ?? (SqlDataFormat)reader.ReadInt16();
+            if (resultFormat is not null)
+            {
+                _ = reader.ReadInt16();
+            }
             columns[i] = new SqlColumn(name, typeId, typeSize, typeModifier, format);
         }
 

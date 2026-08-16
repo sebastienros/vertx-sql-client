@@ -4,11 +4,13 @@
 
 - `Apex.DriverBenchmarks` uses BenchmarkDotNet for .NET codec allocations;
   Apex/Npgsql PostgreSQL workloads; Apex/MySqlConnector MySQL query,
-  prepared-query, streaming, borrowed-reader, pipelining, and repeated-string
+  prepared-query, streaming, borrowed-reader, and repeated-string
   workloads; and Apex/Microsoft.Data.SqlClient SQL Server workloads.
 - `dotnet/benchmarks/java` uses JMH for equivalent Vert.x PostgreSQL, MySQL, and
   SQL Server workloads, including the MySQL `MySqlBenchmarks` and
   `MySqlPipeliningBenchmarks` suites.
+- PostgreSQL automatic pipelining is compared with standalone Apex and Vert.x
+  applications, not BenchmarkDotNet or JMH.
 - Native BenchmarkDotNet and JMH scores are reported separately because their harnesses, runtimes, warmup models, and profilers differ.
 
 ## Common process harness
@@ -258,6 +260,21 @@ environment (183.5 us -> 44,439.4 us), while Apex's genuine pipelining scaled su
 (173.7 us -> 6,984.6 us for 256x the work). This is a measured difference between the supported
 batch API and independently pipelined commands, not a claim that their wire shapes are identical.
 
+A grouped-flush optimization subsequently changed Apex prepared pipelining to append every
+admitted `COM_STMT_EXECUTE` packet and flush once per scheduler group. A ShortRun against local
+MySQL 8.4 without TLS measured:
+
+| Depth | Apex mean | Apex allocated |
+|---:|---:|---:|
+| 1 | 166.1 us | 5.08 KB |
+| 16 | 471.9 us | 51.62 KB |
+| 64 | 773.6 us | 193.32 KB |
+| 256 | 1,407.4 us | 736.41 KB |
+
+Compared with the earlier smoke table, the depth-16/64/256 means are lower by approximately
+32%, 56%, and 80%. The runs differ in TLS configuration, so treat the percentages as diagnostic;
+the scaling improvement is consistent with eliminating one transport flush per command.
+
 **.NET common harness** (4 workers, 1s warmup, 2s measurement):
 
 | Workload | Driver | ops/s | p50 | p95 | p99 |
@@ -436,43 +453,140 @@ The next allocation work should be split accordingly:
 
 ## Pipelining
 
-The common pipelining harness uses one physical connection and reports individual queries/second. Apex and Vert.x submit independent prepared-query operations concurrently in order. Npgsql does not permit concurrent commands on one connection, so its closest supported equivalent is one reusable `NpgsqlBatch` containing the same number of prepared `SELECT 1::int4` commands.
+`Apex.PipeliningApplication` and `io.vertx.benchmarks.PipeliningApplication`
+execute the same fixed number of independently submitted prepared
+`SELECT 1::int4` queries. Each application uses one physical connection and
+maintains a configurable number of in-flight query chains. A chain submits its
+next query when its previous query completes, keeping up to the configured
+concurrency active and allowing each driver to pipeline commands automatically.
+No explicit batch API is used.
 
-PostgreSQL 16, one connection, 3-second warmup, 10-second measurement:
+Settings shared by both applications:
 
-| Driver | Depth | Queries/s | Batch p50 | Allocated/query |
-|---|---:|---:|---:|---:|
-| Apex | 1 | 3,106 | 0.301 ms | 3,630 B |
-| NpgsqlBatch | 1 | 3,189 | 0.300 ms | 729 B |
-| Vert.x | 1 | 3,054 | 0.317 ms | Not available |
-| Apex | 16 | 16,244 | 0.911 ms | 2,344 B |
-| NpgsqlBatch | 16 | 49,506 | 0.316 ms | 46 B |
-| Vert.x | 16 | 18,704 | 0.672 ms | Not available |
-| Apex | 64 | 26,450 | 2.364 ms | 2,239 B |
-| NpgsqlBatch | 64 | 170,835 | 0.364 ms | 12 B |
-| Vert.x | 64 | 38,835 | 1.478 ms | Not available |
-| Apex | 256 | 46,677 | 5.379 ms | 2,178 B |
-| NpgsqlBatch | 256 | 384,347 | 0.644 ms | 3 B |
-| Vert.x | 256 | 55,552 | 4.537 ms | Not available |
+| Variable | Purpose | Default |
+|---|---|---:|
+| `APEX_BENCH_CONCURRENCY` | Maximum in-flight queries on the connection | `64` |
+| `APEX_BENCH_QUERY_COUNT` | Measured queries | `100000` |
+| `APEX_BENCH_WARMUP_QUERY_COUNT` | Unmeasured warmup queries | `10000` |
 
-At depth 1 the three drivers are effectively equal. At depth 256, Apex improves by 15 times over its depth-1 throughput; Vert.x improves by 18 times and remains about 19% faster than Apex. NpgsqlBatch is 8.2 times faster than Apex because it uses a single batch operation and amortizes one approximately 1 KB batch allocation across all commands. Apex and Vert.x retain one future/result lifecycle and protocol command sequence per submitted query.
+The Apex application accepts `APEX_PG_CONNECTION_STRING` as a PostgreSQL URI,
+libpq keyword string, or standard .NET semicolon string. Both applications also
+accept `APEX_PG_HOST`, `APEX_PG_PORT`, `APEX_PG_DATABASE`,
+`APEX_PG_USERNAME`, and `APEX_PG_PASSWORD`. The sequential runner builds and
+runs Apex first, then Vert.x, against the same database:
 
-BenchmarkDotNet ShortRun confirms the .NET batch shape:
+```bash
+export APEX_PG_CONNECTION_STRING='Host=127.0.0.1;Port=5432;Database=db;Username=user;Password=pass'
+export APEX_PG_HOST=127.0.0.1 APEX_PG_PORT=5432
+export APEX_PG_DATABASE=db APEX_PG_USERNAME=user APEX_PG_PASSWORD=pass
+export APEX_BENCH_CONCURRENCY=64
+export APEX_BENCH_WARMUP_QUERY_COUNT=10000
+export APEX_BENCH_QUERY_COUNT=100000
+dotnet/benchmarks/run-pipelining-comparison.sh
+```
 
-| Driver | Depth | Batch mean | Allocated/batch |
-|---|---:|---:|---:|
-| Apex | 1 | 306.4 us | 3.47 KB |
-| NpgsqlBatch | 1 | 304.7 us | 1.01 KB |
-| Apex | 16 | 1,105.9 us | 36.48 KB |
-| NpgsqlBatch | 16 | 325.2 us | 1.01 KB |
-| Apex | 64 | 2,296.0 us | 139.21 KB |
-| NpgsqlBatch | 64 | 379.1 us | 1.01 KB |
-| Apex | 256 | 5,451.2 us | 542.45 KB |
-| NpgsqlBatch | 256 | 663.7 us | 1.01 KB |
+Each application measures only query execution after connection setup,
+preparation, and warmup. Output is JSON with elapsed time, queries/second,
+result sum, runtime, OS, and architecture; Apex additionally reports managed
+allocation bytes. Vert.x reports allocated bytes across JVM threads when the
+JVM supports thread allocation accounting. Build output between runs is outside
+the measured interval.
 
-Vert.x JMH measured 3,093, 1,385, 614, and 216 batches/second at depths 1, 16, 64, and 256 respectively, equivalent to approximately 3.1k, 22.2k, 39.3k, and 55.4k queries/second.
+A short diagnostic run on macOS 15.7.8 Arm64 against the same PostgreSQL 16
+container used concurrency 32, 2,000 warmup queries, and 20,000 measured
+queries:
 
-The next Apex pipelining optimization is a first-class reusable batch API that emits one protocol batch and returns compact batch results, instead of constructing one task, row set, and command lifecycle per query.
+| Driver | Queries/s | Elapsed |
+|---|---:|---:|
+| Apex .NET 10.0.10 | 31,395 | 0.637 s |
+| Vert.x Java 25.0.2 | 58,710 | 0.341 s |
+
+These numbers verify the applications and are not release performance claims.
+
+### Pipelining investigation
+
+Follow-up local runs fixed the Java worker to use a constant-depth promise loop
+instead of retaining a recursively composed future chain. Throughput remained
+variable between short process launches, but the scaling shape was consistent:
+
+| Concurrency | Apex queries/s | Vert.x queries/s |
+|---:|---:|---:|
+| 1 | 5.9k | 6.7k |
+| 16 | 25.2k | 47.8k |
+| 32 | 37.3k-40.1k | 49.1k-64.2k |
+| 64 | 47.5k | 58.0k |
+
+The concurrency-32 ranges include two 100,000-query pairs run in opposite
+orders. Execution order did not remove the gap, although its size varied from
+1.3x to 1.6x. Apex continued scaling through concurrency 64; Vert.x peaked near
+32 in these runs.
+
+Allocation accounting was much more stable. At concurrency 32, Apex allocated
+approximately 6.14 KB/query and Vert.x 0.62 KB/query. At concurrency 1 the
+figures were approximately 7.15 KB/query and 0.76 KB/query. `dotnet-trace` with
+the `gc-verbose` profile attributed Apex sampled allocation pressure primarily
+to:
+
+| Apex allocation site | Sampled pressure |
+|---|---:|
+| `SqlRowPageBuilder(ISqlRowDecoder, int, int)` | 29.2% |
+| `PgConnection.ReadQueryResultsAsync` | 21.0% exclusive |
+| `Array.Resize` | 10.8% |
+| `SqlRowPageCollectionBuilder.Build` | 8.0% exclusive |
+| `PgConnection.ExecutePreparedAsync` | 6.0% exclusive |
+
+The one-row result creates an initial 1 KB row page, another unused result
+builder after `CommandComplete`, and another unused page when `Build` flushes.
+A lazy-page probe reduced Apex allocation from 6.14 KB/query to 3.65 KB/query
+(41%) but improved throughput by only about 4% in one run. The optimization was
+retained; subsequent cancellation and diagnostics changes reduced the final
+measurement to 3.08 KB/query. Eager page allocation was therefore the largest
+allocation issue, but not the primary throughput explanation.
+
+JFR showed Vert.x allocation spread among `RowSetImpl`, pooled/direct buffer
+slices, extended-query command messages, query handlers, `PgRow`, promises, and
+tuples. Vert.x materializes a compact decoded `PgRow`; Apex copies the raw row
+into lifetime-safe page storage and decodes getters lazily. Both return retained
+rows, but Apex's 1 KB minimum page is expensive for this four-byte result.
+
+The investigation isolated and implemented the main causes:
+
+1. **Flush batching was the dominant throughput issue.** Apex previously
+  called and awaited `PipeWriter.FlushAsync` for every command inside
+  `SendBatchAsync`. Vert.x writes all commands admitted by `checkPending` and
+  calls Netty `flush()` once for the group. Apex now lets prepared-query sends
+  append without flushing and invokes one scheduler flush for the admitted
+  group.
+2. **Prepared result description was repeated.** Vert.x sends `Parse + Describe
+  statement + Sync` once during prepare and retains its binary row descriptor.
+  Apex now does the same and executes with `Bind + Execute + Sync`, avoiding a
+  per-query `Describe portal`, `RowDescription`, column parse, and ordinal-map
+  lookup.
+3. **Eager result pages dominated allocation.** `SqlRowPageCollectionBuilder`
+  now creates its first page only when a row arrives and does not allocate a
+  replacement page after its final flush.
+4. **Per-query cancellation and diagnostics added smaller costs.** Noncancelable
+  scheduler commands now use the shutdown token directly instead of creating
+  two linked cancellation sources. Explicit prepared statements cache their
+  diagnostics operation name during preparation.
+5. **Continuation scheduling remains different.** Apex disables synchronous channel
+  continuations and sets `ManualResetValueTaskSourceCore` to run continuations
+  asynchronously, adding thread-pool handoffs. Vert.x schedules and completes
+  commands on its connection event-loop context.
+
+The scheduler still drains admitted commands in waves instead of continuously
+refilling its in-flight window. A refill rewrite was not pursued because grouped
+flushing alone removed the observed throughput deficit.
+
+At concurrency 32 with 10,000 warmup and 100,000 measured queries, the original
+Apex path measured 37-40k queries/s and about 6.14 KB/query. The optimized path
+measured 74.5k queries/s and 3.08 KB/query; Vert.x in the immediately following
+run measured 49.1k queries/s and 0.64 KB/query. At concurrency 64, optimized
+Apex measured 94-103k queries/s in two runs. These local results identify the
+causal improvements but remain diagnostic rather than release claims.
+
+Use longer runs, alternate execution order, repeated trials, and controlled
+container resources before drawing release performance conclusions.
 
 ### Typed field decoding
 

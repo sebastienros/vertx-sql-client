@@ -2,6 +2,7 @@
   <Folder Name="/benchmarks/">
     <Project Path="benchmarks/Apex.ComparisonHarness/Apex.ComparisonHarness.csproj" />
     <Project Path="benchmarks/Apex.DriverBenchmarks/Apex.DriverBenchmarks.csproj" />
+    <Project Path="benchmarks/Apex.PipeliningApplication/Apex.PipeliningApplication.csproj" />
   </Folder>
   <Folder Name="/src/">
     <Project Path="src/Apex.MsSqlClient/Apex.MsSqlClient.csproj" />

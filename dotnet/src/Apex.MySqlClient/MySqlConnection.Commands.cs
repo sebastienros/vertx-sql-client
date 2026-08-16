@@ -137,44 +137,45 @@ public sealed partial class MySqlConnection
         CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-                var operation = GetOperation(statement.Sql);
-                using var activity = SqlClientDiagnostics.StartQuery(
-                    "mysql",
-                    _options.Database,
-                    _options.Host,
-                    _options.Port,
-                    operation);
-                var started = Stopwatch.GetTimestamp();
-                Exception? error = null;
-                try
+        var operation = statement.Operation;
+        using var activity = SqlClientDiagnostics.StartQuery(
+            "mysql",
+            _options.Database,
+            _options.Host,
+            _options.Port,
+            operation);
+        var started = Stopwatch.GetTimestamp();
+        Exception? error = null;
+        try
+        {
+            return await _scheduler.ExecuteAsync(
+                    token =>
                 {
-                        return await _scheduler.ExecuteAsync(
-                            async token =>
-                            {
-                                    token.ThrowIfCancellationRequested();
-                                    WriteExecute(statement, parameters, MySqlCursorType.NoCursor);
-                                    await _writer.FlushAsync(CancellationToken.None).ConfigureAwait(false);
-                            },
-                            _ => ReceiveExecutionWithCancellationAsync(
-                                binary: true,
-                                cancellationToken),
-                            barrier: cancellationToken.CanBeCanceled || _options.AllowLoadLocalInfile,
-                            cancellationToken).ConfigureAwait(false);
-                }
-                catch (Exception exception)
-                {
-                        error = exception;
-                        activity?.SetStatus(ActivityStatusCode.Error, exception.Message);
-                        throw;
-                }
-                finally
-                {
-                        SqlClientDiagnostics.RecordQuery(
-                            Stopwatch.GetElapsedTime(started),
-                            "mysql",
-                            operation,
-                            error);
-                }
+                    token.ThrowIfCancellationRequested();
+                    WriteExecute(statement, parameters, MySqlCursorType.NoCursor);
+                    return ValueTask.CompletedTask;
+                },
+                _ => ReceiveExecutionWithCancellationAsync(
+                    binary: true,
+                    cancellationToken),
+                barrier: cancellationToken.CanBeCanceled || _options.AllowLoadLocalInfile,
+                cancellationToken,
+                flushBatch: true).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            error = exception;
+            activity?.SetStatus(ActivityStatusCode.Error, exception.Message);
+            throw;
+        }
+        finally
+        {
+            SqlClientDiagnostics.RecordQuery(
+                Stopwatch.GetElapsedTime(started),
+                "mysql",
+                operation,
+                error);
+        }
     }
 
     private ValueTask<MySqlExecutionResult> ReceiveExecutionWithCancellationAsync(

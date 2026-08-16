@@ -47,4 +47,19 @@ public sealed class SqlRowPageTests
         Assert.AreEqual(43, rows[299].GetInt32(0));
     }
 
+    [TestMethod]
+    public void BuildsEmptyAndSingleRowResults()
+    {
+        TestRowDecoder decoder = new();
+        SqlColumn[] columns = [new("value", 23, 4, -1, SqlDataFormat.Binary)];
+        SqlRowPageCollectionBuilder empty = new(decoder);
+        SqlRowPageCollectionBuilder single = new(decoder);
+        single.Add(TestRowDecoder.Encode(42));
+
+        Assert.HasCount(0, empty.Build(columns));
+        var rows = single.Build(columns);
+        Assert.HasCount(1, rows);
+        Assert.AreEqual(42, rows[0].GetInt32(0));
+    }
+
 }
